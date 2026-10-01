@@ -37,3 +37,19 @@ http:
 ```
 
 Restart Home Assistant Core after adding this block.
+
+---
+
+## Native Home Assistant Diagnostic Entities
+
+The Gavasah Cloud Agent automatically registers and updates the following diagnostic entities in your local Home Assistant instance:
+
+| Entity ID | Type | Description |
+| :--- | :--- | :--- |
+| `sensor.gavasah_boot_slot` | Sensor | Active RAUC boot slot (`Slot A` or `Slot B`) |
+| `binary_sensor.gavasah_recovery_mode` | Binary Sensor | `on` if system failed Slot A and fell back to recovery Slot B |
+| `binary_sensor.gavasah_cloud_tunnel` | Binary Sensor | Ingress reverse tunnel connection status |
+| `binary_sensor.gavasah_knx_gateway` | Binary Sensor | KNXnet/IP gateway UDP reachability |
+| `sensor.gavasah_knx_latency` | Sensor | Live KNX bus ping latency in milliseconds |
+| `sensor.gavasah_local_ip` | Sensor | Local network IP, MAC address, and default gateway |
+

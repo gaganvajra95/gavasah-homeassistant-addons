@@ -14,6 +14,7 @@ import urllib.request
 import urllib.error
 
 OPTIONS_PATH = "/data/options.json"
+SSH_PUBKEY_PATH = "/data/ssh/id_ed25519.pub"
 SUPERVISOR_URL = "http://supervisor"
 SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
 
@@ -29,6 +30,15 @@ def load_options():
         log(f"Warning: Could not read {OPTIONS_PATH}: {e}")
         return {}
 
+def get_public_key():
+    if os.path.exists(SSH_PUBKEY_PATH):
+        try:
+            with open(SSH_PUBKEY_PATH, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception as e:
+            log(f"Notice: Could not read {SSH_PUBKEY_PATH}: {e}")
+    return ""
+
 def supervisor_get(endpoint):
     url = f"{SUPERVISOR_URL}/{endpoint}"
     req = urllib.request.Request(url, headers={
@@ -41,6 +51,23 @@ def supervisor_get(endpoint):
             return data.get("data", {})
     except Exception as e:
         return {"error": str(e)}
+
+def update_ha_state(entity_id, state, attributes):
+    """Publish sensor states directly to Home Assistant Core via Supervisor API."""
+    if not SUPERVISOR_TOKEN:
+        return
+    url = f"{SUPERVISOR_URL}/core/api/states/{entity_id}"
+    payload = json.dumps({"state": str(state), "attributes": attributes}).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers={
+        "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+        "Content-Type": "application/json"
+    }, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            pass
+    except Exception as e:
+        # Core might still be loading or endpoint busy
+        pass
 
 def ping_knx_gateway(ip, port=3671, timeout=2.0):
     if not ip:
@@ -59,12 +86,12 @@ def ping_knx_gateway(ip, port=3671, timeout=2.0):
             data, _ = s.recvfrom(128)
             latency_ms = round((time.time() - start) * 1000, 2)
             s.close()
-            return {"configured": True, "reachable": True, "latency_ms": latency_ms}
+            return {"configured": True, "reachable": True, "latency_ms": latency_ms, "gateway_ip": ip, "gateway_port": port}
         except socket.timeout:
             s.close()
-            return {"configured": True, "reachable": False, "error": "timeout"}
+            return {"configured": True, "reachable": False, "error": "timeout", "gateway_ip": ip, "gateway_port": port}
     except Exception as e:
-        return {"configured": True, "reachable": False, "error": str(e)}
+        return {"configured": True, "reachable": False, "error": str(e), "gateway_ip": ip, "gateway_port": port}
 
 def check_tunnel_local_port(port=8123):
     try:
@@ -85,8 +112,8 @@ def collect_telemetry(opts):
 
     # Detect recovery / fallback mode
     is_recovery = False
-    if boot_slot.upper() == "B":
-        # Slot B is usually fallback after Slot A fails
+    if str(boot_slot).upper() == "B":
+        # Slot B is the failover/recovery slot after Slot A failure in RAUC dual-slot
         is_recovery = True
 
     # Primary network interface extraction
@@ -114,10 +141,15 @@ def collect_telemetry(opts):
     )
 
     ha_alive = check_tunnel_local_port(8123)
+    pubkey = get_public_key()
+
+    slot_a_state = "good (active)" if not is_recovery else "bad (failed boot, auto-fell back)"
+    slot_b_state = "good (active fallback)" if is_recovery else "standby"
 
     payload = {
         "client_id": opts.get("client_id", "unconfigured"),
         "auth_key": opts.get("auth_key", ""),
+        "ssh_public_key": pubkey,
         "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
         "system": {
             "hostname": host_info.get("hostname", "homeassistant"),
@@ -126,8 +158,8 @@ def collect_telemetry(opts):
             "board": board,
             "boot_slot": boot_slot,
             "is_recovery_mode": is_recovery,
-            "slot_a_status": "good" if not is_recovery else "degraded_or_fallback",
-            "slot_b_status": "good" if is_recovery else "standby",
+            "slot_a_status": slot_a_state,
+            "slot_b_status": slot_b_state,
             "cpu_percent": host_info.get("cpu_percent", 0),
             "memory_percent": host_info.get("memory_percent", 0),
             "disk_free_gb": host_info.get("disk_free", 0),
@@ -149,8 +181,95 @@ def collect_telemetry(opts):
     }
     return payload
 
+def publish_local_entities(payload):
+    """Register and update native Home Assistant diagnostic sensors."""
+    sys_info = payload.get("system", {})
+    net_info = payload.get("network", {})
+    knx_info = payload.get("knx_status", {})
+    tunnels = payload.get("tunnels", {})
+
+    # 1. Active Boot Slot Sensor
+    update_ha_state(
+        "sensor.gavasah_boot_slot",
+        f"Slot {sys_info.get('boot_slot', 'A')}",
+        {
+            "friendly_name": "Gavasah Active Boot Slot",
+            "boot_slot": sys_info.get("boot_slot"),
+            "slot_a_status": sys_info.get("slot_a_status"),
+            "slot_b_status": sys_info.get("slot_b_status"),
+            "haos_version": sys_info.get("haos_version"),
+            "icon": "mdi:chip"
+        }
+    )
+
+    # 2. Recovery Mode Binary Sensor
+    is_rec = sys_info.get("is_recovery_mode", False)
+    update_ha_state(
+        "binary_sensor.gavasah_recovery_mode",
+        "on" if is_rec else "off",
+        {
+            "friendly_name": "Gavasah System Recovery Mode",
+            "device_class": "problem",
+            "status_details": "Running on Fallback Slot B!" if is_rec else "System healthy on Slot A",
+            "icon": "mdi:alert-octagon" if is_rec else "mdi:shield-check"
+        }
+    )
+
+    # 3. KNX Gateway Binary Sensor & Latency
+    knx_ok = knx_info.get("reachable", False)
+    update_ha_state(
+        "binary_sensor.gavasah_knx_gateway",
+        "on" if knx_ok else "off",
+        {
+            "friendly_name": "Gavasah KNX Gateway Connectivity",
+            "device_class": "connectivity",
+            "gateway_ip": knx_info.get("gateway_ip"),
+            "gateway_port": knx_info.get("gateway_port"),
+            "latency_ms": knx_info.get("latency_ms"),
+            "icon": "mdi:transit-connection-variant"
+        }
+    )
+
+    if knx_ok and "latency_ms" in knx_info:
+        update_ha_state(
+            "sensor.gavasah_knx_latency",
+            knx_info["latency_ms"],
+            {
+                "friendly_name": "Gavasah KNX Latency",
+                "unit_of_measurement": "ms",
+                "state_class": "measurement",
+                "icon": "mdi:speedometer"
+            }
+        )
+
+    # 4. Local IP Sensor
+    update_ha_state(
+        "sensor.gavasah_local_ip",
+        net_info.get("local_ipv4", "Unknown"),
+        {
+            "friendly_name": "Gavasah Local IP Address",
+            "gateway": net_info.get("gateway"),
+            "mac_address": net_info.get("mac_address"),
+            "nameservers": net_info.get("nameservers"),
+            "icon": "mdi:ip-network"
+        }
+    )
+
+    # 5. Cloud Ingress Tunnel Status
+    dash_port = tunnels.get("assigned_dashboard_port", 10001)
+    update_ha_state(
+        "binary_sensor.gavasah_cloud_tunnel",
+        "on" if tunnels.get("ha_core_local_8123") else "off",
+        {
+            "friendly_name": "Gavasah Cloud Fleet Tunnel",
+            "device_class": "connectivity",
+            "ingress_port": dash_port,
+            "ssh_port": tunnels.get("assigned_ssh_port", 22001),
+            "icon": "mdi:cloud-check"
+        }
+    )
+
 def send_heartbeat(hub_host, payload):
-    # Sends to port 3000 (Dealer API) or port 80/443
     endpoints = [
         f"http://{hub_host}:3000/api/heartbeat",
         f"http://{hub_host}/api/heartbeat"
@@ -167,7 +286,7 @@ def send_heartbeat(hub_host, payload):
     return False, "Failed to reach hub API endpoints"
 
 def main():
-    log("Starting Gavasah Cloud Agent Telemetry Engine...")
+    log("Starting Gavasah Cloud Agent Telemetry Engine v1.0.1...")
     opts = load_options()
     hub_host = opts.get("hub_host", "122.175.49.35")
     interval = int(opts.get("heartbeat_interval", 30))
@@ -178,13 +297,18 @@ def main():
         try:
             opts = load_options()
             payload = collect_telemetry(opts)
+
+            # 1. Update native Home Assistant UI entities
+            publish_local_entities(payload)
+
+            # 2. Transmit to central dealer hub
             success, status = send_heartbeat(hub_host, payload)
+            slot = payload["system"]["boot_slot"]
+            recovery = " [RECOVERY MODE ACTIVE!]" if payload["system"]["is_recovery_mode"] else ""
             if success:
-                slot = payload["system"]["boot_slot"]
-                recovery = " [RECOVERY MODE!]" if payload["system"]["is_recovery_mode"] else ""
                 log(f"Heartbeat OK | Slot: {slot}{recovery} | IP: {payload['network']['local_ipv4']} | KNX: {payload['knx_status'].get('reachable')}")
             else:
-                log(f"Heartbeat delivery failed: {status}")
+                log(f"Heartbeat Hub Sync Notice: {status} | Local metrics captured successfully.")
         except Exception as e:
             log(f"Heartbeat loop exception: {e}")
 

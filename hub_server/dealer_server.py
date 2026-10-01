@@ -528,13 +528,16 @@ class DealerPortalHandler(BaseHTTPRequestHandler):
                         with open(STATE_FILE, 'r') as f:
                             data = json.load(f)
                     
+                    dash_port = payload.get('tunnels', {}).get('assigned_dashboard_port', 10001)
+                    ssh_port = payload.get('tunnels', {}).get('assigned_ssh_port', 22001)
+
                     if client_id not in data:
                         data[client_id] = {
                             "client_id": client_id,
                             "name": client_id.replace('-', ' ').title(),
                             "domain": f"{client_id}.gavasah.com",
-                            "dashboard_port": payload.get('tunnels', {}).get('assigned_dashboard_port', 10001),
-                            "ssh_port": payload.get('tunnels', {}).get('assigned_ssh_port', 22001),
+                            "dashboard_port": dash_port,
+                            "ssh_port": ssh_port,
                             "knx_ip": payload.get('knx_status', {}).get('gateway_ip', '192.168.1.111')
                         }
 
@@ -543,6 +546,41 @@ class DealerPortalHandler(BaseHTTPRequestHandler):
                     data[client_id]['system'] = payload.get('system', {})
                     data[client_id]['network'] = payload.get('network', {})
                     data[client_id]['knx_status'] = payload.get('knx_status', {})
+
+                    # Store incoming Ed25519 public key
+                    if payload.get('ssh_public_key'):
+                        data[client_id]['ssh_public_key'] = payload.get('ssh_public_key')
+                        keys_dir = '/srv/gavasah-cloud/keys'
+                        if os.path.exists(keys_dir):
+                            try:
+                                with open(os.path.join(keys_dir, f"{client_id}.pub"), 'w') as kf:
+                                    kf.write(payload.get('ssh_public_key'))
+                            except Exception:
+                                pass
+
+                    # Auto-provision Traefik dynamic routing if missing
+                    traefik_file = os.path.join(DYNAMIC_DIR, f"{client_id}.yaml")
+                    if not os.path.exists(traefik_file) and os.path.exists(DYNAMIC_DIR):
+                        try:
+                            traefik_yaml = f"""http:
+  routers:
+    {client_id}-rtr:
+      rule: "Host(`{client_id}.gavasah.com`)"
+      service: {client_id}-svc
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+  services:
+    {client_id}-svc:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:{dash_port}"
+"""
+                            with open(traefik_file, 'w') as tf:
+                                tf.write(traefik_yaml)
+                        except Exception:
+                            pass
 
                     with open(STATE_FILE, 'w') as f:
                         json.dump(data, f, indent=2)

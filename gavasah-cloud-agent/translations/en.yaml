@@ -1,0 +1,28 @@
+configuration:
+  hub_host:
+    name: "Dealer Cloud Hub Host"
+    description: "IP address or public FQDN of the central Gavasah Proxmox Ingress Hub (e.g., 122.175.49.35 or hub.gavasah.com)."
+  hub_ssh_port:
+    name: "Hub Ingress SSH Port"
+    description: "Port on the central hub configured for reverse SSH tunnels (Default: 2222)."
+  client_id:
+    name: "Client Site Slug / ID"
+    description: "Unique site identifier assigned to this installation (e.g., sharma-villa, client01)."
+  auth_key:
+    name: "Client Authentication Secret"
+    description: "Secret authorization token matching the entry in the central Dealer Fleet Hub."
+  remote_dashboard_port:
+    name: "Remote Ingress Web Port"
+    description: "Assigned reverse tunnel port for Home Assistant Web Dashboard (e.g. 10001)."
+  remote_ssh_port:
+    name: "Remote Ingress SSH Port"
+    description: "Assigned reverse tunnel port for terminal/SSH administration (e.g. 22001)."
+  knx_gateway_ip:
+    name: "Local KNXnet/IP Interface IP"
+    description: "Local IP address of the GAVASAH KNX-IP Gateway (e.g. 192.168.1.111)."
+  knx_gateway_port:
+    name: "KNXnet/IP UDP Port"
+    description: "KNXnet/IP port (Default: 3671)."
+  heartbeat_interval:
+    name: "Heartbeat Interval (seconds)"
+    description: "Frequency of telemetry, slot health, and KNX diagnostic updates sent to central hub (Default: 30)."
