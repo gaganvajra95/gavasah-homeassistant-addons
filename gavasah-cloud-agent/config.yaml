@@ -1,0 +1,41 @@
+name: "Gavasah Cloud Agent"
+version: "1.0.0"
+slug: "gavasah-cloud-agent"
+description: "AutoSSH Reverse Tunnel, Telemetry Heartbeat, RAUC A/B Slot Health, and KNXnet/IP Remote Fleet Relay for Gavasah Cloud Hub."
+url: "https://gavasah.com"
+arch:
+  - aarch64
+  - amd64
+  - armv7
+  - armhf
+startup: services
+boot: auto
+host_network: true
+host_dbus: true
+privileged:
+  - SYS_ADMIN
+  - NET_ADMIN
+hassio_api: true
+hassio_role: manager
+
+options:
+  hub_host: "122.175.49.35"
+  hub_ssh_port: 2222
+  client_id: "sharma-villa"
+  auth_key: "change-me"
+  remote_dashboard_port: 10001
+  remote_ssh_port: 22001
+  knx_gateway_ip: "192.168.1.111"
+  knx_gateway_port: 3671
+  heartbeat_interval: 30
+
+schema:
+  hub_host: str
+  hub_ssh_port: int
+  client_id: str
+  auth_key: password
+  remote_dashboard_port: int
+  remote_ssh_port: int
+  knx_gateway_ip: str?
+  knx_gateway_port: int?
+  heartbeat_interval: int?
