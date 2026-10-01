@@ -21,11 +21,11 @@ hassio_role: manager
 options:
   hub_host: "122.175.49.35"
   hub_ssh_port: 2222
-  client_id: "sharma-villa"
-  auth_key: "change-me"
-  remote_dashboard_port: 10001
-  remote_ssh_port: 22001
-  knx_gateway_ip: "192.168.1.111"
+  client_id: "testing-client1"
+  auth_key: "gavasah-secret-token"
+  remote_dashboard_port: 10010
+  remote_ssh_port: 22010
+  knx_gateway_ip: "127.0.0.1"
   knx_gateway_port: 3671
   heartbeat_interval: 30
 

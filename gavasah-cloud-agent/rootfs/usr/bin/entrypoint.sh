@@ -65,7 +65,16 @@ if [ -n "$KNX_IP" ]; then
     socat TCP-LISTEN:3671,fork UDP:$KNX_IP:$KNX_PORT &
 fi
 
-# 5. Launch AutoSSH Reverse Tunnel
+# 5. Detect Local Home Assistant Port (80 vs 8123)
+LOCAL_HA_PORT=8123
+if nc -z 127.0.0.1 80 2>/dev/null || (exec 3<>/dev/tcp/127.0.0.1/80) 2>/dev/null; then
+    LOCAL_HA_PORT=80
+elif nc -z 127.0.0.1 8123 2>/dev/null || (exec 3<>/dev/tcp/127.0.0.1/8123) 2>/dev/null; then
+    LOCAL_HA_PORT=8123
+fi
+echo "[+] Forwarding Ingress to Local Home Assistant Core on port $LOCAL_HA_PORT..."
+
+# 6. Launch AutoSSH Reverse Tunnel
 echo "[+] Launching AutoSSH Ingress Tunnel to $HUB_HOST:$HUB_PORT..."
 export AUTOSSH_GATETIME=0
 export AUTOSSH_POLL=30
@@ -75,6 +84,6 @@ exec autossh -M 0 -N \
     -o "ServerAliveCountMax=3" \
     -o "ExitOnForwardFailure=yes" \
     -p "$HUB_PORT" \
-    -R "127.0.0.1:${DASH_PORT}:127.0.0.1:8123" \
+    -R "127.0.0.1:${DASH_PORT}:127.0.0.1:${LOCAL_HA_PORT}" \
     -R "127.0.0.1:${SSH_PORT}:127.0.0.1:22" \
     "$CLIENT_ID@$HUB_HOST"
