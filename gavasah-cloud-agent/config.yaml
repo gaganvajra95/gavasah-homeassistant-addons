@@ -19,7 +19,7 @@ hassio_api: true
 hassio_role: manager
 
 options:
-  hub_host: "122.175.49.35"
+  hub_host: "hub.gavasah.com"
   hub_ssh_port: 2222
   client_id: "testing-client1"
   auth_key: "gavasah-secret-token"

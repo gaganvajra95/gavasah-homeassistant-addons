@@ -1,0 +1,12 @@
+# Local Hardware Backups (Sensitive Flash and Binary Dumps)
+knx_service_backup/
+
+# Python Cache & Scratch
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local Environment & Secrets
+*.env
+.DS_Store
+Thumbs.db
