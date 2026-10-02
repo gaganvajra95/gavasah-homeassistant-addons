@@ -17,6 +17,97 @@ def run_caddy_cmd(remote_py, extra_bash=""):
     ]
     subprocess.run(ssh_args, timeout=12)
 
+def sync_client_ssh_user(client_id, ssh_public_key):
+    """Ensure Linux user exists on hub and SSH public key is in authorized_keys."""
+    if not client_id or not ssh_public_key:
+        return False, "Missing client_id or ssh_public_key"
+    
+    client_id = client_id.strip().lower()
+    if not re.match(r'^[a-z0-9_-]+$', client_id):
+        return False, f"Invalid username: {client_id}"
+
+    ssh_public_key = ssh_public_key.strip()
+    if not (ssh_public_key.startswith("ssh-") or ssh_public_key.startswith("ecdsa-")):
+        return False, "Invalid SSH public key format"
+
+    try:
+        subprocess.run(["groupadd", "-f", "haclients"], check=False)
+        ret = subprocess.run(["id", client_id], capture_output=True)
+        if ret.returncode != 0:
+            res = subprocess.run([
+                "useradd", "-m", "-s", "/bin/bash", "-g", "haclients", client_id
+            ], capture_output=True, text=True)
+            if res.returncode != 0:
+                print(f"[!] Error creating system user {client_id}: {res.stderr}")
+            else:
+                print(f"[+] Created system user {client_id} for reverse tunneling")
+
+        ssh_dir = f"/home/{client_id}/.ssh"
+        auth_keys_path = f"{ssh_dir}/authorized_keys"
+        os.makedirs(ssh_dir, mode=0o700, exist_ok=True)
+        subprocess.run(["chmod", "700", ssh_dir], check=False)
+
+        existing = ""
+        if os.path.exists(auth_keys_path):
+            with open(auth_keys_path, "r", encoding="utf-8") as f:
+                existing = f.read()
+
+        if ssh_public_key not in existing:
+            with open(auth_keys_path, "a", encoding="utf-8") as f:
+                if existing and not existing.endswith("\n"):
+                    f.write("\n")
+                f.write(f"{ssh_public_key}\n")
+            print(f"[✓] Added SSH public key for {client_id}")
+
+        subprocess.run(["chmod", "600", auth_keys_path], check=False)
+        subprocess.run(["chown", "-R", f"{client_id}:haclients", ssh_dir], check=False)
+        return True, "Authorized"
+    except Exception as e:
+        print(f"[!] sync_client_ssh_user exception for {client_id}: {e}")
+        return False, str(e)
+
+def sync_caddy_ingress(client_id, dash_port, proto="http"):
+    domain = f"{client_id}.gavasah.com"
+    if proto == "https":
+        block = f"""# Client: {client_id}
+{domain} {{
+    reverse_proxy https://192.168.6.150:{dash_port} {{
+        transport http {{
+            tls_insecure_skip_verify
+        }}
+    }}
+}}"""
+    else:
+        block = f"""# Client: {client_id}
+{domain} {{
+    reverse_proxy 192.168.6.150:{dash_port}
+}}"""
+
+    py_code = f"""import re
+with open('/home/tejoram97/Caddyfile.unified', 'r') as f:
+    text = f.read()
+
+pattern = r'(?:\\s*#[^\\n]*\\n)?\\s*' + re.escape('{domain}') + r'\\s*\\{{[\\s\\S]*?\\}}'
+new_block = '''{block}'''.strip()
+
+if re.search(pattern, text):
+    existing_match = re.search(pattern, text).group(0)
+    if new_block == existing_match.strip():
+        pass
+    else:
+        text = re.sub(pattern, '\\n' + new_block, text)
+        with open('/home/tejoram97/Caddyfile.unified', 'w') as f:
+            f.write(text.strip() + '\\n')
+else:
+    text = text.rstrip() + '\\n\\n' + new_block + '\\n'
+    with open('/home/tejoram97/Caddyfile.unified', 'w') as f:
+        f.write(text.strip() + '\\n')
+"""
+    try:
+        run_caddy_cmd(py_code, "docker exec trezoriq-caddy-1 caddy reload --config /etc/caddy/Caddyfile")
+    except Exception as e:
+        print(f"[!] Error syncing Caddy for {client_id}: {e}")
+
 # Seed demo clients if file does not exist
 if not os.path.exists(STATE_FILE):
     seed_data = {
@@ -2089,6 +2180,37 @@ if target in text:
                             "knx_ip": payload.get('knx_status', {}).get('gateway_ip', '192.168.1.111')
                         }
 
+                    # Verify auth_key if configured
+                    expected_secret = data[client_id].get('auth_secret')
+                    incoming_auth = payload.get('auth_key', '').strip()
+                    if expected_secret and incoming_auth and incoming_auth != expected_secret:
+                        append_client_log(client_id, 'WARN', 'AUTH', f'Rejecting heartbeat: auth_key mismatch from {self.client_address[0]}')
+                        self.send_response(403)
+                        self.end_headers()
+                        self.wfile.write(b'{"error": "Unauthorized auth_key"}')
+                        return
+
+                    # Autonomous SSH user & key authorization
+                    ssh_pub = payload.get('ssh_public_key', '').strip()
+                    if ssh_pub:
+                        data[client_id]['ssh_public_key'] = ssh_pub
+                        ok, msg = sync_client_ssh_user(client_id, ssh_pub)
+                        if ok:
+                            append_client_log(client_id, 'SUCCESS', 'SSH_TUNNEL', f'SSH public key registered for {client_id}')
+
+                    # Auto-detect upstream protocol (HTTPS vs HTTP)
+                    ha_proto = payload.get('tunnels', {}).get('ha_proto', '')
+                    if not ha_proto:
+                        local_ip = payload.get('network', {}).get('local_ipv4', '')
+                        if local_ip in ['192.168.6.17'] or 'duckdns' in str(payload):
+                            ha_proto = 'https'
+                        else:
+                            ha_proto = 'http'
+                    
+                    # Ensure Caddy is synced with correct protocol
+                    target_dash_port = data[client_id].get('dashboard_port', dash_port)
+                    sync_caddy_ingress(client_id, target_dash_port, ha_proto)
+
                     data[client_id]['last_heartbeat'] = int(time.time())
                     data[client_id]['status'] = 'online'
                     data[client_id]['system'] = payload.get('system', {})
@@ -2177,17 +2299,23 @@ if target in text:
                 with open(STATE_FILE, 'w') as f:
                     json.dump(data, f, indent=2)
 
-                caddy_block = f"""
-# Client: {slug}
-{slug}.gavasah.com {{
-    reverse_proxy 192.168.6.150:{next_dash_port}
-}}
-"""
-                py_append = f"""
-with open('/home/tejoram97/Caddyfile.unified', 'a') as f:
-    f.write('''{caddy_block}''')
-"""
-                run_caddy_cmd(py_append, "docker exec trezoriq-caddy-1 caddy reload --config /etc/caddy/Caddyfile")
+                # Pre-create system user so it's ready when the client connects
+                subprocess.run(["groupadd", "-f", "haclients"], check=False)
+                ret = subprocess.run(["id", slug], capture_output=True)
+                if ret.returncode != 0:
+                    subprocess.run(["useradd", "-m", "-s", "/bin/bash", "-g", "haclients", slug], check=False)
+                ssh_dir = f"/home/{slug}/.ssh"
+                os.makedirs(ssh_dir, mode=0o700, exist_ok=True)
+                auth_keys_path = f"{ssh_dir}/authorized_keys"
+                if not os.path.exists(auth_keys_path):
+                    with open(auth_keys_path, "w") as f:
+                        pass
+                subprocess.run(["chmod", "700", ssh_dir], check=False)
+                subprocess.run(["chmod", "600", auth_keys_path], check=False)
+                subprocess.run(["chown", "-R", f"{slug}:haclients", ssh_dir], check=False)
+
+                # Sync initial Caddy configuration
+                sync_caddy_ingress(slug, next_dash_port, "http")
 
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
@@ -2221,6 +2349,10 @@ with open('/home/tejoram97/Caddyfile.unified', 'a') as f:
                         json.dump(data, f, indent=2)
 
                 domain = client_rec.get('domain', f'{client_id}.gavasah.com') if client_rec else f'{client_id}.gavasah.com'
+
+                # Remove system user and kill any active tunnel processes for client
+                subprocess.run(["pkill", "-u", client_id], check=False)
+                subprocess.run(["userdel", "-r", client_id], check=False)
 
                 # Remove block from Caddyfile.unified on CT 305 and purge SSL certificate directory and OCSP cache
                 py_purge = f"""

@@ -45,7 +45,7 @@ echo "----------------------------------------------------------"
 
 # 2. Disable Strict Host Key Checking for outbound tunnel
 cat <<EOF > ~/.ssh/config
-Host $HUB_HOST
+Host *
     Port $HUB_PORT
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
@@ -53,6 +53,31 @@ Host $HUB_HOST
     ServerAliveCountMax 3
     IdentityFile ~/.ssh/id_ed25519
 EOF
+
+# 2b. Synchronously Pre-register client SSH identity with Gavasah Hub
+echo "[+] Registering SSH public key with Gavasah Hub at $HUB_HOST..."
+python3 -c "
+import urllib.request, json, os
+try:
+    opts = json.load(open('$OPTIONS_PATH'))
+    hub = opts.get('hub_host', '$HUB_HOST')
+    cid = opts.get('client_id', '$CLIENT_ID')
+    sec = opts.get('auth_key', '')
+    pub = open('/data/ssh/id_ed25519.pub').read().strip() if os.path.exists('/data/ssh/id_ed25519.pub') else ''
+    if cid and pub:
+        payload = json.dumps({'client_id': cid, 'auth_key': sec, 'ssh_public_key': pub}).encode()
+        for ep in [f'http://{hub}:3000/api/heartbeat', f'http://{hub}/api/heartbeat']:
+            try:
+                req = urllib.request.Request(ep, data=payload, headers={'Content-Type': 'application/json'})
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    if r.status in [200, 201]:
+                        print('[✓] SSH Public key successfully authorized on Central Hub!')
+                        break
+            except Exception:
+                pass
+except Exception as e:
+    print('[!] Registration note:', e)
+"
 
 # 3. Start Telemetry Engine in background
 echo "[+] Starting Gavasah Telemetry & Slot Watchdog..."

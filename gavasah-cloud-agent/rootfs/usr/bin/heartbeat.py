@@ -100,11 +100,35 @@ def ping_knx_gateway(ip, port=3671, timeout=2.0):
         return {"configured": True, "reachable": False, "error": str(e), "gateway_ip": ip, "gateway_port": port}
 
 def check_tunnel_local_port(port=8123):
+    import ssl
+    # Check if HTTPS is available
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        req = urllib.request.Request(f"https://127.0.0.1:{port}/")
+        with urllib.request.urlopen(req, context=ctx, timeout=2) as r:
+            return True, "https"
+    except urllib.error.HTTPError:
+        return True, "https"
+    except Exception:
+        pass
+
+    # Check if HTTP is available
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/")
+        with urllib.request.urlopen(req, timeout=2) as r:
+            return True, "http"
+    except urllib.error.HTTPError:
+        return True, "http"
+    except Exception:
+        pass
+
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=2):
-            return True
+            return True, "http"
     except Exception:
-        return False
+        return False, "http"
 
 def collect_telemetry(opts):
     os_info = supervisor_get("os/info")
@@ -169,7 +193,7 @@ def collect_telemetry(opts):
         opts.get("knx_gateway_port", 3671)
     )
 
-    ha_alive = check_tunnel_local_port(8123)
+    ha_alive, ha_proto = check_tunnel_local_port(8123)
     pubkey = get_public_key()
 
     slot_a_state = "good (active)" if not is_recovery else "bad (failed boot, auto-fell back)"
@@ -204,6 +228,7 @@ def collect_telemetry(opts):
         "knx_status": knx_res,
         "tunnels": {
             "ha_core_local_8123": ha_alive,
+            "ha_proto": ha_proto,
             "assigned_dashboard_port": opts.get("remote_dashboard_port", 10001),
             "assigned_ssh_port": opts.get("remote_ssh_port", 22001)
         }
