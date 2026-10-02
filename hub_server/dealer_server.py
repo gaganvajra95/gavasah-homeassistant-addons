@@ -1299,10 +1299,13 @@ heartbeat_interval: 30`;
             }
         }
 
-        function promptDelete(clientId, name, domain) {
+        function promptDelete(clientId) {
+            const c = (currentFleetData && currentFleetData[clientId]) ? currentFleetData[clientId] : { client_id: clientId };
             clientToDelete = clientId;
-            document.getElementById('del-name').innerText = name;
-            document.getElementById('del-domain').innerText = domain;
+            const delNameEl = document.getElementById('del-modal-name') || document.getElementById('del-client-name');
+            const delDomainEl = document.getElementById('del-modal-domain') || document.getElementById('del-client-domain');
+            if (delNameEl) delNameEl.innerText = c.name || clientId;
+            if (delDomainEl) delDomainEl.innerText = c.domain || (clientId + '.gavasah.com');
             document.getElementById('delete-modal').style.display = 'flex';
         }
 
@@ -1407,12 +1410,17 @@ heartbeat_interval: 30`;
 
         async function fetchFleet() {
             try {
-                const res = await fetch('/api/fleet');
+                const res = await fetch('/api/fleet?t=' + Date.now());
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const data = await res.json();
                 currentFleetData = data;
                 renderTable(data);
             } catch(e) {
                 console.error("Fetch fleet error:", e);
+                const tbody = document.getElementById('fleet-table-body');
+                if (tbody && tbody.children.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; padding: 40px; color: #ef4444;">⚠️ Fleet Sync Reconnecting...</td></tr>`;
+                }
             }
         }
 
@@ -1626,12 +1634,17 @@ heartbeat_interval: 30`;
             return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         }
 
-        function openLogsModal(clientId, clientName, domain, status) {
+        function openLogsModal(clientId) {
+            const c = (currentFleetData && currentFleetData[clientId]) ? currentFleetData[clientId] : { client_id: clientId };
+            const clientName = c.name || clientId;
+            const domain = c.domain || (clientId + '.gavasah.com');
+            const status = c.status || 'online';
+
             currentLogsClient = clientId;
             currentFilter = 'ALL';
             document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.innerText === 'ALL'));
             document.getElementById('log-modal-client-title').innerText = clientName;
-            document.getElementById('log-modal-client-sub').innerText = `ID: ${clientId} • Domain: ${domain || clientId + '.gavasah.com'}`;
+            document.getElementById('log-modal-client-sub').innerText = `ID: ${clientId} • Domain: ${domain}`;
             
             const badge = document.getElementById('log-active-status-badge');
             if (status === 'online') {
@@ -1862,11 +1875,16 @@ class DealerPortalHandler(BaseHTTPRequestHandler):
         if parsed.path in ['/', '/index.html']:
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+            self.send_header('Pragma', 'no-cache')
             self.end_headers()
             self.wfile.write(HTML_PAGE.encode('utf-8'))
         elif parsed.path == '/api/fleet':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
+            self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+            self.send_header('Pragma', 'no-cache')
+            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             if os.path.exists(STATE_FILE):
                 with open(STATE_FILE, 'r') as f:
