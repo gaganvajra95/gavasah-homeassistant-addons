@@ -1734,7 +1734,7 @@ heartbeat_interval: 30`;
 
         function copyLogsToClipboard() {
             if (!currentRawLogs || currentRawLogs.length === 0) return;
-            const text = currentRawLogs.map(l => `[${l.timestamp}] [${l.level}] [${l.type || 'SYS'}] ${l.message}`).join('\n');
+            const text = currentRawLogs.map(l => `[${l.timestamp}] [${l.level}] [${l.type || 'SYS'}] ${l.message}`).join(String.fromCharCode(10));
             navigator.clipboard.writeText(text).then(() => {
                 showToast('Diagnostic logs copied to clipboard!');
             });
