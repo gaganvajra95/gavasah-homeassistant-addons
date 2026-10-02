@@ -816,7 +816,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <th>Heartbeat Status</th>
                         <th>Remote Ingress</th>
                         <th>Boot Slot (RAUC)</th>
-                        <th>KNX-IP Gateway</th>
+                        <th>Device LAN IP / KNX</th>
                         <th>Hardware Metrics</th>
                         <th>Actions</th>
                     </tr>
@@ -1358,10 +1358,28 @@ heartbeat_interval: 30`;
                     slotBadge = `<span class="badge badge-amber">Slot ${c.system.boot_slot} (Recovery Alert!)</span>`;
                 }
 
-                let knxBadge = `<span class="mono-val" style="color:#ef4444;">Offline</span>`;
+                // Auto-retrieved Device IP from heartbeat telemetry
+                const devIp = (c.network && c.network.local_ipv4 && c.network.local_ipv4 !== '0.0.0.0') 
+                    ? c.network.local_ipv4 
+                    : (c.knx_ip || '192.168.1.111');
+                
+                let knxSubtext = '';
                 if (c.knx_status && c.knx_status.reachable) {
-                    knxBadge = `<span class="mono-val" style="color:#34d399;">${c.knx_ip} (${c.knx_status.latency_ms}ms)</span>`;
+                    knxSubtext = `<div style="font-size: 11px; color: #34d399; margin-top: 3px; font-weight: 600;">🟢 KNX Bus: ${c.knx_status.latency_ms}ms</div>`;
+                } else if (c.knx_status && c.knx_status.configured) {
+                    knxSubtext = `<div style="font-size: 11px; color: #fbbf24; margin-top: 3px;">⚠️ KNX: Standby (Port ${c.knx_port || 3671})</div>`;
+                } else {
+                    knxSubtext = `<div style="font-size: 11px; color: #94a3b8; margin-top: 3px;">KNX: Port ${c.knx_port || 3671}</div>`;
                 }
+
+                let knxBadge = `
+                    <div>
+                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700; color: #f8fafc; letter-spacing: 0.3px;">
+                            ${devIp}
+                        </div>
+                        ${knxSubtext}
+                    </div>
+                `;
 
                 const remoteBadge = isRemoteOn ?
                     `<span class="badge badge-green">Active</span>` :
