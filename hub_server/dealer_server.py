@@ -816,7 +816,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <th>Heartbeat Status</th>
                         <th>Remote Ingress</th>
                         <th>Boot Slot (RAUC)</th>
-                        <th>Device LAN IP / KNX</th>
+                        <th>Device LAN IP & Bus</th>
                         <th>Hardware Metrics</th>
                         <th>Actions</th>
                     </tr>
@@ -854,10 +854,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <button type="button" class="btn-icon" title="Copy secret" onclick="copyInput('onb-secret', 'Secret copied to clipboard')">📋</button>
                     </div>
                 </div>
-                <div class="form-group">
-                    <label>KNX Gateway IP (Client Local)</label>
-                    <input type="text" id="onb-knx" class="form-control" placeholder="e.g. 192.168.1.111" value="192.168.1.111">
-                </div>
+
                 <div style="display: flex; gap: 10px; margin-top: 24px;">
                     <button type="button" class="btn-sm" style="flex: 1; justify-content: center; padding: 10px;" onclick="closeModal()">Cancel</button>
                     <button type="submit" class="btn-action" style="flex: 2; padding: 10px; justify-content: center;">Provision Site & Ingress</button>
@@ -1358,28 +1355,44 @@ heartbeat_interval: 30`;
                     slotBadge = `<span class="badge badge-amber">Slot ${c.system.boot_slot} (Recovery Alert!)</span>`;
                 }
 
-                // Auto-retrieved Device IP from heartbeat telemetry
-                const devIp = (c.network && c.network.local_ipv4 && c.network.local_ipv4 !== '0.0.0.0') 
+                // Genuine Device LAN IP auto-retrieved from hardware heartbeat telemetry
+                const devIp = (c.network && c.network.local_ipv4 && c.network.local_ipv4 !== 'Unknown' && c.network.local_ipv4 !== '0.0.0.0') 
                     ? c.network.local_ipv4 
-                    : (c.knx_ip || '192.168.1.111');
+                    : null;
                 
                 let knxSubtext = '';
                 if (c.knx_status && c.knx_status.reachable) {
-                    knxSubtext = `<div style="font-size: 11px; color: #34d399; margin-top: 3px; font-weight: 600;">🟢 KNX Bus: ${c.knx_status.latency_ms}ms</div>`;
-                } else if (c.knx_status && c.knx_status.configured) {
-                    knxSubtext = `<div style="font-size: 11px; color: #fbbf24; margin-top: 3px;">⚠️ KNX: Standby (Port ${c.knx_port || 3671})</div>`;
+                    knxSubtext = `<div style="font-size: 10px; color: #34d399; margin-top: 3px; font-weight: 600;">🟢 KNX Bus: ${c.knx_status.latency_ms}ms (Active)</div>`;
                 } else {
-                    knxSubtext = `<div style="font-size: 11px; color: #94a3b8; margin-top: 3px;">KNX: Port ${c.knx_port || 3671}</div>`;
+                    knxSubtext = `<div style="font-size: 10px; color: #fbbf24; margin-top: 3px;" title="KNX UDP Port 3671 in idle/standby ready for ETS">⚠️ KNX: Standby (Port 3671)</div>`;
                 }
 
-                let knxBadge = `
-                    <div>
-                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700; color: #f8fafc; letter-spacing: 0.3px;">
-                            ${devIp}
+                let knxBadge = '';
+                if (devIp) {
+                    knxBadge = `
+                        <div>
+                            <div style="font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700; color: #fff; letter-spacing: 0.3px; display: flex; align-items: center; gap: 6px;">
+                                <span class="dot dot-green" style="width: 6px; height: 6px;"></span>
+                                <span>${devIp}</span>
+                            </div>
+                            <div style="font-size: 10px; color: #94a3b8; margin-top: 2px; font-family: 'JetBrains Mono', monospace;">
+                                MAC: ${c.network.mac_address || 'Auto-Detected'}
+                            </div>
+                            ${knxSubtext}
                         </div>
-                        ${knxSubtext}
-                    </div>
-                `;
+                    `;
+                } else {
+                    knxBadge = `
+                        <div>
+                            <div style="color: #94a3b8; font-size: 12px; display: flex; align-items: center; gap: 6px;">
+                                <span class="dot dot-amber" style="width: 6px; height: 6px;"></span>
+                                <span>Awaiting Device Sync</span>
+                            </div>
+                            <div style="font-size: 10px; color: #64748b; margin-top: 2px;">Auto-discovering LAN IP...</div>
+                            ${knxSubtext}
+                        </div>
+                    `;
+                }
 
                 const remoteBadge = isRemoteOn ?
                     `<span class="badge badge-green">Active</span>` :
@@ -1496,16 +1509,15 @@ heartbeat_interval: 30`;
             e.preventDefault();
             const name = document.getElementById('onb-name').value;
             const slug = document.getElementById('onb-slug').value.trim().toLowerCase();
-            const knx = document.getElementById('onb-knx').value.trim();
             const auth_secret = document.getElementById('onb-secret').value.trim();
 
             const res = await fetch('/api/onboard', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({name, slug, knx, auth_secret})
+                body: JSON.stringify({name, slug, auth_secret})
             });
             const out = await res.json();
-            alert(`Client ${name} onboarded successfully!\\n\\nAssigned Tunnel Port: ${out.dashboard_port}\\nAssigned SSH Port: ${out.ssh_port}\\nDomain: https://${out.domain}\\nAuth Secret: ${out.auth_secret}`);
+            alert(`Client ${name} onboarded successfully!\\n\\nAssigned Ingress Port: ${out.dashboard_port}\\nAssigned SSH Port: ${out.ssh_port}\\nDomain: https://${out.domain}\\nAuth Secret: ${out.auth_secret}\\n\\nDevice LAN IP will be auto-discovered automatically once the Home Assistant gateway connects!`);
             closeModal();
             fetchFleet();
         }
