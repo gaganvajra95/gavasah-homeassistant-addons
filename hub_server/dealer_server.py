@@ -4,107 +4,9 @@ from urllib.parse import urlparse, parse_qs
 
 STATE_FILE = '/srv/gavasah-cloud/clients_state.json'
 DYNAMIC_DIR = '/srv/gavasah-cloud/dynamic'
-LOGS_DIR = '/srv/gavasah-cloud/client_logs'
 PORT = 3000
 
-os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(DYNAMIC_DIR, exist_ok=True)
-
-def append_client_log(client_id, level, event_type, message):
-    os.makedirs(LOGS_DIR, exist_ok=True)
-    log_file = os.path.join(LOGS_DIR, f"{client_id}.json")
-    logs = []
-    if os.path.exists(log_file):
-        try:
-            with open(log_file, 'r', encoding='utf-8') as f:
-                logs = json.load(f)
-        except Exception:
-            logs = []
-    
-    entry = {
-        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "epoch": int(time.time()),
-        "level": level,
-        "type": event_type,
-        "message": message
-    }
-    logs.append(entry)
-    if len(logs) > 200:
-        logs = logs[-200:]
-    try:
-        with open(log_file, 'w', encoding='utf-8') as f:
-            json.dump(logs, f, indent=2)
-    except Exception as e:
-        print(f"Failed to write log for {client_id}: {e}")
-
-def generate_seed_logs(client_id):
-    now = datetime.datetime.now()
-    t = lambda m_ago: (now - datetime.timedelta(minutes=m_ago)).strftime("%Y-%m-%d %H:%M:%S")
-    e = lambda m_ago: int(time.time()) - (m_ago * 60)
-
-    if client_id == 'testing-client1':
-        return [
-            {"timestamp": t(45), "epoch": e(45), "level": "INFO", "type": "BOOT", "message": "Host system booted into RAUC Slot A (HAOS 18.0, generic-aarch64)."},
-            {"timestamp": t(44), "epoch": e(44), "level": "INFO", "type": "NETWORK", "message": "Network interface connected. Auto-retrieved local LAN IP: 192.168.1.111, Gateway: 192.168.1.1, MAC: 4E:5B:1C:0E:EF:8D."},
-            {"timestamp": t(42), "epoch": e(42), "level": "INFO", "type": "AGENT", "message": "Gavasah Cloud Agent v1.0.1 service initialized with supervisor_api & host_dbus privileges."},
-            {"timestamp": t(40), "epoch": e(40), "level": "INFO", "type": "TUNNEL", "message": "AutoSSH reverse tunnel active: Local 8123 -> Hub Port 10010 (testing-client1.gavasah.com)."},
-            {"timestamp": t(38), "epoch": e(38), "level": "WARN", "type": "KNX", "message": "KNX Gateway IP unconfigured (127.0.0.1 placeholder detected). Configure physical KNX IP in Add-on options."},
-            {"timestamp": t(5), "epoch": e(5), "level": "INFO", "type": "HEARTBEAT", "message": "Telemetry heartbeat received from 49.205.114.180. Slot A healthy, Local IP 192.168.1.111, CPU 0%, RAM 28%."},
-            {"timestamp": t(1), "epoch": e(1), "level": "INFO", "type": "HEARTBEAT", "message": "Telemetry heartbeat received from 49.205.114.180. Slot A healthy, Local IP 192.168.1.111, Free Disk: 10.1 GB."}
-        ]
-    elif client_id == 'reddy-estate':
-        return [
-            {"timestamp": t(180), "epoch": e(180), "level": "INFO", "type": "BOOT", "message": "System initiated boot sequence on primary Slot A (HAOS 13.1)."},
-            {"timestamp": t(175), "epoch": e(175), "level": "ERROR", "type": "RAUC", "message": "Kernel panic detected on Slot A! Hardware watchdog tripped after boot failure."},
-            {"timestamp": t(174), "epoch": e(174), "level": "WARN", "type": "RAUC", "message": "RAUC bootloader auto-switched active partition to fallback Slot B."},
-            {"timestamp": t(170), "epoch": e(170), "level": "INFO", "type": "BOOT", "message": "System rebooted successfully into backup Slot B (HAOS 13.1 Recovery Mode)."},
-            {"timestamp": t(168), "epoch": e(168), "level": "WARN", "type": "ALERT", "message": "Dealer Alert generated: Client running in RECOVERY MODE on Slot B. Slot A requires firmware re-flash."},
-            {"timestamp": t(12), "epoch": e(12), "level": "INFO", "type": "KNX", "message": "KNXnet/IP Router 192.168.0.150 reachable (latency: 4.8ms)."}
-        ]
-    elif client_id == 'sharma-villa':
-        return [
-            {"timestamp": t(120), "epoch": e(120), "level": "INFO", "type": "BOOT", "message": "Boot Slot A active (HAOS 13.2). Core version 2026.9.3."},
-            {"timestamp": t(118), "epoch": e(118), "level": "INFO", "type": "NETWORK", "message": "Auto-retrieved local LAN IP: 192.168.1.105, Gateway: 192.168.1.1."},
-            {"timestamp": t(115), "epoch": e(115), "level": "INFO", "type": "KNX", "message": "KNXnet/IP Gateway 192.168.1.111 verified healthy (latency: 1.4ms)."},
-            {"timestamp": t(60), "epoch": e(60), "level": "INFO", "type": "HEARTBEAT", "message": "Heartbeat telemetry OK. Slot A good, Memory 41.2%, Disk Free 182.4 GB."}
-        ]
-    elif client_id == 'verma-penthouse':
-        return [
-            {"timestamp": t(90), "epoch": e(90), "level": "INFO", "type": "BOOT", "message": "Boot Slot A active (HAOS 13.2). Core version 2026.9.3."},
-            {"timestamp": t(88), "epoch": e(88), "level": "INFO", "type": "NETWORK", "message": "Auto-retrieved local LAN IP: 192.168.29.15, Gateway: 192.168.29.1."},
-            {"timestamp": t(85), "epoch": e(85), "level": "INFO", "type": "KNX", "message": "KNXnet/IP Gateway 192.168.1.200 verified healthy (latency: 2.1ms)."},
-            {"timestamp": t(30), "epoch": e(30), "level": "INFO", "type": "HEARTBEAT", "message": "Heartbeat telemetry OK. Slot A good, Memory 35.0%, Disk Free 210.8 GB."}
-        ]
-    elif client_id == 'vajju-Vja-house':
-        return [
-            {"timestamp": t(200), "epoch": e(200), "level": "INFO", "type": "ONBOARD", "message": "Site 'Vajju VJA house' provisioned via Dealer Portal. Assigned Ingress Port 10011, SSH Port 22011."},
-            {"timestamp": t(199), "epoch": e(199), "level": "INFO", "type": "ROUTER", "message": "Traefik router registered Host(`vajju-vja-house.gavasah.com`)."},
-            {"timestamp": t(195), "epoch": e(195), "level": "WARN", "type": "NETWORK", "message": "Awaiting initial physical hardware connection. Local LAN IP will auto-sync on first heartbeat."}
-        ]
-    else:
-        return [
-            {"timestamp": t(10), "epoch": e(10), "level": "INFO", "type": "ONBOARD", "message": f"Client site '{client_id}' registered."},
-            {"timestamp": t(9), "epoch": e(9), "level": "INFO", "type": "TUNNEL", "message": "Awaiting device heartbeat and reverse tunnel connection."}
-        ]
-
-def get_client_logs(client_id):
-    os.makedirs(LOGS_DIR, exist_ok=True)
-    log_file = os.path.join(LOGS_DIR, f"{client_id}.json")
-    if os.path.exists(log_file):
-        try:
-            with open(log_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if data:
-                    return data
-        except Exception:
-            pass
-    seed = generate_seed_logs(client_id)
-    try:
-        with open(log_file, 'w', encoding='utf-8') as f:
-            json.dump(seed, f, indent=2)
-    except Exception:
-        pass
-    return seed
 
 # Seed demo clients if file does not exist
 if not os.path.exists(STATE_FILE):
@@ -185,7 +87,7 @@ if not os.path.exists(STATE_FILE):
                 "haos_version": "13.1",
                 "core_version": "2026.9.1",
                 "boot_slot": "B",
-                "is_recovery_mode": True,
+                "is_recovery_mode": true,
                 "slot_a_status": "bad (kernel panic auto-recovered)",
                 "slot_b_status": "good (active fallback)",
                 "cpu_percent": 18.2,
@@ -439,7 +341,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .client-info span { font-size: 12px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
         .mono-val { font-family: 'JetBrains Mono', monospace; color: #cbd5e1; font-size: 12px; }
 
-        .action-links { display: flex; gap: 6px; align-items: center; }
+        .action-links { display: flex; gap: 8px; align-items: center; }
         .btn-sm {
             padding: 6px 12px;
             border-radius: 6px;
@@ -458,10 +360,8 @@ HTML_PAGE = """<!DOCTYPE html>
         .btn-sm:hover { background: rgba(255, 255, 255, 0.1); color: #fff; border-color: var(--primary); }
         .btn-primary-sm { background: rgba(56, 189, 248, 0.15); border-color: rgba(56, 189, 248, 0.4); color: var(--primary); }
         .btn-primary-sm:hover { background: var(--primary); color: #000; }
-        .btn-logs-sm { background: rgba(168, 85, 247, 0.15); border-color: rgba(168, 85, 247, 0.4); color: #c084fc; }
-        .btn-logs-sm:hover { background: #a855f7; color: #fff; }
 
-        /* Modals */
+        /* Modal */
         .modal {
             display: none;
             position: fixed;
@@ -494,91 +394,6 @@ HTML_PAGE = """<!DOCTYPE html>
             font-family: inherit;
         }
         .form-control:focus { outline: none; border-color: var(--primary); }
-
-        /* Dedicated Logs Modal (Only appears when icon is clicked) */
-        .modal-logs-card {
-            background: #090e1a;
-            border: 1px solid rgba(56, 189, 248, 0.25);
-            border-radius: 16px;
-            width: 960px;
-            max-width: 95vw;
-            max-height: 88vh;
-            display: flex;
-            flex-direction: column;
-            padding: 24px;
-            box-shadow: 0 25px 60px rgba(0, 0, 0, 0.8);
-        }
-        .terminal-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding-bottom: 14px;
-            border-bottom: 1px solid var(--border);
-            margin-bottom: 14px;
-        }
-        .terminal-sub-bar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-            font-size: 12px;
-        }
-        .filter-pills { display: flex; gap: 6px; }
-        .filter-btn {
-            background: rgba(255, 255, 255, 0.04);
-            border: 1px solid var(--border);
-            color: var(--text-muted);
-            padding: 4px 10px;
-            border-radius: 6px;
-            font-size: 11px;
-            font-family: 'JetBrains Mono', monospace;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .filter-btn.active, .filter-btn:hover {
-            background: rgba(56, 189, 248, 0.15);
-            color: var(--primary);
-            border-color: rgba(56, 189, 248, 0.4);
-        }
-        .terminal-box {
-            background: #030610;
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 10px;
-            padding: 16px;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 12px;
-            color: #cbd5e1;
-            overflow-y: auto;
-            flex: 1;
-            min-height: 380px;
-            max-height: 500px;
-            line-height: 1.7;
-        }
-        .log-line {
-            display: flex;
-            gap: 12px;
-            align-items: baseline;
-            padding: 4px 6px;
-            border-radius: 4px;
-            transition: background 0.15s;
-        }
-        .log-line:hover { background: rgba(255, 255, 255, 0.04); }
-        .log-time { color: #64748b; font-size: 11px; white-space: nowrap; }
-        .log-tag {
-            font-size: 10px;
-            font-weight: 700;
-            padding: 2px 7px;
-            border-radius: 4px;
-            letter-spacing: 0.5px;
-            white-space: nowrap;
-        }
-        .log-tag-INFO { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); }
-        .log-tag-WARN { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
-        .log-tag-ERROR { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
-        .log-tag-HEARTBEAT { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
-        .log-tag-BOOT { background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); }
-        .log-tag-RAUC { background: rgba(236, 72, 153, 0.2); color: #f472b6; border: 1px solid rgba(236, 72, 153, 0.4); }
-        .log-msg { word-break: break-word; color: #e2e8f0; }
     </style>
 </head>
 <body>
@@ -640,7 +455,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <th>Local Network (Auto)</th>
                         <th>KNX-IP Gateway</th>
                         <th>Hardware Metrics</th>
-                        <th>Actions & Logs</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="fleet-table-body">
@@ -680,161 +495,9 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
     </div>
 
-    <!-- Client Logs Modal (Only appears when clicking the Logs icon) -->
-    <div class="modal" id="logs-modal" onclick="handleLogsModalBackdrop(event)">
-        <div class="modal-logs-card" onclick="event.stopPropagation()">
-            <div class="terminal-header">
-                <div>
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--primary); text-transform: uppercase; letter-spacing: 0.5px;">DIAGNOSTIC & TELEMETRY LOGS</span>
-                        <span id="log-active-status-badge" class="badge badge-green" style="font-size: 10px;">ONLINE</span>
-                    </div>
-                    <h2 id="log-modal-client-title" style="font-size: 18px; margin-top: 4px; font-weight: 700;">Client Logs</h2>
-                    <div id="log-modal-client-sub" style="font-size: 12px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; margin-top: 2px;"></div>
-                </div>
-                <div style="cursor: pointer; font-size: 24px; color: var(--text-muted); line-height: 1;" onclick="closeLogsModal()" title="Close Logs">&times;</div>
-            </div>
-
-            <div class="terminal-sub-bar">
-                <div class="filter-pills">
-                    <button class="filter-btn active" onclick="setLogFilter('ALL')">ALL</button>
-                    <button class="filter-btn" onclick="setLogFilter('HEARTBEAT')">HEARTBEATS</button>
-                    <button class="filter-btn" onclick="setLogFilter('RAUC')">RAUC / BOOT</button>
-                    <button class="filter-btn" onclick="setLogFilter('KNX')">KNX</button>
-                    <button class="filter-btn" onclick="setLogFilter('WARN')">WARNINGS & ERRORS</button>
-                </div>
-                <div style="display: flex; gap: 8px;">
-                    <button class="btn-sm" onclick="refreshCurrentLogs()">🔄 Refresh</button>
-                    <button class="btn-sm" onclick="copyLogsToClipboard()">📋 Copy</button>
-                </div>
-            </div>
-
-            <div class="terminal-box" id="logs-terminal-stream">
-                <div style="color: #64748b; font-style: italic;">Loading diagnostic log stream...</div>
-            </div>
-        </div>
-    </div>
-
     <script>
-        let currentLogsClient = null;
-        let currentRawLogs = [];
-        let currentFilter = 'ALL';
-
         function openModal() { document.getElementById('onboard-modal').style.display = 'flex'; }
         function closeModal() { document.getElementById('onboard-modal').style.display = 'none'; }
-
-        function openLogsModal(clientId, clientName, domain, status) {
-            currentLogsClient = clientId;
-            currentFilter = 'ALL';
-            document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.innerText === 'ALL'));
-            document.getElementById('log-modal-client-title').innerText = clientName;
-            document.getElementById('log-modal-client-sub').innerText = `ID: ${clientId} • Domain: ${domain || clientId + '.gavasah.com'}`;
-            
-            const badge = document.getElementById('log-active-status-badge');
-            if (status === 'online') {
-                badge.className = 'badge badge-green';
-                badge.innerText = 'ONLINE';
-            } else if (status === 'warning') {
-                badge.className = 'badge badge-amber';
-                badge.innerText = 'WARNING';
-            } else {
-                badge.className = 'badge badge-red';
-                badge.innerText = 'OFFLINE / LOST';
-            }
-
-            document.getElementById('logs-modal').style.display = 'flex';
-            refreshCurrentLogs();
-        }
-
-        function closeLogsModal() {
-            document.getElementById('logs-modal').style.display = 'none';
-            currentLogsClient = null;
-        }
-
-        function handleLogsModalBackdrop(e) {
-            if (e.target.id === 'logs-modal') {
-                closeLogsModal();
-            }
-        }
-
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                closeLogsModal();
-                closeModal();
-            }
-        });
-
-        async function refreshCurrentLogs() {
-            if (!currentLogsClient) return;
-            const term = document.getElementById('logs-terminal-stream');
-            try {
-                const res = await fetch(`/api/logs?client_id=${currentLogsClient}`);
-                const data = await res.json();
-                currentRawLogs = data.logs || [];
-                renderLogs(currentRawLogs, currentFilter);
-            } catch (err) {
-                term.innerHTML = `<div style="color: #ef4444;">Error fetching logs: ${err}</div>`;
-            }
-        }
-
-        function setLogFilter(filter) {
-            currentFilter = filter;
-            document.querySelectorAll('.filter-btn').forEach(b => {
-                b.classList.toggle('active', b.innerText === filter || (filter === 'WARN' && b.innerText.includes('WARNINGS')));
-            });
-            renderLogs(currentRawLogs, currentFilter);
-        }
-
-        function renderLogs(logs, filter) {
-            const term = document.getElementById('logs-terminal-stream');
-            term.innerHTML = '';
-
-            let filtered = logs;
-            if (filter === 'HEARTBEAT') {
-                filtered = logs.filter(l => l.type === 'HEARTBEAT');
-            } else if (filter === 'RAUC') {
-                filtered = logs.filter(l => l.type === 'RAUC' || l.type === 'BOOT');
-            } else if (filter === 'KNX') {
-                filtered = logs.filter(l => l.type === 'KNX');
-            } else if (filter === 'WARN') {
-                filtered = logs.filter(l => l.level === 'WARN' || l.level === 'ERROR');
-            }
-
-            if (filtered.length === 0) {
-                term.innerHTML = `<div style="color: #64748b; padding: 20px; text-align: center; font-style: italic;">No log records matching filter '${filter}'.</div>`;
-                return;
-            }
-
-            filtered.forEach(l => {
-                const row = document.createElement('div');
-                row.className = 'log-line';
-                const tagClass = `log-tag-${l.level || 'INFO'}`;
-                const typeTag = l.type ? `<span class="log-tag log-tag-${l.type}">${l.type}</span>` : '';
-
-                row.innerHTML = `
-                    <span class="log-time">[${l.timestamp}]</span>
-                    <span class="log-tag ${tagClass}">${l.level}</span>
-                    ${typeTag}
-                    <span class="log-msg">${escapeHtml(l.message)}</span>
-                `;
-                term.appendChild(row);
-            });
-
-            term.scrollTop = term.scrollHeight;
-        }
-
-        function copyLogsToClipboard() {
-            if (!currentRawLogs || currentRawLogs.length === 0) return;
-            const text = currentRawLogs.map(l => `[${l.timestamp}] [${l.level}] [${l.type || 'SYS'}] ${l.message}`).join('\n');
-            navigator.clipboard.writeText(text).then(() => {
-                alert('Diagnostic logs copied to clipboard!');
-            });
-        }
-
-        function escapeHtml(text) {
-            if (!text) return '';
-            return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-        }
 
         async function fetchFleet() {
             try {
@@ -870,7 +533,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <span class="pulse-dot-amber" style="animation: none; opacity: 0.6;" title="Awaiting first heartbeat"></span>
                             <div>
                                 <span class="badge" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.3);">PENDING</span>
-                                <div style="font-size: 10px; color: #64748b; font-family: 'JetBrains Mono', monospace; margin-top: 3px;">Awaiting First Ping</div>
+                                <div style="font-size: 11px; color: #64748b; font-family: 'JetBrains Mono', monospace; margin-top: 3px;">Awaiting First Ping</div>
                             </div>
                         </div>
                     `;
@@ -897,38 +560,12 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         `;
                     } else {
-                        // HEARTBEAT LOST - DISPLAY EXACTLY WHEN IT WAS LOST
-                        const lostDate = new Date(lastHb * 1000);
-                        const lostTime = lostDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
-                        const lostDateStr = lostDate.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
-                        
-                        let elapsed = '';
-                        if (diff < 3600) {
-                            elapsed = `${Math.floor(diff / 60)}m ago`;
-                        } else if (diff < 86400) {
-                            const hours = Math.floor(diff / 3600);
-                            const mins = Math.floor((diff % 3600) / 60);
-                            elapsed = `${hours}h ${mins}m ago`;
-                        } else {
-                            const days = Math.floor(diff / 86400);
-                            const hours = Math.floor((diff % 86400) / 3600);
-                            elapsed = `${days}d ${hours}h ago`;
-                        }
-
                         hbBadge = `
                             <div style="display: flex; align-items: center; gap: 10px;">
                                 <span class="pulse-dot-red" title="Heartbeat lost"></span>
                                 <div>
-                                    <div style="display: flex; align-items: center; gap: 6px;">
-                                        <span class="badge" style="background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4);">LOST</span>
-                                        <span style="font-size: 10px; color: #ef4444; font-weight: 700; font-family: 'JetBrains Mono', monospace;">OFFLINE</span>
-                                    </div>
-                                    <div style="font-size: 11px; color: #fca5a5; font-weight: 600; font-family: 'JetBrains Mono', monospace; margin-top: 4px;">
-                                        Lost at: ${lostTime}
-                                    </div>
-                                    <div style="font-size: 10px; color: #94a3b8; font-family: 'JetBrains Mono', monospace;">
-                                        ${lostDateStr} (${elapsed})
-                                    </div>
+                                    <span class="badge badge-red">LOST</span>
+                                    <div style="font-size: 11px; color: #ef4444; font-family: 'JetBrains Mono', monospace; margin-top: 3px;">${Math.floor(diff/60)}m ago</div>
                                 </div>
                             </div>
                         `;
@@ -1016,10 +653,6 @@ HTML_PAGE = """<!DOCTYPE html>
                     hwBadge = `<span style="font-size: 11px; color: #64748b; font-style: italic;">Awaiting telemetry...</span>`;
                 }
 
-                const clientNameEsc = (c.name || id).replace(/'/g, "\'");
-                const domainEsc = (c.domain || id + '.gavasah.com').replace(/'/g, "\'");
-                const statusEsc = (c.status || 'unknown').replace(/'/g, "\'");
-
                 tr.innerHTML = `
                     <td>
                         <div class="client-info">
@@ -1034,9 +667,8 @@ HTML_PAGE = """<!DOCTYPE html>
                     <td>${hwBadge}</td>
                     <td>
                         <div class="action-links">
-                            <a href="https://${c.domain}" target="_blank" class="btn-sm btn-primary-sm" title="Open Home Assistant Web Dashboard">🌐 HA</a>
-                            <button class="btn-sm btn-logs-sm" onclick="openLogsModal('${id}', '${clientNameEsc}', '${domainEsc}', '${statusEsc}')" title="Click to view Diagnostic & Telemetry Logs">📜 Logs</button>
-                            <button class="btn-sm" onclick="copySSH('${c.ssh_port}', '${c.client_id}')" title="Copy Remote SSH Command">💻 SSH</button>
+                            <a href="https://${c.domain}" target="_blank" class="btn-sm btn-primary-sm" title="Open Home Assistant Web Dashboard">🌐 Dashboard</a>
+                            <button class="btn-sm" onclick="copySSH('${c.ssh_port}', '${c.client_id}')" title="Copy Remote SSH Command">💻 Copy SSH</button>
                         </div>
                     </td>
                 `;
@@ -1095,14 +727,6 @@ class DealerPortalHandler(BaseHTTPRequestHandler):
                     self.wfile.write(f.read().encode('utf-8'))
             else:
                 self.wfile.write(b'{}')
-        elif parsed.path == '/api/logs':
-            qs = parse_qs(parsed.query)
-            client_id = qs.get('client_id', [''])[0]
-            logs = get_client_logs(client_id) if client_id else []
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({"client_id": client_id, "logs": logs}).encode('utf-8'))
         else:
             self.send_response(404)
             self.end_headers()
@@ -1140,20 +764,6 @@ class DealerPortalHandler(BaseHTTPRequestHandler):
 
                     with open(STATE_FILE, 'w', encoding='utf-8') as f:
                         json.dump(data, f, indent=2)
-
-                    # Log heartbeat entry
-                    sys_info = payload.get('system', {})
-                    net_info = payload.get('network', {})
-                    knx_info = payload.get('knx_status', {})
-                    is_rec = sys_info.get('is_recovery_mode', False)
-                    slot = sys_info.get('boot_slot', 'A')
-                    remote_ip = self.client_address[0]
-                    local_ip = net_info.get('local_ipv4', 'Unknown')
-                    
-                    knx_desc = "Online" if knx_info.get('reachable') else ("Not Configured" if knx_info.get('reason') == 'unconfigured' or knx_info.get('gateway_ip') in ['127.0.0.1', ''] else f"Unreachable ({knx_info.get('error', 'timeout')})")
-                    
-                    msg = f"Telemetry received from {remote_ip}: RAUC Slot {slot} ({'RECOVERY FALLBACK!' if is_rec else 'Healthy'}) | LAN IP: {local_ip} | KNX: {knx_desc} | Free Disk: {sys_info.get('disk_free_gb', 0)}GB | CPU: {sys_info.get('cpu_percent', 0)}%"
-                    append_client_log(client_id, "WARN" if is_rec else "INFO", "HEARTBEAT", msg)
 
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/json')
@@ -1207,9 +817,6 @@ class DealerPortalHandler(BaseHTTPRequestHandler):
                 data[slug] = client_record
                 with open(STATE_FILE, 'w', encoding='utf-8') as f:
                     json.dump(data, f, indent=2)
-
-                append_client_log(slug, "INFO", "ONBOARD", f"Site '{name}' provisioned. Assigned ingress port: {next_dash_port}, SSH port: {next_ssh_port}.")
-                append_client_log(slug, "INFO", "NETWORK", "Awaiting initial physical hardware connection. Local LAN IP will auto-sync on first heartbeat.")
 
                 os.makedirs(DYNAMIC_DIR, exist_ok=True)
                 traefik_yaml = f"""http:
