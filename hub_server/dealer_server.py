@@ -15,7 +15,11 @@ def run_caddy_cmd(remote_py, extra_bash=""):
         "ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
         f"root@{CADDY_HOST}", cmd
     ]
-    subprocess.run(ssh_args, timeout=12)
+    res = subprocess.run(ssh_args, capture_output=True, text=True, timeout=15)
+    if res.returncode != 0:
+        print(f"[!] run_caddy_cmd failed (code {res.returncode}): {res.stderr}")
+        return False
+    return True
 
 def sync_client_ssh_user(client_id, ssh_public_key):
     """Ensure Linux user exists on hub and SSH public key is in authorized_keys."""
@@ -66,9 +70,14 @@ def sync_client_ssh_user(client_id, ssh_public_key):
         print(f"[!] sync_client_ssh_user exception for {client_id}: {e}")
         return False, str(e)
 
-def sync_caddy_ingress(client_id, dash_port, proto="http"):
+def sync_caddy_ingress(client_id, dash_port, proto="http", enabled=True):
     domain = f"{client_id}.gavasah.com"
-    if proto == "https":
+    if not enabled:
+        block = f"""# Client: {client_id}
+{domain} {{
+    respond "Remote Access Suspended by Dealer" 403
+}}"""
+    elif proto == "https":
         block = f"""# Client: {client_id}
 {domain} {{
     reverse_proxy https://192.168.6.150:{dash_port} {{
@@ -83,28 +92,26 @@ def sync_caddy_ingress(client_id, dash_port, proto="http"):
     reverse_proxy 192.168.6.150:{dash_port}
 }}"""
 
-    py_code = f"""import re
+    py_code = f"""import re, subprocess
 with open('/home/tejoram97/Caddyfile.unified', 'r') as f:
     text = f.read()
 
-pattern = r'(?:\\s*#[^\\n]*\\n)?\\s*' + re.escape('{domain}') + r'\\s*\\{{[\\s\\S]*?\\}}'
+domain = '{domain}'
 new_block = '''{block}'''.strip()
 
-if re.search(pattern, text):
-    existing_match = re.search(pattern, text).group(0)
-    if new_block == existing_match.strip():
-        pass
-    else:
-        text = re.sub(pattern, '\\n' + new_block, text)
-        with open('/home/tejoram97/Caddyfile.unified', 'w') as f:
-            f.write(text.strip() + '\\n')
+pattern = re.compile(r'(?:^[ \\t]*#[^\\n]*\\n)?^[ \\t]*' + re.escape(domain) + r'[ \\t]*\\{{[\\s\\S]*?(?=^(?:[a-zA-Z0-9_#\\(\\)]|\\Z))', re.MULTILINE)
+m = pattern.search(text)
+if m and text.count(domain) == 1 and m.group(0).strip() == new_block:
+    pass
 else:
-    text = text.rstrip() + '\\n\\n' + new_block + '\\n'
+    text = pattern.sub('', text).strip()
+    text = text + '\\n\\n' + new_block + '\\n'
     with open('/home/tejoram97/Caddyfile.unified', 'w') as f:
-        f.write(text.strip() + '\\n')
+        f.write(text)
+    subprocess.run(['docker', 'exec', 'trezoriq-caddy-1', 'caddy', 'reload', '--config', '/etc/caddy/Caddyfile'], check=True)
 """
     try:
-        run_caddy_cmd(py_code, "docker exec trezoriq-caddy-1 caddy reload --config /etc/caddy/Caddyfile")
+        run_caddy_cmd(py_code)
     except Exception as e:
         print(f"[!] Error syncing Caddy for {client_id}: {e}")
 
@@ -2073,29 +2080,14 @@ class DealerPortalHandler(BaseHTTPRequestHandler):
                         json.dump(data, f, indent=2)
 
                 target_port = data.get(client_id, {}).get('dashboard_port', 10010)
-                if not enabled:
-                    py_snippet = f"""
-with open('/home/tejoram97/Caddyfile.unified', 'r') as f:
-    text = f.read()
-target = 'reverse_proxy 192.168.6.150:{target_port}'
-replace_with = 'respond "Remote Access Suspended by Dealer" 403 #DISABLED:{target_port}'
-if target in text:
-    text = text.replace(target, replace_with)
-    with open('/home/tejoram97/Caddyfile.unified', 'w') as f:
-        f.write(text)
-"""
-                else:
-                    py_snippet = f"""
-with open('/home/tejoram97/Caddyfile.unified', 'r') as f:
-    text = f.read()
-target = 'respond "Remote Access Suspended by Dealer" 403 #DISABLED:{target_port}'
-replace_with = 'reverse_proxy 192.168.6.150:{target_port}'
-if target in text:
-    text = text.replace(target, replace_with)
-    with open('/home/tejoram97/Caddyfile.unified', 'w') as f:
-        f.write(text)
-"""
-                run_caddy_cmd(py_snippet, "docker exec trezoriq-caddy-1 caddy reload --config /etc/caddy/Caddyfile")
+                local_ip = data.get(client_id, {}).get('network', {}).get('local_ipv4', '')
+                ha_proto = data.get(client_id, {}).get('ha_proto')
+                if not ha_proto:
+                    ha_proto = 'https' if local_ip in ['192.168.6.17'] else 'http'
+                sync_caddy_ingress(client_id, target_port, ha_proto, enabled=enabled)
+
+                status_str = "ACTIVATED" if enabled else "SUSPENDED"
+                append_client_log(client_id, 'WARN' if not enabled else 'INFO', 'REMOTE_ACCESS', f'Remote access {status_str} by dealer')
 
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
@@ -2207,9 +2199,12 @@ if target in text:
                         else:
                             ha_proto = 'http'
                     
-                    # Ensure Caddy is synced with correct protocol
+                    data[client_id]['ha_proto'] = ha_proto
+
+                    # Ensure Caddy is synced with correct protocol and respects remote_enabled state
+                    remote_on = data[client_id].get('remote_enabled', True)
                     target_dash_port = data[client_id].get('dashboard_port', dash_port)
-                    sync_caddy_ingress(client_id, target_dash_port, ha_proto)
+                    sync_caddy_ingress(client_id, target_dash_port, ha_proto, enabled=remote_on)
 
                     data[client_id]['last_heartbeat'] = int(time.time())
                     data[client_id]['status'] = 'online'
@@ -2355,14 +2350,15 @@ if target in text:
                 subprocess.run(["userdel", "-r", client_id], check=False)
 
                 # Remove block from Caddyfile.unified on CT 305 and purge SSL certificate directory and OCSP cache
-                py_purge = f"""
-import re
+                py_purge = f"""import re
 with open('/home/tejoram97/Caddyfile.unified', 'r') as f:
     text = f.read()
-pattern = r'(?:\\s*#[^\\n]*\\n)?\\s*' + re.escape('{domain}') + r'\\s*\\{{[\\s\\S]*?\\}}'
-new_text = re.sub(pattern, '', text)
+
+domain = '{domain}'
+pattern = re.compile(r'(?:^[ \\t]*#[^\\n]*\\n)?^[ \\t]*' + re.escape(domain) + r'[ \\t]*\\{{[\\s\\S]*?(?=^(?:[a-zA-Z0-9_#\\(\\)]|\\Z))', re.MULTILINE)
+text = pattern.sub('', text).strip() + '\\n'
 with open('/home/tejoram97/Caddyfile.unified', 'w') as f:
-    f.write(new_text.strip() + '\\n')
+    f.write(text)
 """
                 purge_extra = (
                     f"docker exec trezoriq-caddy-1 sh -c 'rm -rf /data/caddy/certificates/*/{domain} /data/caddy/ocsp/*{domain}*' && "
