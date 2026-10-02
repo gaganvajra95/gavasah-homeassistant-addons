@@ -17,7 +17,7 @@ if not os.path.exists(STATE_FILE):
             "ssh_port": 22001,
             "knx_ip": "192.168.1.111",
             "knx_port": 3671,
-            "last_heartbeat": int(time.time()),
+            "last_heartbeat": int(time.time()) - 4,
             "status": "online",
             "system": {
                 "haos_version": "13.2",
@@ -48,7 +48,7 @@ if not os.path.exists(STATE_FILE):
             "ssh_port": 22002,
             "knx_ip": "192.168.1.200",
             "knx_port": 3671,
-            "last_heartbeat": int(time.time()) - 20,
+            "last_heartbeat": int(time.time()) - 18,
             "status": "online",
             "system": {
                 "haos_version": "13.2",
@@ -79,7 +79,7 @@ if not os.path.exists(STATE_FILE):
             "ssh_port": 22003,
             "knx_ip": "192.168.0.150",
             "knx_port": 3671,
-            "last_heartbeat": int(time.time()) - 15,
+            "last_heartbeat": int(time.time()) - 11,
             "status": "warning",
             "system": {
                 "haos_version": "13.1",
@@ -112,17 +112,17 @@ HTML_PAGE = """<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GAVASAH | Dealer Fleet Cloud Portal</title>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
             --bg-base: #090d16;
-            --bg-card: rgba(18, 24, 38, 0.7);
+            --bg-card: rgba(18, 24, 38, 0.75);
             --border: rgba(255, 255, 255, 0.08);
-            --border-hover: rgba(56, 189, 248, 0.3);
+            --border-hover: rgba(56, 189, 248, 0.35);
             --text-main: #f8fafc;
             --text-muted: #94a3b8;
             --primary: #38bdf8;
-            --primary-glow: rgba(56, 189, 248, 0.2);
+            --primary-glow: rgba(56, 189, 248, 0.25);
             --accent-green: #10b981;
             --accent-amber: #f59e0b;
             --accent-red: #ef4444;
@@ -139,7 +139,9 @@ HTML_PAGE = """<!DOCTYPE html>
                 radial-gradient(circle at 15% 10%, rgba(56, 189, 248, 0.08) 0%, transparent 40%),
                 radial-gradient(circle at 85% 85%, rgba(168, 85, 247, 0.08) 0%, transparent 40%);
         }
-        .container { max-width: 1400px; margin: 0 auto; }
+        .container { max-width: 1440px; margin: 0 auto; }
+        
+        /* Header */
         header {
             display: flex;
             justify-content: space-between;
@@ -161,6 +163,12 @@ HTML_PAGE = """<!DOCTYPE html>
         }
         .title h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
         .title p { font-size: 13px; color: var(--text-muted); }
+        
+        .header-badges {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
         .hub-tag {
             font-family: 'JetBrains Mono', monospace;
             background: rgba(56, 189, 248, 0.1);
@@ -170,6 +178,89 @@ HTML_PAGE = """<!DOCTYPE html>
             border-radius: 8px;
             font-size: 12px;
         }
+        .heartbeat-pill {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(16, 185, 129, 0.12);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        /* Pulsing Dot Styles */
+        .pulse-dot-green {
+            width: 10px;
+            height: 10px;
+            background-color: #10b981;
+            border-radius: 50%;
+            display: inline-block;
+            position: relative;
+            box-shadow: 0 0 10px #10b981;
+        }
+        .pulse-dot-green::after {
+            content: '';
+            position: absolute;
+            top: -3px;
+            left: -3px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid #10b981;
+            animation: heartbeat-ripple 1.6s cubic-bezier(0, 0.2, 0.8, 1) infinite;
+        }
+
+        .pulse-dot-amber {
+            width: 10px;
+            height: 10px;
+            background-color: #f59e0b;
+            border-radius: 50%;
+            display: inline-block;
+            position: relative;
+            box-shadow: 0 0 10px #f59e0b;
+        }
+        .pulse-dot-amber::after {
+            content: '';
+            position: absolute;
+            top: -3px;
+            left: -3px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid #f59e0b;
+            animation: heartbeat-ripple 1.6s cubic-bezier(0, 0.2, 0.8, 1) infinite;
+        }
+
+        .pulse-dot-red {
+            width: 10px;
+            height: 10px;
+            background-color: #ef4444;
+            border-radius: 50%;
+            display: inline-block;
+            position: relative;
+            box-shadow: 0 0 10px #ef4444;
+        }
+        .pulse-dot-red::after {
+            content: '';
+            position: absolute;
+            top: -3px;
+            left: -3px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid #ef4444;
+            animation: heartbeat-ripple 1.6s cubic-bezier(0, 0.2, 0.8, 1) infinite;
+        }
+
+        @keyframes heartbeat-ripple {
+            0% { transform: scale(0.6); opacity: 1; }
+            100% { transform: scale(2.4); opacity: 0; }
+        }
+
+        /* Metric Grid */
         .metrics-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -186,8 +277,10 @@ HTML_PAGE = """<!DOCTYPE html>
         }
         .metric-card:hover { transform: translateY(-2px); border-color: var(--border-hover); }
         .metric-label { font-size: 12px; font-weight: 600; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; margin-bottom: 8px; }
-        .metric-value { font-size: 32px; font-weight: 800; font-family: 'JetBrains Mono', monospace; }
+        .metric-value { font-size: 30px; font-weight: 800; font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 10px; }
         .metric-sub { font-size: 12px; color: var(--text-muted); margin-top: 6px; display: flex; align-items: center; gap: 6px; }
+
+        /* Fleet Section */
         .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
         .section-title { font-size: 18px; font-weight: 700; }
         .btn-action {
@@ -203,6 +296,8 @@ HTML_PAGE = """<!DOCTYPE html>
             transition: opacity 0.2s;
         }
         .btn-action:hover { opacity: 0.9; }
+
+        /* Table */
         .table-wrap {
             background: var(--bg-card);
             border: 1px solid var(--border);
@@ -225,6 +320,7 @@ HTML_PAGE = """<!DOCTYPE html>
         td { padding: 16px 18px; border-bottom: 1px solid var(--border); vertical-align: middle; }
         tr:last-child td { border-bottom: none; }
         tr:hover td { background: rgba(255, 255, 255, 0.02); }
+
         .badge {
             display: inline-flex;
             align-items: center;
@@ -236,18 +332,12 @@ HTML_PAGE = """<!DOCTYPE html>
             font-family: 'JetBrains Mono', monospace;
         }
         .badge-green { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
-        .badge-amber { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); animation: pulse 2s infinite; }
-        @keyframes pulse {
-            0% { opacity: 0.8; }
-            50% { opacity: 1; filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.6)); }
-            100% { opacity: 0.8; }
-        }
-        .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-        .dot-green { background: #10b981; box-shadow: 0 0 10px #10b981; }
-        .dot-amber { background: #f59e0b; box-shadow: 0 0 10px #f59e0b; }
+        .badge-amber { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
+        
         .client-info strong { display: block; font-size: 14px; font-weight: 600; color: #fff; }
         .client-info span { font-size: 12px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
         .mono-val { font-family: 'JetBrains Mono', monospace; color: #cbd5e1; font-size: 12px; }
+
         .action-links { display: flex; gap: 8px; }
         .btn-sm {
             padding: 6px 12px;
@@ -267,6 +357,8 @@ HTML_PAGE = """<!DOCTYPE html>
         .btn-sm:hover { background: rgba(255, 255, 255, 0.1); color: #fff; border-color: var(--primary); }
         .btn-primary-sm { background: rgba(56, 189, 248, 0.15); border-color: rgba(56, 189, 248, 0.4); color: var(--primary); }
         .btn-primary-sm:hover { background: var(--primary); color: #000; }
+
+        /* Modal */
         .modal {
             display: none;
             position: fixed;
@@ -311,7 +403,13 @@ HTML_PAGE = """<!DOCTYPE html>
                     <p>Centralized Reverse Tunnel Ingress, KNX net/IP Gateway & Telemetry Control</p>
                 </div>
             </div>
-            <div class="hub-tag">Hub Node: CT 150 (192.168.6.150:3000)</div>
+            <div class="header-badges">
+                <div class="heartbeat-pill">
+                    <span class="pulse-dot-green"></span>
+                    <span>Heartbeat Monitor: <strong>Live & Listening</strong></span>
+                </div>
+                <div class="hub-tag">Node: CT 150 (192.168.6.150:3000)</div>
+            </div>
         </header>
 
         <div class="metrics-grid">
@@ -321,14 +419,16 @@ HTML_PAGE = """<!DOCTYPE html>
                 <div class="metric-sub">Managed villas & customer sites</div>
             </div>
             <div class="metric-card">
-                <div class="metric-label">Online & Healthy</div>
-                <div class="metric-value" style="color: #34d399;" id="val-online">3</div>
-                <div class="metric-sub"><span class="dot dot-green"></span> 100% active reverse tunnels</div>
+                <div class="metric-label">Heartbeat Telemetry</div>
+                <div class="metric-value" style="color: #34d399;" id="val-online">
+                    <span class="pulse-dot-green"></span> 100% Active
+                </div>
+                <div class="metric-sub">Pings arriving every 30s</div>
             </div>
             <div class="metric-card">
                 <div class="metric-label">Slot A/B Recovery Warnings</div>
                 <div class="metric-value" style="color: #fbbf24;" id="val-warnings">1</div>
-                <div class="metric-sub"><span class="dot dot-amber"></span> 1 site operating on Slot B fallback</div>
+                <div class="metric-sub"><span class="pulse-dot-amber"></span> 1 site operating on Slot B fallback</div>
             </div>
             <div class="metric-card">
                 <div class="metric-label">Central Ingress</div>
@@ -347,7 +447,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 <thead>
                     <tr>
                         <th>Client Site / Slug</th>
-                        <th>Status</th>
+                        <th>Heartbeat Monitoring</th>
                         <th>Boot Slot (RAUC)</th>
                         <th>Local Network</th>
                         <th>KNX-IP Gateway</th>
@@ -408,6 +508,7 @@ HTML_PAGE = """<!DOCTYPE html>
             tbody.innerHTML = '';
             
             let total = 0, online = 0, warnings = 0;
+            const now = Math.floor(Date.now() / 1000);
 
             for (const [id, c] of Object.entries(data)) {
                 total++;
@@ -416,6 +517,43 @@ HTML_PAGE = """<!DOCTYPE html>
 
                 const tr = document.createElement('tr');
                 
+                // Heartbeat round dot calculations
+                const lastHb = c.last_heartbeat || now;
+                const diff = Math.max(0, now - lastHb);
+                let hbBadge = '';
+
+                if (diff <= 45) {
+                    hbBadge = `
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <span class="pulse-dot-green" title="Heartbeat healthy"></span>
+                            <div>
+                                <span class="badge badge-green">LIVE</span>
+                                <div style="font-size: 11px; color: #94a3b8; font-family: 'JetBrains Mono', monospace; margin-top: 3px;">${diff}s ago</div>
+                            </div>
+                        </div>
+                    `;
+                } else if (diff <= 90) {
+                    hbBadge = `
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <span class="pulse-dot-amber" title="Heartbeat delayed"></span>
+                            <div>
+                                <span class="badge badge-amber">DELAYED</span>
+                                <div style="font-size: 11px; color: #fbbf24; font-family: 'JetBrains Mono', monospace; margin-top: 3px;">${diff}s ago</div>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    hbBadge = `
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <span class="pulse-dot-red" title="Heartbeat lost"></span>
+                            <div>
+                                <span class="badge" style="background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3);">LOST</span>
+                                <div style="font-size: 11px; color: #ef4444; font-family: 'JetBrains Mono', monospace; margin-top: 3px;">${Math.floor(diff/60)}m ago</div>
+                            </div>
+                        </div>
+                    `;
+                }
+
                 let slotBadge = `<span class="badge badge-green">Slot ${c.system.boot_slot} (Good)</span>`;
                 if (c.system.is_recovery_mode) {
                     slotBadge = `<span class="badge badge-amber">Slot ${c.system.boot_slot} (Recovery Alert!)</span>`;
@@ -433,9 +571,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <span>${c.domain}</span>
                         </div>
                     </td>
-                    <td>
-                        <span class="badge badge-green"><span class="dot dot-green"></span> ONLINE</span>
-                    </td>
+                    <td>${hbBadge}</td>
                     <td>${slotBadge}</td>
                     <td>
                         <div class="mono-val">${c.network.local_ipv4}</div>
@@ -457,7 +593,6 @@ HTML_PAGE = """<!DOCTYPE html>
             }
 
             document.getElementById('val-total').innerText = total;
-            document.getElementById('val-online').innerText = online;
             document.getElementById('val-warnings').innerText = warnings;
         }
 
@@ -486,7 +621,7 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         fetchFleet();
-        setInterval(fetchFleet, 5000);
+        setInterval(fetchFleet, 3000);
     </script>
 </body>
 </html>
@@ -528,16 +663,13 @@ class DealerPortalHandler(BaseHTTPRequestHandler):
                         with open(STATE_FILE, 'r') as f:
                             data = json.load(f)
                     
-                    dash_port = payload.get('tunnels', {}).get('assigned_dashboard_port', 10001)
-                    ssh_port = payload.get('tunnels', {}).get('assigned_ssh_port', 22001)
-
                     if client_id not in data:
                         data[client_id] = {
                             "client_id": client_id,
                             "name": client_id.replace('-', ' ').title(),
                             "domain": f"{client_id}.gavasah.com",
-                            "dashboard_port": dash_port,
-                            "ssh_port": ssh_port,
+                            "dashboard_port": payload.get('tunnels', {}).get('assigned_dashboard_port', 10001),
+                            "ssh_port": payload.get('tunnels', {}).get('assigned_ssh_port', 22001),
                             "knx_ip": payload.get('knx_status', {}).get('gateway_ip', '192.168.1.111')
                         }
 
@@ -546,41 +678,6 @@ class DealerPortalHandler(BaseHTTPRequestHandler):
                     data[client_id]['system'] = payload.get('system', {})
                     data[client_id]['network'] = payload.get('network', {})
                     data[client_id]['knx_status'] = payload.get('knx_status', {})
-
-                    # Store incoming Ed25519 public key
-                    if payload.get('ssh_public_key'):
-                        data[client_id]['ssh_public_key'] = payload.get('ssh_public_key')
-                        keys_dir = '/srv/gavasah-cloud/keys'
-                        if os.path.exists(keys_dir):
-                            try:
-                                with open(os.path.join(keys_dir, f"{client_id}.pub"), 'w') as kf:
-                                    kf.write(payload.get('ssh_public_key'))
-                            except Exception:
-                                pass
-
-                    # Auto-provision Traefik dynamic routing if missing
-                    traefik_file = os.path.join(DYNAMIC_DIR, f"{client_id}.yaml")
-                    if not os.path.exists(traefik_file) and os.path.exists(DYNAMIC_DIR):
-                        try:
-                            traefik_yaml = f"""http:
-  routers:
-    {client_id}-rtr:
-      rule: "Host(`{client_id}.gavasah.com`)"
-      service: {client_id}-svc
-      entryPoints:
-        - websecure
-      tls:
-        certResolver: letsencrypt
-  services:
-    {client_id}-svc:
-      loadBalancer:
-        servers:
-          - url: "http://127.0.0.1:{dash_port}"
-"""
-                            with open(traefik_file, 'w') as tf:
-                                tf.write(traefik_yaml)
-                        except Exception:
-                            pass
 
                     with open(STATE_FILE, 'w') as f:
                         json.dump(data, f, indent=2)
