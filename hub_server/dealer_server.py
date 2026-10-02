@@ -1556,7 +1556,7 @@ heartbeat_interval: 30`;
                         <div class="client-info">
                             <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
                                 <strong style="color: #fff; font-size: 14px;">${c.name}</strong>
-                                <button class="btn-sm btn-logs-sm" style="padding: 3px 8px; font-size: 11px;" onclick="openLogsModal('${c.client_id}', '${c.name ? c.name.replace(/'/g, \'\\\'\') : c.client_id}', '${c.domain}', '${c.status}')" title="View diagnostic & telemetry logs from client">📜 Logs</button>
+                                <button class="btn-sm btn-logs-sm" style="padding: 3px 8px; font-size: 11px;" onclick="openLogsModal('${c.client_id}')" title="View diagnostic & telemetry logs from client">📜 Logs</button>
                             </div>
                             <span>${c.domain}</span>
                         </div>
@@ -1584,7 +1584,7 @@ heartbeat_interval: 30`;
                             <a href="https://${c.domain}" target="_blank" class="${dashBtnClass}">🌐 Dashboard</a>
                             <button class="btn-sm" onclick="copySSH('${c.ssh_port}', '${c.client_id}')">💻 SSH</button>
                             <button class="btn-sm btn-edit-sm" onclick="openEditModal('${c.client_id}')">✏️ Edit</button>
-                            <button class="btn-sm btn-danger-sm" onclick="promptDelete('${c.client_id}', '${c.name ? c.name.replace(/'/g, "\\'") : c.client_id}', '${c.domain}')">🗑️ Delete</button>
+                            <button class="btn-sm btn-danger-sm" onclick="promptDelete('${c.client_id}')">🗑️ Delete</button>
                         </div>
                     </td>
                 `;
