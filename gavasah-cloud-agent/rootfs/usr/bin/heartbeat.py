@@ -70,8 +70,14 @@ def update_ha_state(entity_id, state, attributes):
         pass
 
 def ping_knx_gateway(ip, port=3671, timeout=2.0):
-    if not ip:
-        return {"configured": False, "reachable": False}
+    if not ip or str(ip).strip() in ["", "127.0.0.1", "localhost", "none", "null"]:
+        return {
+            "configured": False,
+            "reachable": False,
+            "reason": "unconfigured",
+            "gateway_ip": "",
+            "gateway_port": port
+        }
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(timeout)
@@ -133,6 +139,29 @@ def collect_telemetry(opts):
             mac_addr = iface.get("mac", "Unknown")
             if default_ip != "Unknown":
                 break
+
+    # Automatic socket hardware stack discovery fallback
+    if default_ip in ["Unknown", "127.0.0.1", ""]:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            default_ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            pass
+
+    # Gateway fallback via /proc/net/route
+    if default_gw in ["Unknown", ""]:
+        try:
+            with open("/proc/net/route", "r") as f:
+                for line in f.readlines()[1:]:
+                    parts = line.strip().split()
+                    if len(parts) >= 3 and parts[1] == "00000000":
+                        gw_hex = parts[2]
+                        default_gw = socket.inet_ntoa(bytes.fromhex(gw_hex)[::-1])
+                        break
+        except Exception:
+            pass
 
     # KNX Gateway Check
     knx_res = ping_knx_gateway(

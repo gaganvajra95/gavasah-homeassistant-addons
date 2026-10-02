@@ -1,5 +1,5 @@
 name: "Gavasah Cloud Agent"
-version: "1.0.0"
+version: "1.0.1"
 slug: "gavasah-cloud-agent"
 description: "AutoSSH Reverse Tunnel, Telemetry Heartbeat, RAUC A/B Slot Health, and KNXnet/IP Remote Fleet Relay for Gavasah Cloud Hub."
 url: "https://gavasah.com"
@@ -25,7 +25,7 @@ options:
   auth_key: "gavasah-secret-token"
   remote_dashboard_port: 10010
   remote_ssh_port: 22010
-  knx_gateway_ip: "127.0.0.1"
+  knx_gateway_ip: ""
   knx_gateway_port: 3671
   heartbeat_interval: 30
 
