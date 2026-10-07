@@ -15,7 +15,6 @@ STATE_FILE = os.environ.get('STATE_FILE', os.path.join(BASE_DIR, 'clients_state.
 AUTH_FILE = os.environ.get('AUTH_FILE', os.path.join(BASE_DIR, 'auth_state.json'))
 LOGS_DIR = os.environ.get('LOGS_DIR', os.path.join(BASE_DIR, 'logs'))
 DB_FILE = os.environ.get('DB_FILE', os.path.join(BASE_DIR, 'fleet.db'))
-CADDY_HOST = os.environ.get('CADDY_HOST', '192.168.6.170')
 PORT = int(os.environ.get('PORT', 3000))
 WG_SERVER_PUBKEY = os.environ.get('WG_SERVER_PUBKEY', 'SpiDqVVfDrzrIlfmuDbffXVwQcWC2bb4J5TopI1q6Wk=')
 WG_ENDPOINT = os.environ.get('WG_ENDPOINT', 'dealer.gavasah.com:51820')
@@ -492,33 +491,8 @@ def save_clients_state(data):
             return False
 
 # ==============================================================================
-# Caddy Ingress & OpenSSH Helpers
+# Local Ingress & OpenSSH Helpers (CT 150 Self-Contained)
 # ==============================================================================
-def run_caddy_cmd(remote_py, extra_bash=""):
-    if os.name == 'nt' or os.environ.get('MOCK_CADDY') == '1':
-        return True
-    b64 = base64.b64encode(remote_py.encode()).decode()
-    cmd = f'python3 -c "import base64; exec(base64.b64decode(\'{b64}\'))"'
-    if extra_bash:
-        cmd += f" && {extra_bash}"
-
-    key_path = "/root/.ssh/id_ed25519" if os.path.exists("/root/.ssh/id_ed25519") else "/root/.ssh/id_rsa"
-    ssh_args = [
-        "ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "ConnectTimeout=5"
-    ]
-    if os.path.exists(key_path):
-        ssh_args += ["-i", key_path]
-    ssh_args += [f"root@{CADDY_HOST}", cmd]
-    try:
-        res = subprocess.run(ssh_args, capture_output=True, text=True, timeout=8)
-        if res.returncode != 0:
-            print(f"[!] Caddy command error (code {res.returncode}): {res.stderr.strip()[:200]}")
-        return res.returncode == 0
-    except Exception as e:
-        print(f"[!] Caddy update error: {e}")
-        return False
-
 def sync_client_ssh_user(client_id, ssh_public_key):
     if not ssh_public_key:
         return True
@@ -526,13 +500,13 @@ def sync_client_ssh_user(client_id, ssh_public_key):
         REGISTERED_SSH_KEYS.add(ssh_public_key)
         return True
 
-    # 1. Ensure Linux group 'haclients' exists
+    # 1. Ensure Linux group 'haclients' exists locally
     try:
         subprocess.run(["groupadd", "-f", "haclients"], capture_output=True, timeout=3)
     except Exception:
         pass
 
-    # 2. Ensure Linux user exists for client_id
+    # 2. Ensure Linux user exists locally for client_id
     try:
         res = subprocess.run(["id", client_id], capture_output=True, timeout=3)
         if res.returncode != 0:
@@ -560,7 +534,7 @@ def sync_client_ssh_user(client_id, ssh_public_key):
     except Exception as e:
         print(f"[!] Error setting client authorized_keys: {e}")
 
-    # 4. Also add to /root/.ssh/authorized_keys
+    # 4. Also maintain /root/.ssh/authorized_keys
     auth_keys_path = "/root/.ssh/authorized_keys"
     try:
         os.makedirs(os.path.dirname(auth_keys_path), exist_ok=True)
@@ -580,7 +554,8 @@ def sync_client_ssh_user(client_id, ssh_public_key):
 def teardown_client_tunnel(client_id, dashboard_port=None, ssh_port=None, ssh_public_key=None):
     """
     Completely and permanently severs active reverse tunnels, kills listening ports,
-    deletes Linux user account, wipes SSH authorized_keys, and cleans Traefik dynamic configs.
+    deletes Linux user account, wipes SSH authorized_keys, and cleans local dynamic configs.
+    Executes 100% locally on CT 150 without touching external servers.
     """
     if os.name == 'nt':
         return True
@@ -635,81 +610,68 @@ def teardown_client_tunnel(client_id, dashboard_port=None, ssh_port=None, ssh_pu
     if ssh_public_key:
         REGISTERED_SSH_KEYS.discard(ssh_public_key)
 
-    # 5. Clean up Traefik dynamic YAML files if present
-    for tf_path in [
+    # 5. Clean up local dynamic ingress configuration files on CT 150
+    purge_local_ingress(client_id)
+    return True
+
+def sync_local_ingress(client_id, dash_port, proto="http", enabled=True, force=False, wg_ip=None):
+    """
+    Maintains local dynamic proxy routing configuration in /srv/gavasah-cloud/dynamic/.
+    Completely local to CT 150 with zero external SSH dependencies.
+    """
+    dynamic_dir = "/srv/gavasah-cloud/dynamic"
+    if not os.path.exists(dynamic_dir):
+        return True
+
+    yaml_path = os.path.join(dynamic_dir, f"{client_id}.yaml")
+    if not enabled:
+        if os.path.exists(yaml_path):
+            try: os.remove(yaml_path)
+            except Exception: pass
+        return True
+
+    target_url = f"http://{wg_ip}:8123" if wg_ip else f"http://127.0.0.1:{dash_port}"
+    yaml_content = f"""http:
+  routers:
+    {client_id}-router:
+      rule: "Host(`{client_id}.gavasah.com`)"
+      entryPoints:
+        - websecure
+      service: {client_id}-service
+  services:
+    {client_id}-service:
+      loadBalancer:
+        servers:
+          - url: "{target_url}"
+"""
+    try:
+        with open(yaml_path, "w", encoding="utf-8") as f:
+            f.write(yaml_content)
+        return True
+    except Exception as e:
+        print(f"[!] Error writing dynamic config for {client_id}: {e}")
+        return False
+
+def purge_local_ingress(client_id):
+    """Removes local dynamic proxy configs on CT 150."""
+    SYNCED_CADDY_ROUTES.pop(client_id, None)
+    for p in [
         f"/srv/gavasah-cloud/dynamic/{client_id}.yaml",
         f"/srv/gavasah-cloud/dynamic/{client_id}.yml",
         f"/srv/ha-cloud/traefik/dynamic/{client_id}.yaml",
         f"/srv/ha-cloud/traefik/dynamic/{client_id}.yml"
     ]:
-        try:
-            if os.path.exists(tf_path):
-                os.remove(tf_path)
-                print(f"[+] Removed dynamic proxy config: {tf_path}")
-        except Exception:
-            pass
-
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+                print(f"[+] Removed local dynamic config: {p}")
+            except Exception:
+                pass
     return True
 
-def purge_caddy_ingress(client_id):
-    """Completely and idempotently removes any reverse proxy block for client_id.gavasah.com and reloads Caddy."""
-    SYNCED_CADDY_ROUTES.pop(client_id, None)
-    domain = f"{client_id}.gavasah.com"
-    py_code = (
-        "import re\n"
-        "try:\n"
-        "    with open('/home/tejoram97/Caddyfile.unified', 'r', encoding='utf-8') as f:\n"
-        "        text = f.read()\n"
-        f"    domain = '{domain}'\n"
-        "    pattern = re.compile(r'(?:[ \\t]*#[^\\n]*\\n)*[ \\t]*' + re.escape(domain) + r'[ \\t]*\\{[\\s\\S]*?\\}\\n?', re.MULTILINE)\n"
-        "    text = pattern.sub('', text)\n"
-        "    text = re.sub(r'\\n{3,}', '\\n\\n', text).strip() + '\\n'\n"
-        "    with open('/home/tejoram97/Caddyfile.unified', 'w', encoding='utf-8') as f:\n"
-        "        f.write(text)\n"
-        "    print('PURGED_CADDY_SUCCESS')\n"
-        "except Exception as e:\n"
-        "    print('PURGE_ERROR:', e)\n"
-    )
-    reload_cmd = "docker exec trezoriq-caddy-1 caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || docker exec caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null"
-    return run_caddy_cmd(py_code, reload_cmd)
-
-def sync_caddy_ingress(client_id, dash_port, proto="http", enabled=True, force=False, wg_ip=None):
-    cache_key = client_id
-    config_tuple = (dash_port, proto, enabled, wg_ip)
-    if not force and SYNCED_CADDY_ROUTES.get(cache_key) == config_tuple:
-        return True
-
-    domain = f"{client_id}.gavasah.com"
-    if not enabled:
-        block = f"# Client: {client_id} (Suspended)\n{domain} {{\n    respond \"Remote Access Suspended by Dealer\" 403\n}}"
-    elif wg_ip:
-        block = f"# Client: {client_id} (WireGuard Mesh)\n{domain} {{\n    reverse_proxy {wg_ip}:8123\n}}"
-    elif proto == "https":
-        block = f"# Client: {client_id}\n{domain} {{\n    reverse_proxy https://192.168.6.150:{dash_port} {{\n        transport http {{\n            tls_insecure_skip_verify\n        }}\n    }}\n}}"
-    else:
-        block = f"# Client: {client_id}\n{domain} {{\n    reverse_proxy 192.168.6.150:{dash_port}\n}}"
-
-    py_code = (
-        "import re\n"
-        "try:\n"
-        "    with open('/home/tejoram97/Caddyfile.unified', 'r', encoding='utf-8') as f:\n"
-        "        text = f.read()\n"
-        f"    domain = '{domain}'\n"
-        f"    new_block = '''{block}'''.strip()\n"
-        "    pattern = re.compile(r'(?:[ \\t]*#[^\\n]*\\n)*[ \\t]*' + re.escape(domain) + r'[ \\t]*\\{[\\s\\S]*?\\}\\n?', re.MULTILINE)\n"
-        "    text = pattern.sub('', text)\n"
-        "    text = text.rstrip() + '\\n\\n' + new_block + '\\n'\n"
-        "    text = re.sub(r'\\n{3,}', '\\n\\n', text).strip() + '\\n'\n"
-        "    with open('/home/tejoram97/Caddyfile.unified', 'w', encoding='utf-8') as f:\n"
-        "        f.write(text)\n"
-        "except Exception as e:\n"
-        "    print('SYNC_ERROR:', e)\n"
-    )
-    reload_cmd = "docker exec trezoriq-caddy-1 caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || docker exec caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null"
-    ok = run_caddy_cmd(py_code, reload_cmd)
-    if ok:
-        SYNCED_CADDY_ROUTES[cache_key] = config_tuple
-    return ok
+# Aliases for backwards compatibility within codebase
+sync_caddy_ingress = sync_local_ingress
+purge_caddy_ingress = purge_local_ingress
 
 
 HTML_PAGE = """<!DOCTYPE html>
