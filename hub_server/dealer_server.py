@@ -3249,11 +3249,19 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         function setFleetFilter(f) {
-            fleetStatusFilter = f;
+            fleetStatusFilter = (f || 'ALL').toUpperCase();
             fleetCurrentPage = 1;
-            document.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
-            const clicked = Array.from(document.querySelectorAll('.filter-pill')).find(p => p.innerText.includes(f));
-            if (clicked) clicked.classList.add('active');
+            document.querySelectorAll('.pill-btn').forEach(p => p.classList.remove('active'));
+            if (fleetStatusFilter === 'ALL') {
+                const el = document.getElementById('filter-pill-all');
+                if (el) el.classList.add('active');
+            } else if (fleetStatusFilter === 'ONLINE') {
+                const el = document.getElementById('filter-pill-online');
+                if (el) el.classList.add('active');
+            } else if (fleetStatusFilter === 'LOST' || fleetStatusFilter === 'OFFLINE') {
+                const el = document.getElementById('filter-pill-lost');
+                if (el) el.classList.add('active');
+            }
             renderTable(currentFleetData);
         }
 
@@ -3290,7 +3298,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
                 if (fleetStatusFilter === 'ONLINE' && diff > 75) return false;
                 if (fleetStatusFilter === 'WARNING' && (diff <= 75 || diff > 180)) return false;
-                if (fleetStatusFilter === 'OFFLINE' && diff <= 180) return false;
+                if ((fleetStatusFilter === 'OFFLINE' || fleetStatusFilter === 'LOST') && diff <= 75) return false;
 
                 if (fleetSearchQuery) {
                     const str = `${c.client_id} ${c.name} ${c.dealer_name || ''} ${c.integrator_name || ''} ${c.domain} ${c.knx_ip}`.toLowerCase();
@@ -3299,20 +3307,26 @@ HTML_PAGE = """<!DOCTYPE html>
                 return true;
             });
 
-            // Update metric counters
-            const mTotal = document.getElementById('metric-total');
-            const mOnline = document.getElementById('metric-online');
-            const mWarning = document.getElementById('metric-warning');
-            const mOffline = document.getElementById('metric-offline');
+            // Update Fleet Tab metric cards
+            const valTotal = document.getElementById('val-total');
+            const valOnline = document.getElementById('val-online');
+            const valLost = document.getElementById('val-lost');
+            if (valTotal) valTotal.innerText = data.length;
+            if (valOnline) valOnline.innerText = onlineCount;
+            if (valLost) valLost.innerText = offlineCount + warningCount;
+
+            // Update Filter pill counters
+            const pillAll = document.getElementById('pill-count-all');
+            const pillOnline = document.getElementById('pill-count-online');
+            const pillLost = document.getElementById('pill-count-lost');
+            if (pillAll) pillAll.innerText = data.length;
+            if (pillOnline) pillOnline.innerText = onlineCount;
+            if (pillLost) pillLost.innerText = offlineCount + warningCount;
+
+            // Update Overview Tab cards
             const ovTotal = document.getElementById('ov-total-clients');
             const ovOnline = document.getElementById('ov-online-clients');
             const ovLost = document.getElementById('ov-lost-clients');
-
-            if (mTotal) mTotal.innerText = data.length;
-            if (mOnline) mOnline.innerText = onlineCount;
-            if (mWarning) mWarning.innerText = warningCount;
-            if (mOffline) mOffline.innerText = offlineCount;
-
             if (ovTotal) ovTotal.innerText = data.length;
             if (ovOnline) ovOnline.innerText = onlineCount;
             if (ovLost) ovLost.innerText = offlineCount + warningCount;
