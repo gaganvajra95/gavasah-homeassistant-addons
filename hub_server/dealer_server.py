@@ -3086,6 +3086,15 @@ HTML_PAGE = """<!DOCTYPE html>
                         <label class="form-label">KNX PORT</label>
                         <input type="number" id="edit-knx-port" class="form-input" value="3671">
                     </div>
+
+                    <div class="form-group" style="margin-top: 14px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 12px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <label class="form-label" style="margin-bottom: 0; color: #38bdf8; font-weight: 600;">📋 CLIENT ADD-ON CONFIGURATION (YAML)</label>
+                            <button type="button" class="btn-sm" style="padding: 4px 10px; font-size: 11px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4);" onclick="copyAddonConfig()">📋 Copy Config</button>
+                        </div>
+                        <div style="font-size: 11px; color: #94a3b8; margin-bottom: 6px;">Paste into your Home Assistant <strong>Gavasah Cloud Agent</strong> Add-on configuration:</div>
+                        <pre class="config-box" id="edit-config-snippet" style="background: #030610; border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 12px 14px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #38bdf8; white-space: pre-wrap; line-height: 1.5; user-select: all; margin: 0; max-height: 160px; overflow-y: auto;"></pre>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn-sm" onclick="closeEditModal()">Cancel</button>
@@ -4519,6 +4528,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function generateEditSecret() {
             document.getElementById('edit-secret').value = generateSecretStr();
+            updateEditConfigSnippet();
         }
 
         function generateSecretStr() {
@@ -4582,15 +4592,57 @@ HTML_PAGE = """<!DOCTYPE html>
                 });
                 const data = await res.json();
                 if (res.ok && data.ok) {
-                    showToast(`Gateway '${payload.name}' onboarded successfully!`, 'success');
+                    showToast(`Gateway '${payload.name}' onboarded successfully! Opening client configuration...`, 'success');
                     closeOnboardModal();
-                    fetchFleet();
+                    await fetchFleet();
+                    if (data.client && data.client.client_id) {
+                        openEditModal(data.client.client_id);
+                    }
                 } else {
                     showToast(data.error || 'Onboarding failed', 'error');
                 }
             } catch (err) {
                 showToast('Network error during onboarding', 'error');
             }
+        }
+
+        function updateEditConfigSnippet() {
+            const idEl = document.getElementById('edit-id') || document.getElementById('edit-client-id');
+            const clientId = idEl ? idEl.value : '';
+            const client = currentFleetData.find(c => c.client_id === clientId);
+            
+            const secret = (document.getElementById('edit-secret') ? document.getElementById('edit-secret').value : '') || (client ? client.auth_secret : '');
+            const knxIp = (document.getElementById('edit-knx-ip') ? document.getElementById('edit-knx-ip').value : '') || (client ? client.knx_ip : '192.168.1.100');
+            const knxPort = (document.getElementById('edit-knx-port') ? document.getElementById('edit-knx-port').value : '') || (client ? client.knx_port : 3671);
+            const dashPort = (client && client.dashboard_port) ? client.dashboard_port : 10001;
+            const sshPort = (client && client.ssh_port) ? client.ssh_port : 22001;
+
+            const snippet = `hub_host: "dealer.gavasah.com"
+hub_ssh_port: 2222
+client_id: "${clientId}"
+auth_key: "${secret}"
+remote_dashboard_port: ${dashPort}
+remote_ssh_port: ${sshPort}
+knx_gateway_ip: "${knxIp}"
+knx_gateway_port: ${knxPort}
+heartbeat_interval: 30`;
+
+            const snippetEl = document.getElementById('edit-config-snippet');
+            if (snippetEl) snippetEl.innerText = snippet;
+        }
+
+        function copyAddonConfig() {
+            const snippetEl = document.getElementById('edit-config-snippet');
+            const txt = snippetEl ? snippetEl.innerText : '';
+            if (!txt) {
+                showToast('No config snippet available to copy', 'error');
+                return;
+            }
+            navigator.clipboard.writeText(txt).then(() => {
+                showToast('Add-on YAML config copied to clipboard! Paste into HA Add-on Configuration tab.', 'success');
+            }).catch(() => {
+                showToast('Failed to copy config to clipboard', 'error');
+            });
         }
 
         function openEditModal(clientId) {
@@ -4624,6 +4676,16 @@ HTML_PAGE = """<!DOCTYPE html>
             } else {
                 if (intGroup) intGroup.style.display = 'none';
             }
+
+            // Real-time update of snippet on input change
+            const secEl = document.getElementById('edit-secret');
+            if (secEl) secEl.oninput = updateEditConfigSnippet;
+            const knxIpEl = document.getElementById('edit-knx-ip');
+            if (knxIpEl) knxIpEl.oninput = updateEditConfigSnippet;
+            const knxPortEl = document.getElementById('edit-knx-port');
+            if (knxPortEl) knxPortEl.oninput = updateEditConfigSnippet;
+
+            updateEditConfigSnippet();
 
             const modal = document.getElementById('edit-modal');
             if (modal) modal.classList.add('active');
