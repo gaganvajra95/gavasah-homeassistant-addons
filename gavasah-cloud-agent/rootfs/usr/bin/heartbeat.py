@@ -177,8 +177,8 @@ def ensure_external_url(opts):
 
     return False
 
-def ensure_auto_update():
-    """Ensure the Supervisor auto_update toggle is enabled for this add-on."""
+def ensure_supervisor_toggles():
+    """Ensure Supervisor auto_update and watchdog toggles are enabled for this add-on."""
     if not SUPERVISOR_TOKEN:
         return
     try:
@@ -189,17 +189,23 @@ def ensure_auto_update():
         })
         with urllib.request.urlopen(req, timeout=4) as resp:
             data = json.loads(resp.read().decode()).get("data", {})
+            payload_dict = {}
             if not data.get("auto_update", False):
+                payload_dict["auto_update"] = True
+            if not data.get("watchdog", False):
+                payload_dict["watchdog"] = True
+
+            if payload_dict:
                 opt_url = f"{SUPERVISOR_URL}/addons/self/options"
-                payload = json.dumps({"auto_update": True}).encode("utf-8")
+                payload = json.dumps(payload_dict).encode("utf-8")
                 opt_req = urllib.request.Request(opt_url, data=payload, headers={
                     "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
                     "Content-Type": "application/json"
                 }, method="POST")
                 with urllib.request.urlopen(opt_req, timeout=4) as opt_resp:
-                    log("[✓] [Supervisor] Successfully enabled 'Auto update' toggle for Gavasah Cloud Agent!")
-    except Exception:
-        pass
+                    log(f"[✓] [Supervisor] Successfully enabled toggles {list(payload_dict.keys())} for Gavasah Cloud Agent!")
+    except Exception as e:
+        log(f"[!] [Supervisor] Error setting toggles: {e}")
 
 def ping_knx_gateway(ip, port=3671, timeout=2.0):
     if not ip or str(ip).strip() in ["", "127.0.0.1", "localhost", "none", "null"]:
@@ -475,16 +481,16 @@ def send_heartbeat(hub_host, payload):
     return False, "Failed to reach hub API endpoints"
 
 def main():
-    log("Starting Gavasah Cloud Agent Telemetry Engine v1.0.3...")
+    log("Starting Gavasah Cloud Agent Telemetry Engine v1.0.4...")
     opts = load_options()
     hub_host = opts.get("hub_host", "122.175.49.35")
     interval = int(opts.get("heartbeat_interval", 60))
 
     log(f"Configured Hub: {hub_host} | Client: {opts.get('client_id')} | Interval: {interval}s")
 
-    # Initial sync of Home Assistant External Network URL & Auto-Update
+    # Initial sync of Home Assistant External Network URL & Supervisor Toggles (Auto-Update, Watchdog)
     ensure_external_url(opts)
-    ensure_auto_update()
+    ensure_supervisor_toggles()
 
     loop_count = 0
     while True:
@@ -495,10 +501,11 @@ def main():
             # 1. Update native Home Assistant UI entities
             publish_local_entities(payload)
 
-            # 2. Maintain external_url synchronization every 5 cycles
+            # 2. Maintain external_url & supervisor toggles synchronization every 5 cycles
             loop_count += 1
             if loop_count % 5 == 0:
                 ensure_external_url(opts)
+                ensure_supervisor_toggles()
 
             # 3. Transmit to central dealer hub
             success, status = send_heartbeat(hub_host, payload)
