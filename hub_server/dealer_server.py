@@ -6150,7 +6150,6 @@ PersistentKeepalive = 25
             client_id = body.get('client_id', '').strip().lower()
             ssh_key = body.get('ssh_public_key', '').strip()
             auth_secret = body.get('auth_secret', '').strip()
-            print(f"[HEARTBEAT_INCOMING] client_id='{client_id}', incoming_secret='{secret}', expected_secret='{client.get('auth_secret') if client else 'NO_CLIENT'}'", flush=True)
             knx_ip = body.get('knx_ip', '192.168.1.100').strip()
             knx_port = int(body.get('knx_port', 3671))
 
@@ -6449,16 +6448,30 @@ PersistentKeepalive = 25
                 return
 
             client_id = body.get('client_id', '').strip()
-            secret = body.get('auth_secret', '').strip()
+            auth_hdr = self.headers.get('Authorization', '').replace('Bearer ', '').strip()
+            secret = body.get('auth_secret', '').strip() or body.get('secret', '').strip() or auth_hdr
 
             c_data = load_clients_state()
             client = c_data.get(client_id)
             if not client:
+                # Case-insensitive fallback
+                for cid, cobj in c_data.items():
+                    if cid.lower() == client_id.lower():
+                        client = cobj
+                        client_id = cid
+                        break
+
+            if not client:
+                print(f"[HB_NOT_FOUND_404] client_id='{client_id}', payload_keys={list(body.keys())}", flush=True)
                 self.send_json(404, {'error': 'Client not registered'})
                 return
 
+            expected_secret = (client.get('auth_secret') or '').strip()
+            print(f"[HB_PROBE] client_id='{client_id}', incoming_secret='{secret}', db_expected='{expected_secret}'", flush=True)
+
             # Validate auth_secret if set on client
-            if client.get('auth_secret') and client['auth_secret'] != secret:
+            if expected_secret and secret != expected_secret:
+                print(f"[HB_AUTH_MISMATCH_403] client_id='{client_id}', sent='{secret}', expected='{expected_secret}'", flush=True)
                 self.send_json(403, {'error': 'Unauthorized gateway heartbeat'})
                 return
 
