@@ -1671,6 +1671,14 @@ HTML_PAGE = """<!DOCTYPE html>
             flex-direction: column;
         }
 
+        .modal-content form {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+        }
+
         .modal-header {
             padding: 18px 24px;
             border-bottom: 1px solid var(--border);
@@ -1680,6 +1688,7 @@ HTML_PAGE = """<!DOCTYPE html>
             background: rgba(15, 23, 42, 0.6);
             font-size: 16px;
             font-weight: 700;
+            flex-shrink: 0;
         }
 
         .modal-body {
@@ -1696,6 +1705,7 @@ HTML_PAGE = """<!DOCTYPE html>
             justify-content: flex-end;
             gap: 10px;
             background: rgba(15, 23, 42, 0.6);
+            flex-shrink: 0;
         }
 
         /* Diagnostic Terminal Modal */
@@ -2970,24 +2980,15 @@ HTML_PAGE = """<!DOCTYPE html>
 
                     <div class="form-group">
                         <label class="form-label">CLIENT SITE NAME</label>
-                        <input type="text" id="onb-name" class="form-input" placeholder="e.g. Sharma Villa (Jubilee Hills)" required>
-                    </div>
-
-                    <div class="form-group">
-                        <label class="form-label">CLIENT SLUG / IDENTIFIER</label>
-                        <input type="text" id="onb-slug" class="form-input" placeholder="e.g. sharma-villa" required oninput="updateOnboardDomainPreview()">
-                        <div style="margin-top: 5px; font-size: 12px; color: #38bdf8; font-family: monospace; display: flex; align-items: center; gap: 4px;">
-                            <span>🌐 Ingress Subdomain:</span>
-                            <span id="onb-preview-domain" style="font-weight: 600; color: #00f0ff;">sharma-villa-direct.gavasah.com</span>
-                        </div>
-                        <div style="font-size: 11px; color: #64748b; margin-top: 3px;">Namespaced as <code>&lt;client-slug&gt;-&lt;dealer-slug&gt;.gavasah.com</code></div>
-                    </div>
-
-                    <div class="form-group">
-                        <label class="form-label">AUTHENTICATION SECRET (AUTH_KEY)</label>
-                        <div class="form-input-wrap">
-                            <input type="text" id="onb-secret" class="form-input" placeholder="Auto-generated if left empty">
-                            <button type="button" class="btn-sm" style="position: absolute; right: 6px;" onclick="generateOnboardSecret()">🎲</button>
+                        <input type="text" id="onb-name" class="form-input" placeholder="e.g. Sharma Villa (Jubilee Hills)" required oninput="onOnboardNameChange()">
+                        <input type="hidden" id="onb-slug">
+                        <input type="hidden" id="onb-secret">
+                        <div style="margin-top: 8px; padding: 10px 14px; background: rgba(56, 189, 248, 0.06); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 8px;">
+                            <div style="font-size: 12px; color: #38bdf8; font-family: monospace; display: flex; align-items: center; gap: 6px;">
+                                <span>🌐 Auto-Assigned Ingress Subdomain:</span>
+                                <span id="onb-preview-domain" style="font-weight: 700; color: #00f0ff;">client-direct.gavasah.com</span>
+                            </div>
+                            <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Secure cryptographic token and ingress subdomain are automatically provisioned.</div>
                         </div>
                     </div>
 
@@ -3006,7 +3007,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn-sm" onclick="closeOnboardModal()">Cancel</button>
-                    <button type="submit" class="btn-action">🚀 Provision Client Site</button>
+                    <button type="submit" id="onb-submit-btn" class="btn-action" style="background: linear-gradient(135deg, #0284c7, #0369a1); font-weight: 600;">🚀 Save & Provision Site</button>
                 </div>
             </form>
         </div>
@@ -4500,16 +4501,43 @@ HTML_PAGE = """<!DOCTYPE html>
             return res;
         }
 
+        function slugifyText(text) {
+            return (text || '').toString().toLowerCase().trim()
+                .replace(/[^a-z0-9]+/g, '-')
+                .replace(/^-+|-+$/g, '');
+        }
+
+        function onOnboardNameChange() {
+            const nameEl = document.getElementById('onb-name');
+            const slugEl = document.getElementById('onb-slug');
+            if (nameEl && slugEl) {
+                slugEl.value = slugifyText(nameEl.value);
+            }
+            updateOnboardDomainPreview();
+        }
+
         async function handleOnboardSubmit(e) {
             e.preventDefault();
-            const slugInput = document.getElementById('onb-slug') || document.getElementById('onb-id');
+            const nameVal = document.getElementById('onb-name').value.trim();
+            const slugInput = document.getElementById('onb-slug');
+            let autoSlug = (slugInput ? slugInput.value.trim() : '') || slugifyText(nameVal);
+            if (!autoSlug) {
+                autoSlug = 'client-' + Math.floor(1000 + Math.random() * 9000);
+            }
+
+            const secretInput = document.getElementById('onb-secret');
+            let secretVal = secretInput ? secretInput.value.trim() : '';
+            if (!secretVal) {
+                secretVal = generateSecretStr();
+            }
+
             const payload = {
-                name: document.getElementById('onb-name').value.trim(),
-                client_id: slugInput.value.trim().toLowerCase(),
-                auth_secret: document.getElementById('onb-secret').value.trim(),
-                knx_ip: document.getElementById('onb-knx-ip').value.trim(),
-                knx_port: parseInt(document.getElementById('onb-knx-port').value) || 3671,
-                ssh_public_key: document.getElementById('onb-ssh-key').value.trim()
+                name: nameVal,
+                client_id: autoSlug.toLowerCase(),
+                auth_secret: secretVal,
+                knx_ip: (document.getElementById('onb-knx-ip') ? document.getElementById('onb-knx-ip').value.trim() : '192.168.1.100'),
+                knx_port: parseInt(document.getElementById('onb-knx-port') ? document.getElementById('onb-knx-port').value : 3671) || 3671,
+                ssh_public_key: (document.getElementById('onb-ssh-key') ? document.getElementById('onb-ssh-key').value.trim() : '')
             };
 
             if (currentUser.role === 'manufacturer') {
@@ -4991,8 +5019,10 @@ All active sessions for this integrator will be terminated immediately.` : '';
         }
 
         function updateOnboardDomainPreview() {
-            const slugEl = document.getElementById('onb-slug') || document.getElementById('onb-id');
-            const raw = (slugEl ? slugEl.value : '').trim().toLowerCase().replace(/[^a-z0-9\-]/g, '');
+            const nameEl = document.getElementById('onb-name');
+            const slugEl = document.getElementById('onb-slug');
+            const rawVal = (slugEl && slugEl.value) ? slugEl.value : slugifyText(nameEl ? nameEl.value : '');
+            const raw = rawVal.trim().toLowerCase().replace(/[^a-z0-9\-]/g, '');
             const dSlug = getActiveDealerSlug();
             const cleanBase = raw.replace(new RegExp(`-${dSlug}$`), '');
             const domainPreviewEl = document.getElementById('onb-preview-domain');
@@ -6386,9 +6416,17 @@ PersistentKeepalive = 25
             knx_ip = body.get('knx_ip', '192.168.1.100').strip()
             knx_port = int(body.get('knx_port', 3671))
 
-            if not client_name or not client_id:
-                self.send_json(400, {'error': 'Site name and unique identifier are required'})
+            if not client_name:
+                self.send_json(400, {'error': 'Client site name is required'})
                 return
+
+            if not client_id:
+                client_id = re.sub(r'[^a-z0-9]+', '-', client_name.lower()).strip('-')
+                if not client_id:
+                    client_id = f"client-{int(time.time()) % 10000}"
+
+            if not auth_secret:
+                auth_secret = secrets.token_hex(16)
 
             auth = load_auth_state()
 
@@ -6451,21 +6489,23 @@ PersistentKeepalive = 25
 
             raw_cslug = re.sub(r'[^a-z0-9\-]', '', client_id.lower()).strip('-')
             if not raw_cslug:
-                self.send_json(400, {'error': 'Client identifier must contain valid alphanumeric characters'})
-                return
+                raw_cslug = f"client-{int(time.time()) % 10000}"
 
             # Enforce format: <client-slug>-<dealer-slug>
-            if not raw_cslug.endswith(f"-{dealer_slug}"):
-                clean_id = f"{raw_cslug}-{dealer_slug}"
-            else:
-                clean_id = raw_cslug
+            base_cslug = raw_cslug.replace(f"-{dealer_slug}", "")
+            if not base_cslug:
+                base_cslug = f"client-{int(time.time()) % 10000}"
+
+            c_data = load_clients_state()
+            candidate_id = f"{base_cslug}-{dealer_slug}"
+            suffix = 1
+            while candidate_id in c_data:
+                suffix += 1
+                candidate_id = f"{base_cslug}-{suffix}-{dealer_slug}"
+            clean_id = candidate_id
 
             domain = f"{clean_id}.gavasah.com"
 
-            c_data = load_clients_state()
-            if clean_id in c_data:
-                self.send_json(400, {'error': f"Client identifier '{clean_id}' is already registered under this dealership"})
-                return
 
             # Zero-Touch WireGuard Mesh IP Allocation (Option A)
             wg_ip = allocate_next_wg_ip()
