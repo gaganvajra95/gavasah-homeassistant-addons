@@ -1562,6 +1562,41 @@ HTML_PAGE = """<!DOCTYPE html>
             user-select: all;
         }
 
+    
+        .btn-status-toggle {
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            padding: 3px 9px;
+            border-radius: 9999px;
+            cursor: pointer;
+            border: 1px solid transparent;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .status-active-btn {
+            background: rgba(16, 185, 129, 0.15);
+            color: #34d399;
+            border-color: rgba(16, 185, 129, 0.35);
+        }
+        .status-active-btn:hover {
+            background: rgba(239, 68, 68, 0.2);
+            color: #f87171;
+            border-color: rgba(239, 68, 68, 0.4);
+        }
+        .status-suspended-btn {
+            background: rgba(239, 68, 68, 0.15);
+            color: #f87171;
+            border-color: rgba(239, 68, 68, 0.35);
+        }
+        .status-suspended-btn:hover {
+            background: rgba(16, 185, 129, 0.2);
+            color: #34d399;
+            border-color: rgba(16, 185, 129, 0.4);
+        }
+
     </style>
 </head>
 <body>
@@ -2675,12 +2710,19 @@ HTML_PAGE = """<!DOCTYPE html>
                             ${d.created_at ? new Date(d.created_at * 1000).toLocaleDateString() : 'Initial'}
                         </td>
                         <td>
-                            <span class="badge-status ${d.status === 'active' ? 'status-online' : 'status-lost'}">
-                                ${d.status.toUpperCase()}
-                            </span>
+                            <button type="button" class="btn-status-toggle ${d.status === 'active' ? 'status-active-btn' : 'status-suspended-btn'}" 
+                                onclick="toggleDealerStatus('${d.id}', '${d.status === 'active' ? 'suspended' : 'active'}')" 
+                                title="Click to ${d.status === 'active' ? 'Suspend Login & Terminate Sessions' : 'Activate Login'}">
+                                ${d.status === 'active' ? '🟢 ACTIVE' : '🔴 SUSPENDED'}
+                            </button>
                         </td>
                         <td>
                             <div style="display: flex; gap: 6px;">
+                                ${d.status === 'active' ? `
+                                    <button class="btn-action-icon" style="color: #fbbf24; border-color: rgba(251, 191, 36, 0.3);" onclick="toggleDealerStatus('${d.id}', 'suspended')" title="Suspend Dealer Login & Kill Active Sessions">⏸️ Suspend</button>
+                                ` : `
+                                    <button class="btn-action-icon" style="color: #34d399; border-color: rgba(52, 211, 153, 0.3);" onclick="toggleDealerStatus('${d.id}', 'active')" title="Activate Dealer Login">▶️ Activate</button>
+                                `}
                                 <button class="btn-action-icon" onclick="openEditDealerModal('${d.id}')" title="Edit Dealer & Password">✏️ Edit</button>
                                 <button class="btn-action-icon" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.3);" onclick="promptDeleteDealer('${d.id}', '${escapeHtml(d.name)}')" title="Delete Dealer">🗑️</button>
                             </div>
@@ -2926,12 +2968,19 @@ HTML_PAGE = """<!DOCTYPE html>
                             </span>
                         </td>
                         <td>
-                            <span class="badge-status ${it.status === 'active' ? 'status-online' : 'status-lost'}">
-                                ${it.status.toUpperCase()}
-                            </span>
+                            <button type="button" class="btn-status-toggle ${it.status === 'active' ? 'status-active-btn' : 'status-suspended-btn'}" 
+                                onclick="toggleIntegratorStatus('${it.id}', '${it.status === 'active' ? 'suspended' : 'active'}')" 
+                                title="Click to ${it.status === 'active' ? 'Suspend Login & Terminate Sessions' : 'Activate Login'}">
+                                ${it.status === 'active' ? '🟢 ACTIVE' : '🔴 SUSPENDED'}
+                            </button>
                         </td>
                         <td>
                             <div style="display: flex; gap: 6px;">
+                                ${it.status === 'active' ? `
+                                    <button class="btn-action-icon" style="color: #fbbf24; border-color: rgba(251, 191, 36, 0.3);" onclick="toggleIntegratorStatus('${it.id}', 'suspended')" title="Suspend Integrator Login & Kill Active Sessions">⏸️ Suspend</button>
+                                ` : `
+                                    <button class="btn-action-icon" style="color: #34d399; border-color: rgba(52, 211, 153, 0.3);" onclick="toggleIntegratorStatus('${it.id}', 'active')" title="Activate Integrator Login">▶️ Activate</button>
+                                `}
                                 <button class="btn-action-icon" onclick="openEditIntegratorModal('${it.id}')" title="Edit Integrator & Password">✏️ Edit</button>
                                 <button class="btn-action-icon" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.3);" onclick="promptDeleteIntegrator('${it.id}', '${escapeHtml(it.name)}')" title="Delete Integrator">🗑️</button>
                             </div>
@@ -3764,6 +3813,57 @@ HTML_PAGE = """<!DOCTYPE html>
             }, 10000); // 10s polling interval
         });
 
+
+        async function toggleDealerStatus(dealerId, newStatus) {
+            const actionLabel = newStatus === 'suspended' ? 'suspend' : 'activate';
+            const warningExtra = newStatus === 'suspended' ? '\nAll active sessions for this dealer and their integrators will be terminated immediately.' : '';
+            if (!confirm(`Are you sure you want to ${actionLabel} this dealer?${warningExtra}`)) {
+                return;
+            }
+            try {
+                const res = await fetch('/api/toggle_dealer_status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ dealer_id: dealerId, status: newStatus })
+                });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast(data.message || `Dealer status changed to ${newStatus.toUpperCase()}`, 'success');
+                    fetchDealers();
+                    fetchFleet();
+                } else {
+                    showToast(data.error || 'Failed to toggle dealer status', 'error');
+                }
+            } catch (err) {
+                showToast('Network error toggling status', 'error');
+            }
+        }
+
+        async function toggleIntegratorStatus(intId, newStatus) {
+            const actionLabel = newStatus === 'suspended' ? 'suspend' : 'activate';
+            const warningExtra = newStatus === 'suspended' ? '\nAll active sessions for this integrator will be terminated immediately.' : '';
+            if (!confirm(`Are you sure you want to ${actionLabel} this integrator?${warningExtra}`)) {
+                return;
+            }
+            try {
+                const res = await fetch('/api/toggle_integrator_status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ integrator_id: intId, status: newStatus })
+                });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast(data.message || `Integrator status changed to ${newStatus.toUpperCase()}`, 'success');
+                    fetchIntegrators();
+                    fetchFleet();
+                } else {
+                    showToast(data.error || 'Failed to toggle integrator status', 'error');
+                }
+            } catch (err) {
+                showToast('Network error toggling status', 'error');
+            }
+        }
+
 """
 
 import os
@@ -3943,6 +4043,11 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             it = integrators.get(user_id)
             if it:
                 if it.get('status') == 'suspended':
+                    return None
+                # Check if parent dealership is suspended
+                dealers = auth.get('dealers', {})
+                parent_dealer = dealers.get(it.get('dealer_id'))
+                if parent_dealer and parent_dealer.get('status') == 'suspended':
                     return None
                 return {
                     'id': it['id'],
@@ -4388,6 +4493,104 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             return
 
         # 5. Create Dealer (Manufacturer Only)
+        
+        # --- TOGGLE DEALER STATUS (MANUFACTURER: ACTIVATE / SUSPEND & KILL SESSIONS) ---
+        elif parsed.path == '/api/toggle_dealer_status':
+            user = self.get_authenticated_user()
+            if not user or user['role'] != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer privilege required'})
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            dealer_id = body.get('dealer_id', '').strip()
+            target_status = body.get('status')
+
+            with AUTH_LOCK:
+                auth = load_auth_state()
+                dealer = auth.get('dealers', {}).get(dealer_id)
+                if not dealer:
+                    self.send_json(404, {'error': 'Dealer not found'})
+                    return
+
+                if not target_status:
+                    target_status = 'suspended' if dealer.get('status', 'active') == 'active' else 'active'
+
+                dealer['status'] = target_status
+                auth['dealers'][dealer_id] = dealer
+
+                terminated_count = 0
+                if target_status == 'suspended':
+                    # Terminate all active sessions for this dealer
+                    for token, sess in list(auth.get('sessions', {}).items()):
+                        if sess.get('user_id') == dealer_id:
+                            del auth['sessions'][token]
+                            terminated_count += 1
+                    # Also terminate sessions for all integrators belonging to this dealer
+                    for iid, it in auth.get('integrators', {}).items():
+                        if it.get('dealer_id') == dealer_id:
+                            for token, sess in list(auth.get('sessions', {}).items()):
+                                if sess.get('user_id') == iid:
+                                    del auth['sessions'][token]
+                                    terminated_count += 1
+
+                save_auth_state(auth)
+
+            self.send_json(200, {
+                'ok': True,
+                'status': target_status,
+                'terminated_sessions': terminated_count,
+                'message': f"Dealer '{dealer.get('name')}' {target_status.upper()}. {terminated_count} active session(s) terminated."
+            })
+            return
+
+        # --- TOGGLE INTEGRATOR STATUS (MANUFACTURER & DEALERS: ACTIVATE / SUSPEND & KILL SESSIONS) ---
+        elif parsed.path == '/api/toggle_integrator_status':
+            user = self.get_authenticated_user()
+            if not user or user['role'] not in ['manufacturer', 'dealer']:
+                self.send_json(403, {'error': 'Manufacturer or Dealer privilege required'})
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            int_id = body.get('integrator_id', '').strip()
+            target_status = body.get('status')
+
+            with AUTH_LOCK:
+                auth = load_auth_state()
+                integrator = auth.get('integrators', {}).get(int_id)
+                if not integrator:
+                    self.send_json(404, {'error': 'Integrator not found'})
+                    return
+
+                # If Dealer, verify ownership
+                if user['role'] == 'dealer' and integrator.get('dealer_id') != user['id']:
+                    self.send_json(403, {'error': 'Access denied: You can only suspend your own integrators'})
+                    return
+
+                if not target_status:
+                    target_status = 'suspended' if integrator.get('status', 'active') == 'active' else 'active'
+
+                integrator['status'] = target_status
+                auth['integrators'][int_id] = integrator
+
+                terminated_count = 0
+                if target_status == 'suspended':
+                    # Terminate all active sessions for this integrator
+                    for token, sess in list(auth.get('sessions', {}).items()):
+                        if sess.get('user_id') == int_id:
+                            del auth['sessions'][token]
+                            terminated_count += 1
+
+                save_auth_state(auth)
+
+            self.send_json(200, {
+                'ok': True,
+                'status': target_status,
+                'terminated_sessions': terminated_count,
+                'message': f"Integrator '{integrator.get('name')}' {target_status.upper()}. {terminated_count} active session(s) terminated."
+            })
+            return
         elif parsed.path == '/api/create_dealer':
             user = self.get_authenticated_user()
             if not user or user['role'] != 'manufacturer':
@@ -4484,6 +4687,15 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                 dealer['email'] = email
                 dealer['phone'] = phone
                 dealer['status'] = status
+                if status == 'suspended':
+                    for token, sess in list(auth.get('sessions', {}).items()):
+                        if sess.get('user_id') == dealer_id:
+                            del auth['sessions'][token]
+                    for iid, it in auth.get('integrators', {}).items():
+                        if it.get('dealer_id') == dealer_id:
+                            for token, sess in list(auth.get('sessions', {}).items()):
+                                if sess.get('user_id') == iid:
+                                    del auth['sessions'][token]
 
                 # Manufacturer can update / reset dealer password directly!
                 if new_password:
@@ -4684,6 +4896,10 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                 integrator['email'] = email
                 integrator['phone'] = phone
                 integrator['status'] = status
+                if status == 'suspended':
+                    for token, sess in list(auth.get('sessions', {}).items()):
+                        if sess.get('user_id') == int_id:
+                            del auth['sessions'][token]
 
                 # Manufacturer and Dealer can update / reset Integrator's password directly!
                 if new_password:
