@@ -227,6 +227,9 @@ if not os.path.exists(AUTH_FILE):
     owner_salt, owner_hash = hash_password("gavasah2026!")
     d1_salt, d1_hash = hash_password("apex123!")
     d2_salt, d2_hash = hash_password("vajra123!")
+    i1_salt, i1_hash = hash_password("rajesh123!")
+    i2_salt, i2_hash = hash_password("vikram123!")
+    i3_salt, i3_hash = hash_password("suresh123!")
     
     seed_auth = {
         "owner": {
@@ -242,6 +245,7 @@ if not os.path.exists(AUTH_FILE):
             "dealer_apex": {
                 "id": "dealer_apex",
                 "username": "apex_dealer",
+                "password_plain": "apex123!",
                 "name": "Apex Smart Automation",
                 "email": "contact@apexsmart.in",
                 "phone": "+91 98490 12345",
@@ -254,6 +258,7 @@ if not os.path.exists(AUTH_FILE):
             "dealer_vajra": {
                 "id": "dealer_vajra",
                 "username": "vajra_knx",
+                "password_plain": "vajra123!",
                 "name": "Vajra KNX Solutions",
                 "email": "sales@vajraknx.com",
                 "phone": "+91 99887 76655",
@@ -264,9 +269,123 @@ if not os.path.exists(AUTH_FILE):
                 "created_at": int(time.time()) - 86400 * 15
             }
         },
+        "integrators": {
+            "int_apex_rajesh": {
+                "id": "int_apex_rajesh",
+                "dealer_id": "dealer_apex",
+                "dealer_name": "Apex Smart Automation",
+                "username": "rajesh_knx",
+                "password_plain": "rajesh123!",
+                "name": "Rajesh Kumar (Lead Integrator)",
+                "email": "rajesh@apexsmart.in",
+                "phone": "+91 98450 11223",
+                "role": "integrator",
+                "status": "active",
+                "salt": i1_salt,
+                "password_hash": i1_hash,
+                "created_at": int(time.time()) - 86400 * 20
+            },
+            "int_apex_vikram": {
+                "id": "int_apex_vikram",
+                "dealer_id": "dealer_apex",
+                "dealer_name": "Apex Smart Automation",
+                "username": "vikram_tech",
+                "password_plain": "vikram123!",
+                "name": "Vikram Rao (Field Engineer)",
+                "email": "vikram@apexsmart.in",
+                "phone": "+91 98450 44556",
+                "role": "integrator",
+                "status": "active",
+                "salt": i2_salt,
+                "password_hash": i2_hash,
+                "created_at": int(time.time()) - 86400 * 10
+            },
+            "int_vajra_suresh": {
+                "id": "int_vajra_suresh",
+                "dealer_id": "dealer_vajra",
+                "dealer_name": "Vajra KNX Solutions",
+                "username": "suresh_auto",
+                "password_plain": "suresh123!",
+                "name": "Suresh Patel (Senior Integrator)",
+                "email": "suresh@vajraknx.com",
+                "phone": "+91 99887 11223",
+                "role": "integrator",
+                "status": "active",
+                "salt": i3_salt,
+                "password_hash": i3_hash,
+                "created_at": int(time.time()) - 86400 * 12
+            }
+        },
         "sessions": {}
     }
     save_auth_state(seed_auth)
+else:
+    # Upgrade existing auth_state if missing integrators or password_plain
+    existing_auth = load_auth_state()
+    auth_dirty = False
+    
+    # Ensure dealers have password_plain
+    if 'dealers' in existing_auth:
+        for did, d in existing_auth['dealers'].items():
+            if 'password_plain' not in d:
+                d['password_plain'] = 'apex123!' if did == 'dealer_apex' else 'vajra123!'
+                auth_dirty = True
+                
+    if 'integrators' not in existing_auth or not existing_auth['integrators']:
+        i1_salt, i1_hash = hash_password("rajesh123!")
+        i2_salt, i2_hash = hash_password("vikram123!")
+        i3_salt, i3_hash = hash_password("suresh123!")
+        existing_auth['integrators'] = {
+            "int_apex_rajesh": {
+                "id": "int_apex_rajesh",
+                "dealer_id": "dealer_apex",
+                "dealer_name": "Apex Smart Automation",
+                "username": "rajesh_knx",
+                "password_plain": "rajesh123!",
+                "name": "Rajesh Kumar (Lead Integrator)",
+                "email": "rajesh@apexsmart.in",
+                "phone": "+91 98450 11223",
+                "role": "integrator",
+                "status": "active",
+                "salt": i1_salt,
+                "password_hash": i1_hash,
+                "created_at": int(time.time()) - 86400 * 20
+            },
+            "int_apex_vikram": {
+                "id": "int_apex_vikram",
+                "dealer_id": "dealer_apex",
+                "dealer_name": "Apex Smart Automation",
+                "username": "vikram_tech",
+                "password_plain": "vikram123!",
+                "name": "Vikram Rao (Field Engineer)",
+                "email": "vikram@apexsmart.in",
+                "phone": "+91 98450 44556",
+                "role": "integrator",
+                "status": "active",
+                "salt": i2_salt,
+                "password_hash": i2_hash,
+                "created_at": int(time.time()) - 86400 * 10
+            },
+            "int_vajra_suresh": {
+                "id": "int_vajra_suresh",
+                "dealer_id": "dealer_vajra",
+                "dealer_name": "Vajra KNX Solutions",
+                "username": "suresh_auto",
+                "password_plain": "suresh123!",
+                "name": "Suresh Patel (Senior Integrator)",
+                "email": "suresh@vajraknx.com",
+                "phone": "+91 99887 11223",
+                "role": "integrator",
+                "status": "active",
+                "salt": i3_salt,
+                "password_hash": i3_hash,
+                "created_at": int(time.time()) - 86400 * 12
+            }
+        }
+        auth_dirty = True
+    
+    if auth_dirty:
+        save_auth_state(existing_auth)
 
 # Seed demo clients if file does not exist
 if not os.path.exists(STATE_FILE):
@@ -383,6 +502,17 @@ else:
         if 'dealer_id' not in c or not c['dealer_id']:
             c['dealer_id'] = 'owner_master'
             c['dealer_name'] = 'Master Manufacturer (Direct)'
+            c_updated = True
+        if 'integrator_id' not in c:
+            if cid == 'sharma-villa':
+                c['integrator_id'] = 'int_apex_rajesh'
+                c['integrator_name'] = 'Rajesh Kumar (Lead Integrator)'
+            elif cid == 'verma-penthouse':
+                c['integrator_id'] = 'int_vajra_suresh'
+                c['integrator_name'] = 'Suresh Patel (Senior Integrator)'
+            else:
+                c['integrator_id'] = None
+                c['integrator_name'] = 'Direct Dealer Supervision'
             c_updated = True
     if c_updated:
         save_clients_state(c_data)
@@ -753,12 +883,71 @@ HTML_PAGE = """<!DOCTYPE html>
             transition: margin-left 0.3s;
         }
 
-        /* Dealer mode adjustments: No sidebar needed */
-        body.is-dealer .sidebar {
+        /* 3-Tier Multi-Tenant Layout Rules */
+        body.is-dealer #nav-dealers {
             display: none !important;
         }
-        body.is-dealer .main-wrapper {
+        body.is-dealer #integrator-dealer-filter-wrap {
+            display: none !important;
+        }
+        body.is-dealer #th-dealer-col {
+            display: none;
+        }
+        
+        body.is-integrator .sidebar {
+            display: none !important;
+        }
+        body.is-integrator .main-wrapper {
             margin-left: 0 !important;
+        }
+        body.is-integrator #th-dealer-col,
+        body.is-integrator #th-integrator-col {
+            display: none;
+        }
+        body.is-integrator #integrator-header-actions {
+            display: flex !important;
+        }
+
+        .portal-role-tag.role-tag-integrator {
+            background: rgba(16, 185, 129, 0.15);
+            border-color: rgba(16, 185, 129, 0.4);
+            color: #34d399;
+        }
+
+        .badge-integrator {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 700;
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.25);
+            color: #34d399;
+        }
+
+        .badge-direct-dealer {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            background: rgba(148, 163, 184, 0.08);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            color: #94a3b8;
+        }
+
+        .btn-reassign-sm {
+            background: rgba(168, 85, 247, 0.1);
+            border: 1px solid rgba(168, 85, 247, 0.28);
+            color: #c084fc;
+        }
+        .btn-reassign-sm:hover {
+            background: rgba(168, 85, 247, 0.22);
+            color: #fff;
         }
 
         /* Top Header */
@@ -1340,6 +1529,39 @@ HTML_PAGE = """<!DOCTYPE html>
         }
         .toast.success { border-color: rgba(16, 185, 129, 0.5); }
         .toast.error { border-color: rgba(239, 68, 68, 0.5); color: #f87171; }
+    
+        .pwd-cell-wrap {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(15, 23, 42, 0.6);
+            padding: 4px 8px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+        }
+        .btn-icon-pwd {
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            font-size: 13px;
+            padding: 2px 4px;
+            border-radius: 4px;
+            transition: background 0.15s;
+            line-height: 1;
+            color: #94a3b8;
+        }
+        .btn-icon-pwd:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+        }
+        .pwd-masked {
+            letter-spacing: 2px;
+            color: #cbd5e1;
+            font-size: 13px;
+            font-family: monospace;
+            user-select: all;
+        }
+
     </style>
 </head>
 <body>
@@ -1420,10 +1642,18 @@ HTML_PAGE = """<!DOCTYPE html>
                     <span class="nav-item-badge" id="badge-dealer-count">0</span>
                 </div>
 
+                <div class="nav-item" id="nav-integrators" onclick="switchTab('integrators')">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span class="nav-item-icon">🔧</span>
+                        <span id="nav-integrators-label">Integrators</span>
+                    </div>
+                    <span class="nav-item-badge" id="badge-integrator-count">0</span>
+                </div>
+
                 <div class="nav-item" id="nav-fleet" onclick="switchTab('fleet')">
                     <div style="display: flex; align-items: center; gap: 10px;">
                         <span class="nav-item-icon">🌐</span>
-                        <span>Client Fleets</span>
+                        <span id="nav-fleet-label">Client Fleets</span>
                     </div>
                     <span class="nav-item-badge" id="badge-fleet-count">0</span>
                 </div>
@@ -1466,9 +1696,9 @@ HTML_PAGE = """<!DOCTYPE html>
                     </div>
                     <button class="btn-sm" onclick="triggerSslCheck()">🔄 Verify SSL</button>
 
-                    <!-- Quick buttons visible for Dealer users -->
-                    <div id="dealer-header-actions" style="display: none; align-items: center; gap: 10px;">
-                        <button class="btn-sm" onclick="openDealerPasswordModal()">🔑 Change Password</button>
+                    <!-- Quick buttons visible for Integrator users -->
+                    <div id="integrator-header-actions" style="display: none; align-items: center; gap: 10px;">
+                        <button class="btn-sm" onclick="openIntegratorPasswordModal()">🔑 Change Password</button>
                         <button class="btn-logout" style="width: auto; padding: 6px 14px;" onclick="handleLogout()">🚪 Logout</button>
                     </div>
                 </div>
@@ -1481,10 +1711,15 @@ HTML_PAGE = """<!DOCTYPE html>
                      ============================================================== -->
                 <div class="tab-pane active" id="tab-overview">
                     <div class="grid-metrics">
-                        <div class="metric-card">
+                        <div class="metric-card" id="ov-card-dealers">
                             <div class="metric-label">Total Authorized Dealers</div>
                             <div class="metric-value" style="color: #c084fc;" id="ov-dealers-count">0</div>
-                            <div class="metric-sub">Active Dealer Organizations</div>
+                            <div class="metric-sub">Dealer Organizations</div>
+                        </div>
+                        <div class="metric-card" id="ov-card-integrators">
+                            <div class="metric-label" id="ov-integrators-label">Technical Integrators</div>
+                            <div class="metric-value" style="color: #34d399;" id="ov-integrators-count">0</div>
+                            <div class="metric-sub" id="ov-integrators-sub">Supervised Field Integrators</div>
                         </div>
                         <div class="metric-card">
                             <div class="metric-label">Total Client Gateways</div>
@@ -1542,6 +1777,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <tr>
                                     <th>Dealer Name / Business</th>
                                     <th>Portal Login Username</th>
+                                    <th>Portal Password</th>
                                     <th>Contact Email & Phone</th>
                                     <th>Managed Client Gateways</th>
                                     <th>Created Date</th>
@@ -1550,6 +1786,45 @@ HTML_PAGE = """<!DOCTYPE html>
                                 </tr>
                             </thead>
                             <tbody id="dealers-management-body">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ==============================================================
+                     TAB: INTEGRATORS MANAGEMENT (MANUFACTURER & DEALER)
+                     ============================================================== -->
+                <div class="tab-pane" id="tab-integrators">
+                    <div class="section-header">
+                        <div>
+                            <div class="section-title"><span>🔧</span> <span id="integrators-tab-title">Integrator Workforce Directory</span></div>
+                            <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;" id="integrators-tab-sub">Certified field engineers and integration specialists</div>
+                        </div>
+                        <div style="display: flex; gap: 10px; align-items: center;">
+                            <div id="integrator-dealer-filter-wrap">
+                                <select id="integrator-dealer-filter" class="form-input" style="padding: 7px 12px; font-size: 12px;" onchange="renderIntegratorsTable()">
+                                    <option value="ALL">All Dealerships</option>
+                                </select>
+                            </div>
+                            <button class="btn-action" style="background: linear-gradient(135deg, #10b981, #059669);" onclick="openCreateIntegratorModal()">+ Register New Integrator</button>
+                        </div>
+                    </div>
+
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Integrator Name</th>
+                                    <th id="th-int-dealership-col">Dealership</th>
+                                    <th>Portal Username</th>
+                                    <th>Login Password</th>
+                                    <th>Contact Email & Phone</th>
+                                    <th>Supervised Clients</th>
+                                    <th>Account Status</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="integrators-management-body">
                             </tbody>
                         </table>
                     </div>
@@ -1620,7 +1895,8 @@ HTML_PAGE = """<!DOCTYPE html>
                             <thead>
                                 <tr>
                                     <th>Client Site / Slug</th>
-                                    <th id="th-dealer-col">Assigned Dealer</th>
+                                    <th id="th-dealer-col">Dealer Partner</th>
+                                    <th id="th-integrator-col">Assigned Integrator</th>
                                     <th>Heartbeat Status</th>
                                     <th>Remote Ingress</th>
                                     <th>Boot Slot (RAUC)</th>
@@ -1715,6 +1991,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <input type="password" id="dlr-pwd" class="form-input" placeholder="Set secure password">
                             <button type="button" class="pwd-toggle-btn" onclick="togglePasswordVisibility('dlr-pwd', this)">👁️</button>
                         </div>
+                        <div id="dlr-pwd-hint" style="display: none; font-size: 11px; color: #64748b; margin-top: 4px;">Existing password displayed above. Modify here to update password.</div>
                     </div>
 
                     <div class="form-group">
@@ -1795,7 +2072,13 @@ HTML_PAGE = """<!DOCTYPE html>
                 <div class="modal-body">
                     <div class="form-group" id="onb-dealer-group">
                         <label class="form-label">ASSIGN TO DEALER</label>
-                        <select id="onb-dealer-select" class="form-input">
+                        <select id="onb-dealer-select" class="form-input" onchange="onOnboardDealerChange()">
+                        </select>
+                    </div>
+                    <div class="form-group" id="onb-integrator-group">
+                        <label class="form-label">ASSIGNED INTEGRATOR</label>
+                        <select id="onb-integrator-select" class="form-input">
+                            <!-- Populated with integrators -->
                         </select>
                     </div>
 
@@ -1844,7 +2127,13 @@ HTML_PAGE = """<!DOCTYPE html>
                     
                     <div class="form-group" id="edit-dealer-group">
                         <label class="form-label">ASSIGNED DEALER</label>
-                        <select id="edit-dealer-select" class="form-input">
+                        <select id="edit-dealer-select" class="form-input" onchange="onEditDealerChange()">
+                        </select>
+                    </div>
+                    <div class="form-group" id="edit-integrator-group">
+                        <label class="form-label">ASSIGNED INTEGRATOR</label>
+                        <select id="edit-integrator-select" class="form-input">
+                            <!-- Populated with integrators -->
                         </select>
                     </div>
 
@@ -1879,7 +2168,92 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
     </div>
 
-    <!-- Delete Modal (Client or Dealer) -->
+    <!-- Integrator Modal (Create / Edit) -->
+    <div class="modal" id="integrator-modal">
+        <div class="modal-content" style="max-width: 520px;">
+            <div class="modal-header">
+                <div id="integrator-modal-title">Register New Integrator</div>
+                <div style="cursor: pointer;" onclick="closeIntegratorModal()">&times;</div>
+            </div>
+            <form id="integrator-form" onsubmit="handleIntegratorSubmit(event)">
+                <input type="hidden" id="int-id">
+                <div class="modal-body">
+                    <div class="form-group" id="int-dealer-select-wrap">
+                        <label class="form-label">ASSIGNED DEALERSHIP</label>
+                        <select id="int-dealer-select" class="form-input">
+                            <!-- Populated with dealers -->
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">INTEGRATOR FULL NAME</label>
+                        <input type="text" id="int-name" class="form-input" placeholder="e.g. Rajesh Kumar" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">LOGIN USERNAME</label>
+                        <input type="text" id="int-username" class="form-input" placeholder="e.g. rajesh_knx" required autocomplete="off">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" id="int-pwd-label">LOGIN PASSWORD</label>
+                        <div class="form-input-wrap">
+                            <input type="password" id="int-password" class="form-input" placeholder="Set secure password" required>
+                            <button type="button" class="pwd-toggle-btn" onclick="togglePasswordVisibility('int-password', this)">👁️</button>
+                        </div>
+                        <div id="int-pwd-hint" style="display: none; font-size: 11px; color: #64748b; margin-top: 4px;">Existing password displayed above. Modify here to update password.</div>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                        <div class="form-group">
+                            <label class="form-label">CONTACT EMAIL</label>
+                            <input type="email" id="int-email" class="form-input" placeholder="rajesh@apexsmart.in">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">CONTACT PHONE</label>
+                            <input type="text" id="int-phone" class="form-input" placeholder="+91 98450 11223">
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-sm" onclick="closeIntegratorModal()">Cancel</button>
+                    <button type="submit" id="int-submit-btn" class="btn-action" style="background: linear-gradient(135deg, #10b981, #059669);">💾 Save Integrator</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Reassign Client Supervision Modal -->
+    <div class="modal" id="reassign-modal">
+        <div class="modal-content" style="max-width: 480px;">
+            <div class="modal-header">
+                <div>🔄 Reassign Client Supervision</div>
+                <div style="cursor: pointer;" onclick="closeReassignModal()">&times;</div>
+            </div>
+            <form id="reassign-form" onsubmit="handleReassignSubmit(event)">
+                <input type="hidden" id="reassign-client-id">
+                <div class="modal-body">
+                    <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
+                        Transfer management responsibility for <strong id="reassign-client-name" style="color: #fff;"></strong>.
+                    </div>
+                    <div class="form-group" id="reassign-dealer-wrap">
+                        <label class="form-label">ASSIGNED DEALERSHIP</label>
+                        <select id="reassign-dealer-select" class="form-input" onchange="onReassignDealerChange()">
+                            <!-- Populated with dealers -->
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">ASSIGNED INTEGRATOR</label>
+                        <select id="reassign-integrator-select" class="form-input">
+                            <!-- Populated with integrators -->
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn-sm" onclick="closeReassignModal()">Cancel</button>
+                    <button type="submit" class="btn-action">🔄 Transfer Supervision</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Delete Modal (Client or Dealer or Integrator) -->
     <div class="modal" id="delete-modal">
         <div class="modal-content" style="max-width: 440px;">
             <div class="modal-header">
@@ -1891,7 +2265,7 @@ HTML_PAGE = """<!DOCTYPE html>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn-sm" onclick="closeDeleteModal()">Cancel</button>
-                <button type="button" id="delete-confirm-btn" class="btn-sm btn-danger-sm">Confirm Delete</button>
+                <button type="button" id="delete-confirm-btn" class="btn-sm btn-danger-sm" onclick="confirmDeletion()">Confirm Delete</button>
             </div>
         </div>
     </div>
@@ -1949,18 +2323,21 @@ HTML_PAGE = """<!DOCTYPE html>
     <div id="toast-box"></div>
 
     <script>
+
         // ======================================================================
         // STATE MANAGEMENT
         // ======================================================================
         let currentUser = null;
-        let currentFleetData = {};
+        let currentFleetData = [];
         let dealersList = [];
+        let integratorsList = [];
         let activeTab = 'overview';
         let fleetSearchQuery = '';
         let fleetStatusFilter = 'ALL';
         let fleetCurrentPage = 1;
         let fleetPageSize = 25;
         let currentLogsClient = null;
+        let currentDeleteTarget = null; // { type: 'client'|'dealer'|'integrator', id: string, name: string }
 
         // ======================================================================
         // AUTHENTICATION & SESSION LIFECYCLE
@@ -1996,33 +2373,90 @@ HTML_PAGE = """<!DOCTYPE html>
             const sideName = document.getElementById('sidebar-user-name');
             const sideRole = document.getElementById('sidebar-user-role');
             const dealerActions = document.getElementById('dealer-header-actions');
+            const integratorActions = document.getElementById('integrator-header-actions');
 
             if (sideAvatar) sideAvatar.innerText = (currentUser.name || currentUser.username)[0].toUpperCase();
             if (sideName) sideName.innerText = currentUser.name || currentUser.username;
 
+            document.body.classList.remove('is-manufacturer', 'is-dealer', 'is-integrator');
+
             if (currentUser.role === 'manufacturer') {
-                document.body.classList.remove('is-dealer');
+                document.body.classList.add('is-manufacturer');
                 if (roleBadge) {
-                    roleBadge.innerText = 'MANUFACTURER';
+                    roleBadge.innerText = 'MANUFACTURER (MASTER OWNER)';
                     roleBadge.className = 'portal-role-tag role-tag-manufacturer';
                 }
                 if (sideRole) sideRole.innerText = 'MASTER OWNER';
                 if (dealerActions) dealerActions.style.display = 'none';
+                if (integratorActions) integratorActions.style.display = 'none';
 
-                // Default tab for Manufacturer
+                // Tabs visibility for Manufacturer
+                document.getElementById('nav-overview').style.display = 'flex';
+                document.getElementById('nav-dealers').style.display = 'flex';
+                document.getElementById('nav-integrators').style.display = 'flex';
+                document.getElementById('nav-fleet').style.display = 'flex';
+                document.getElementById('nav-account').style.display = 'flex';
+                document.getElementById('th-dealer-col').style.display = '';
+                document.getElementById('th-int-dealership-col').style.display = '';
+                document.getElementById('integrator-dealer-filter-wrap').style.display = 'block';
+
                 switchTab('overview');
                 fetchDealers();
+                fetchIntegrators();
                 fetchFleet();
-            } else {
-                // Dealer role
+
+            } else if (currentUser.role === 'dealer') {
                 document.body.classList.add('is-dealer');
                 if (roleBadge) {
                     roleBadge.innerText = `DEALER: ${currentUser.name || currentUser.username}`;
                     roleBadge.className = 'portal-role-tag role-tag-dealer';
                 }
+                if (sideRole) sideRole.innerText = 'AUTHORIZED DEALER';
                 if (dealerActions) dealerActions.style.display = 'flex';
+                if (integratorActions) integratorActions.style.display = 'none';
 
-                // Dealer view goes directly to Fleet
+                // Dealers have Sidebar with Summary, Integrators, Fleet, My Password
+                document.getElementById('nav-overview').style.display = 'flex';
+                document.getElementById('nav-dealers').style.display = 'none';
+                document.getElementById('nav-integrators').style.display = 'flex';
+                document.getElementById('nav-fleet').style.display = 'flex';
+                document.getElementById('nav-account').style.display = 'none';
+                document.getElementById('th-dealer-col').style.display = 'none';
+                document.getElementById('th-int-dealership-col').style.display = 'none';
+                document.getElementById('integrator-dealer-filter-wrap').style.display = 'none';
+
+                // Adjust Overview Header for Dealer
+                const ovHeaderTitle = document.querySelector('#tab-overview .section-title');
+                if (ovHeaderTitle) ovHeaderTitle.innerHTML = '<span>🔧</span> Supervised Integrators & Client Health Breakdown';
+                const ovAddBtn = document.querySelector('#tab-overview .section-header button');
+                if (ovAddBtn) {
+                    ovAddBtn.innerText = '+ Register New Integrator';
+                    ovAddBtn.onclick = openCreateIntegratorModal;
+                }
+
+                switchTab('overview');
+                fetchIntegrators();
+                fetchFleet();
+
+            } else if (currentUser.role === 'integrator') {
+                document.body.classList.add('is-integrator');
+                if (roleBadge) {
+                    roleBadge.innerText = `INTEGRATOR: ${currentUser.name} (${currentUser.dealer_name || 'Field'})`;
+                    roleBadge.className = 'portal-role-tag role-tag-integrator';
+                }
+                if (sideRole) sideRole.innerText = 'TECHNICAL INTEGRATOR';
+                if (dealerActions) dealerActions.style.display = 'none';
+                if (integratorActions) integratorActions.style.display = 'flex';
+
+                // Integrators see Fleet only
+                document.getElementById('nav-overview').style.display = 'none';
+                document.getElementById('nav-dealers').style.display = 'none';
+                document.getElementById('nav-integrators').style.display = 'none';
+                document.getElementById('nav-fleet').style.display = 'flex';
+                document.getElementById('nav-account').style.display = 'none';
+                document.getElementById('th-dealer-col').style.display = 'none';
+                document.getElementById('th-integrator-col').style.display = 'none';
+
                 switchTab('fleet');
                 fetchFleet();
             }
@@ -2046,7 +2480,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     body: JSON.stringify({ username: u, password: p })
                 });
                 const data = await res.json();
-                if (res.ok && data.success) {
+                if (res.ok && data.ok) {
                     currentUser = data.user;
                     initAuthenticatedUI();
                     showToast(`Welcome back, ${currentUser.name}!`, 'success');
@@ -2083,174 +2517,223 @@ HTML_PAGE = """<!DOCTYPE html>
             }
         }
 
-        // ======================================================================
-        // TABS NAVIGATION (MANUFACTURER)
-        // ======================================================================
-        function switchTab(tabId) {
-            activeTab = tabId;
+        function toggleTablePassword(elementId) {
+            const el = document.getElementById(elementId);
+            if (!el) return;
+            const plain = el.getAttribute('data-plain') || '';
+            if (el.innerText === '••••••••') {
+                el.innerText = plain;
+                el.style.color = '#38bdf8';
+                el.style.letterSpacing = 'normal';
+                el.style.fontWeight = '600';
+            } else {
+                el.innerText = '••••••••';
+                el.style.color = '#cbd5e1';
+                el.style.letterSpacing = '2px';
+                el.style.fontWeight = 'normal';
+            }
+        }
 
-            // Nav item active state
-            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
-            const navEl = document.getElementById('nav-' + tabId);
-            if (navEl) navEl.classList.add('active');
-
-            // Panes active state
-            document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
-            const paneEl = document.getElementById('tab-' + tabId);
-            if (paneEl) paneEl.classList.add('active');
-
-            // Header title
-            const titleMap = {
-                'overview': 'System Overview & Dealer Breakdown',
-                'dealers': 'Authorized Dealer Directory',
-                'fleet': currentUser && currentUser.role === 'dealer' ? 'My Client Gateways' : 'Global Fleet Inventory & Hardware Health',
-                'account': 'Manufacturer Security & Credentials'
-            };
-            const heading = document.getElementById('page-heading-title');
-            if (heading) heading.innerText = titleMap[tabId] || 'Fleet Command';
-
-            if (tabId === 'overview' || tabId === 'dealers') {
-                fetchDealers();
-            } else if (tabId === 'fleet') {
-                fetchFleet();
-            } else if (tabId === 'account') {
-                if (currentUser) {
-                    const uField = document.getElementById('owner-new-username');
-                    if (uField) uField.value = currentUser.username;
-                }
+        function copyPassword(pwdText) {
+            if (!pwdText) {
+                showToast('Password is empty', 'warning');
+                return;
+            }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(pwdText).then(() => {
+                    showToast('Password copied to clipboard!', 'success');
+                }).catch(() => {
+                    prompt('Copy password:', pwdText);
+                });
+            } else {
+                prompt('Copy password:', pwdText);
             }
         }
 
         // ======================================================================
-        // DEALERS MANAGEMENT (MANUFACTURER ONLY)
+        // TABS NAVIGATION
+        // ======================================================================
+        function switchTab(tabId) {
+            activeTab = tabId;
+
+            // Update nav styling
+            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+            const navEl = document.getElementById('nav-' + tabId);
+            if (navEl) navEl.classList.add('active');
+
+            // Update tab panes
+            document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
+            const paneEl = document.getElementById('tab-' + tabId);
+            if (paneEl) paneEl.classList.add('active');
+
+            // Refresh specific tab data
+            if (tabId === 'overview') {
+                if (currentUser.role === 'manufacturer') {
+                    fetchDealers();
+                    fetchIntegrators();
+                } else if (currentUser.role === 'dealer') {
+                    fetchIntegrators();
+                }
+                fetchFleet();
+            } else if (tabId === 'dealers') {
+                fetchDealers();
+            } else if (tabId === 'integrators') {
+                fetchIntegrators();
+            } else if (tabId === 'fleet') {
+                fetchFleet();
+            }
+        }
+
+        // ======================================================================
+        // DEALERS MANAGEMENT (MANUFACTURER)
         // ======================================================================
         async function fetchDealers() {
             if (!currentUser || currentUser.role !== 'manufacturer') return;
             try {
                 const res = await fetch('/api/dealers?t=' + Date.now());
-                if (!res.ok) throw new Error("Failed to load dealers");
-                dealersList = await res.json();
-                renderDealersUI();
+                if (res.ok) {
+                    dealersList = await res.json();
+                    renderDealersUI();
+                    updateDealerDropdowns();
+                }
             } catch (err) {
-                console.error("fetchDealers error:", err);
+                console.error("Error fetching dealers:", err);
             }
         }
 
         function renderDealersUI() {
-            const countBadge = document.getElementById('badge-dealer-count');
-            const ovDealerCount = document.getElementById('ov-dealers-count');
-            if (countBadge) countBadge.innerText = dealersList.length;
-            if (ovDealerCount) ovDealerCount.innerText = dealersList.length;
+            const badge = document.getElementById('badge-dealer-count');
+            if (badge) badge.innerText = dealersList.length;
 
-            // 1. Render Overview Dealers Table
+            const ovDealersCount = document.getElementById('ov-dealers-count');
+            if (ovDealersCount) ovDealersCount.innerText = dealersList.length;
+
+            // Overview Dealers Table
             const ovBody = document.getElementById('overview-dealers-body');
-            if (ovBody) {
-                ovBody.innerHTML = '';
-                if (dealersList.length === 0) {
-                    ovBody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: #94a3b8; padding: 24px;">No dealers registered yet.</td></tr>`;
-                } else {
-                    dealersList.forEach(d => {
-                        const tr = document.createElement('tr');
-                        tr.innerHTML = `
-                            <td>
-                                <div>
-                                    <strong style="color: #fff; font-size: 14px;">${escapeHtml(d.name)}</strong>
-                                    <div style="font-size: 11px; color: #94a3b8;">ID: ${escapeHtml(d.id)}</div>
-                                </div>
-                            </td>
-                            <td><span style="font-family: 'JetBrains Mono', monospace; color: #38bdf8;">${escapeHtml(d.username)}</span></td>
-                            <td><strong style="font-family: 'JetBrains Mono', monospace; font-size: 14px; color: #a855f7;">${d.client_count || 0} Sites</strong></td>
-                            <td>
-                                <span class="badge badge-green">${d.online_count || 0} Online</span>
-                                ${d.lost_count ? `<span class="badge badge-red" style="margin-left: 4px;">${d.lost_count} Lost</span>` : ''}
-                            </td>
-                            <td>
-                                <div style="font-size: 12px;">${escapeHtml(d.email || 'N/A')}</div>
-                                <div style="font-size: 11px; color: #64748b;">${escapeHtml(d.phone || '')}</div>
-                            </td>
-                            <td><span class="badge badge-${d.status === 'active' ? 'green' : 'amber'}">${(d.status || 'active').toUpperCase()}</span></td>
-                            <td>
-                                <button class="btn-sm btn-primary-sm" onclick="filterFleetByDealer('${d.id}')">View Clients ➔</button>
-                            </td>
-                        `;
-                        ovBody.appendChild(tr);
-                    });
-                }
+            if (ovBody && currentUser.role === 'manufacturer') {
+                ovBody.innerHTML = dealersList.map(d => `
+                    <tr>
+                        <td style="font-weight: 600; color: #fff;">
+                            <div>${escapeHtml(d.name)}</div>
+                            <div style="font-size: 11px; color: #64748b; font-family: monospace;">ID: ${escapeHtml(d.id)}</div>
+                        </td>
+                        <td style="font-family: monospace; color: #cbd5e1;">${escapeHtml(d.username)}</td>
+                        <td>
+                            <span class="badge-role" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3);">
+                                ${d.client_count} Gateway(s) / ${d.integrator_count || 0} Integrator(s)
+                            </span>
+                        </td>
+                        <td>
+                            <span style="color: #10b981; font-weight: 600;">${d.online_count} Online</span> / 
+                            <span style="color: ${d.lost_count > 0 ? '#ef4444' : '#64748b'}; font-weight: 600;">${d.lost_count} Lost</span>
+                        </td>
+                        <td style="font-size: 12px; color: #94a3b8;">
+                            <div>${escapeHtml(d.email || '—')}</div>
+                            <div style="font-size: 11px; color: #64748b;">${escapeHtml(d.phone || '—')}</div>
+                        </td>
+                        <td>
+                            <span class="badge-status ${d.status === 'active' ? 'status-online' : 'status-lost'}">
+                                ${d.status.toUpperCase()}
+                            </span>
+                        </td>
+                        <td>
+                            <button class="btn-sm" onclick="filterFleetByDealer('${d.id}')">View Fleet ➔</button>
+                        </td>
+                    </tr>
+                `).join('') || `<tr><td colspan="7" style="text-align: center; color: #64748b; padding: 24px;">No authorized dealers registered yet.</td></tr>`;
             }
 
-            // 2. Render Dealers Management Table
-            const mgBody = document.getElementById('dealers-management-body');
-            if (mgBody) {
-                mgBody.innerHTML = '';
-                if (dealersList.length === 0) {
-                    mgBody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: #94a3b8; padding: 24px;">No dealers found. Click "+ Add New Dealer" to create one.</td></tr>`;
-                } else {
-                    dealersList.forEach(d => {
-                        const tr = document.createElement('tr');
-                        const createdStr = d.created_at ? new Date(d.created_at * 1000).toLocaleDateString() : 'N/A';
-                        tr.innerHTML = `
-                            <td>
-                                <div>
-                                    <strong style="color: #fff; font-size: 14px;">${escapeHtml(d.name)}</strong>
-                                </div>
-                            </td>
-                            <td><span style="font-family: 'JetBrains Mono', monospace; color: #38bdf8; font-weight: 600;">${escapeHtml(d.username)}</span></td>
-                            <td>
-                                <div>${escapeHtml(d.email || 'None')}</div>
-                                <div style="color: #64748b; font-size: 11px;">${escapeHtml(d.phone || '')}</div>
-                            </td>
-                            <td><span class="badge badge-purple">${d.client_count || 0} Gateways</span></td>
-                            <td style="font-size: 12px; color: #94a3b8;">${createdStr}</td>
-                            <td><span class="badge badge-${d.status === 'active' ? 'green' : 'amber'}">${(d.status || 'active').toUpperCase()}</span></td>
-                            <td>
-                                <div class="action-links">
-                                    <button class="btn-sm btn-primary-sm" onclick="openEditDealerModal('${d.id}')">✏️ Edit</button>
-                                    <button class="btn-sm btn-danger-sm" onclick="promptDeleteDealer('${d.id}', '${escapeHtml(d.name)}')">🗑️ Delete</button>
-                                </div>
-                            </td>
-                        `;
-                        mgBody.appendChild(tr);
-                    });
-                }
+            // Dedicated Dealers Directory Table (With Password Reveal & Edit for Manufacturer)
+            const dirBody = document.getElementById('dealers-management-body');
+            if (dirBody) {
+                dirBody.innerHTML = dealersList.map(d => `
+                    <tr>
+                        <td style="font-weight: 600; color: #fff;">
+                            <div style="font-size: 14px;">${escapeHtml(d.name)}</div>
+                            <div style="font-size: 11px; color: #64748b; font-family: monospace;">UUID: ${escapeHtml(d.id)}</div>
+                        </td>
+                        <td style="font-family: monospace; color: #cbd5e1; font-weight: 600;">
+                            ${escapeHtml(d.username)}
+                        </td>
+                        <td>
+                            <div class="pwd-cell-wrap">
+                                <span class="pwd-masked" id="dlr-pwd-val-${d.id}" data-plain="${escapeHtml(d.password_plain || '')}">••••••••</span>
+                                <button type="button" class="btn-icon-pwd" onclick="toggleTablePassword('dlr-pwd-val-${d.id}')" title="Show / Hide Password">👁️</button>
+                                <button type="button" class="btn-icon-pwd" onclick="copyPassword('${escapeHtml(d.password_plain || '')}')" title="Copy Password">📋</button>
+                            </div>
+                        </td>
+                        <td style="font-size: 12px; color: #cbd5e1;">
+                            <div>📧 ${escapeHtml(d.email || 'None')}</div>
+                            <div style="margin-top: 2px;">📞 ${escapeHtml(d.phone || 'None')}</div>
+                        </td>
+                        <td>
+                            <span class="badge-role" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3);">
+                                ${d.client_count} Client Sites
+                            </span>
+                        </td>
+                        <td style="font-size: 12px; color: #64748b;">
+                            ${d.created_at ? new Date(d.created_at * 1000).toLocaleDateString() : 'Initial'}
+                        </td>
+                        <td>
+                            <span class="badge-status ${d.status === 'active' ? 'status-online' : 'status-lost'}">
+                                ${d.status.toUpperCase()}
+                            </span>
+                        </td>
+                        <td>
+                            <div style="display: flex; gap: 6px;">
+                                <button class="btn-action-icon" onclick="openEditDealerModal('${d.id}')" title="Edit Dealer & Password">✏️ Edit</button>
+                                <button class="btn-action-icon" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.3);" onclick="promptDeleteDealer('${d.id}', '${escapeHtml(d.name)}')" title="Delete Dealer">🗑️</button>
+                            </div>
+                        </td>
+                    </tr>
+                `).join('') || `<tr><td colspan="8" style="text-align: center; color: #64748b; padding: 24px;">No dealers registered.</td></tr>`;
             }
-
-            // Update Dealer select dropdowns in onboarding and edit client modals
-            updateDealerDropdowns();
         }
 
         function updateDealerDropdowns() {
-            const onbSelect = document.getElementById('onb-dealer-select');
-            const editSelect = document.getElementById('edit-dealer-select');
-            const onbGroup = document.getElementById('onb-dealer-group');
-            const editGroup = document.getElementById('edit-dealer-group');
-
-            if (!currentUser || currentUser.role !== 'manufacturer') {
-                if (onbGroup) onbGroup.style.display = 'none';
-                if (editGroup) editGroup.style.display = 'none';
-                return;
+            // Fleet filter dropdown
+            const filterSel = document.getElementById('fleet-dealer-filter');
+            if (filterSel && currentUser.role === 'manufacturer') {
+                const prev = filterSel.value;
+                filterSel.innerHTML = '<option value="all">All Dealer Networks</option>' +
+                    dealersList.map(d => `<option value="${d.id}">${escapeHtml(d.name)} (${d.client_count || 0})</option>`).join('');
+                filterSel.value = prev || 'all';
             }
 
-            if (onbGroup) onbGroup.style.display = 'block';
-            if (editGroup) editGroup.style.display = 'block';
+            // Integrators filter dropdown
+            const intDealerFilter = document.getElementById('integrator-dealer-filter');
+            if (intDealerFilter && currentUser.role === 'manufacturer') {
+                const prev = intDealerFilter.value;
+                intDealerFilter.innerHTML = '<option value="all">All Dealers Workforce</option>' +
+                    dealersList.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+                intDealerFilter.value = prev || 'all';
+            }
 
-            let opts = `<option value="owner_master">👑 Master Manufacturer (Direct)</option>`;
-            dealersList.forEach(d => {
-                opts += `<option value="${d.id}">🏢 ${escapeHtml(d.name)} (@${escapeHtml(d.username)})</option>`;
-            });
+            // Onboard modal dealer select
+            const onbDealerSel = document.getElementById('onb-dealer-select');
+            if (onbDealerSel && currentUser.role === 'manufacturer') {
+                onbDealerSel.innerHTML = '<option value="owner_master">Master Manufacturer (Direct Supervision)</option>' +
+                    dealersList.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+            }
 
-            if (onbSelect) onbSelect.innerHTML = opts;
-            if (editSelect) editSelect.innerHTML = opts;
+            // Integrator modal dealer select
+            const intDealerSel = document.getElementById('int-dealer-select');
+            if (intDealerSel && currentUser.role === 'manufacturer') {
+                intDealerSel.innerHTML = dealersList.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+            }
         }
 
         function filterFleetByDealer(dealerId) {
             switchTab('fleet');
-            const d = dealersList.find(x => x.id === dealerId);
-            const query = d ? d.name : dealerId;
-            const searchInput = document.getElementById('fleet-search');
-            if (searchInput) {
-                searchInput.value = query;
-                handleSearch(query);
+            const sel = document.getElementById('fleet-dealer-filter');
+            if (sel) {
+                sel.value = dealerId;
+                fetchFleet();
             }
+        }
+
+        function filterIntegratorsByDealer(dealerId) {
+            renderIntegratorsUI(dealerId);
         }
 
         function openCreateDealerModal() {
@@ -2258,9 +2741,10 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('dealer-form-id').value = '';
             document.getElementById('dlr-name').value = '';
             document.getElementById('dlr-username').value = '';
+            document.getElementById('dlr-username').readOnly = false;
             document.getElementById('dlr-pwd').value = '';
             document.getElementById('dlr-pwd').required = true;
-            document.getElementById('dlr-pwd-label').innerText = 'LOGIN PASSWORD';
+            document.getElementById('dlr-pwd-hint').style.display = 'none';
             document.getElementById('dlr-email').value = '';
             document.getElementById('dlr-phone').value = '';
             document.getElementById('dlr-status-group').style.display = 'none';
@@ -2271,17 +2755,21 @@ HTML_PAGE = """<!DOCTYPE html>
             const d = dealersList.find(x => x.id === dealerId);
             if (!d) return;
 
-            document.getElementById('dealer-modal-title').innerText = 'Edit Dealer: ' + d.name;
+            document.getElementById('dealer-modal-title').innerText = `Edit Authorized Dealer: ${d.name}`;
             document.getElementById('dealer-form-id').value = d.id;
             document.getElementById('dlr-name').value = d.name;
             document.getElementById('dlr-username').value = d.username;
-            document.getElementById('dlr-pwd').value = '';
+            document.getElementById('dlr-username').readOnly = false;
+            
+            // POPULATE PLAIN PASSWORD FOR MANUFACTURER TO SEE AND EDIT!
+            document.getElementById('dlr-pwd').value = d.password_plain || '';
             document.getElementById('dlr-pwd').required = false;
-            document.getElementById('dlr-pwd-label').innerText = 'NEW PASSWORD (LEAVE BLANK TO KEEP CURRENT)';
+            document.getElementById('dlr-pwd-hint').style.display = 'block';
+            
             document.getElementById('dlr-email').value = d.email || '';
             document.getElementById('dlr-phone').value = d.phone || '';
-            document.getElementById('dlr-status-group').style.display = 'block';
             document.getElementById('dlr-status').value = d.status || 'active';
+            document.getElementById('dlr-status-group').style.display = 'block';
             document.getElementById('dealer-modal').classList.add('active');
         }
 
@@ -2291,16 +2779,20 @@ HTML_PAGE = """<!DOCTYPE html>
 
         async function handleDealerFormSubmit(e) {
             e.preventDefault();
-            const dealerId = document.getElementById('dealer-form-id').value;
-            const name = document.getElementById('dlr-name').value.trim();
-            const username = document.getElementById('dlr-username').value.trim();
-            const password = document.getElementById('dlr-pwd').value;
-            const email = document.getElementById('dlr-email').value.trim();
-            const phone = document.getElementById('dlr-phone').value.trim();
-            const status = document.getElementById('dlr-status').value;
+            const id = document.getElementById('dealer-form-id').value;
+            const payload = {
+                name: document.getElementById('dlr-name').value.trim(),
+                username: document.getElementById('dlr-username').value.trim(),
+                password: document.getElementById('dlr-pwd').value,
+                email: document.getElementById('dlr-email').value.trim(),
+                phone: document.getElementById('dlr-phone').value.trim()
+            };
 
-            const endpoint = dealerId ? '/api/update_dealer' : '/api/create_dealer';
-            const payload = { dealer_id: dealerId, name, username, password, email, phone, status };
+            const endpoint = id ? '/api/update_dealer' : '/api/create_dealer';
+            if (id) {
+                payload.id = id;
+                payload.status = document.getElementById('dlr-status').value;
+            }
 
             try {
                 const res = await fetch(endpoint, {
@@ -2309,69 +2801,366 @@ HTML_PAGE = """<!DOCTYPE html>
                     body: JSON.stringify(payload)
                 });
                 const data = await res.json();
-                if (res.ok && data.success) {
-                    showToast(dealerId ? "Dealer updated successfully!" : "Dealer registered successfully!", 'success');
+                if (res.ok && data.ok) {
+                    showToast(data.message || 'Dealer saved successfully', 'success');
                     closeDealerModal();
                     fetchDealers();
+                    fetchFleet();
                 } else {
-                    alert(data.error || "Operation failed.");
+                    showToast(data.error || 'Operation failed', 'error');
                 }
             } catch (err) {
-                alert("Network error updating dealer: " + err);
+                showToast('Network error while saving dealer', 'error');
             }
         }
 
         function promptDeleteDealer(dealerId, dealerName) {
-            document.getElementById('delete-modal-title').innerText = 'Delete Dealer Account';
+            currentDeleteTarget = { type: 'dealer', id: dealerId, name: dealerName };
+            document.getElementById('delete-modal-title').innerText = `Delete Dealer: ${dealerName}`;
             document.getElementById('delete-modal-msg').innerHTML = `
                 Are you sure you want to delete dealer <strong>${escapeHtml(dealerName)}</strong>?<br><br>
-                All client sites managed by this dealer will be safely reassigned to the Master Manufacturer so no customer gateways go offline.
+                <span style="color: #38bdf8;">✓ SAFETY GUARANTEE:</span> All client gateways currently assigned to this dealer will <strong>NOT</strong> be deleted. They will automatically be transferred to Master Manufacturer Direct Supervision.
             `;
-            const btn = document.getElementById('delete-confirm-btn');
-            btn.onclick = async () => {
-                try {
-                    const res = await fetch('/api/delete_dealer', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ dealer_id: dealerId })
-                    });
-                    const d = await res.json();
-                    if (res.ok && d.success) {
-                        showToast(`Dealer ${dealerName} deleted.`, 'success');
-                        closeDeleteModal();
-                        fetchDealers();
-                        fetchFleet();
-                    } else {
-                        alert(d.error || "Failed to delete dealer.");
-                    }
-                } catch (e) {
-                    alert("Error deleting dealer: " + e);
-                }
-            };
             document.getElementById('delete-modal').classList.add('active');
         }
 
         // ======================================================================
-        // CLIENT FLEET INVENTORY (MULTI-TENANT FILTERED)
+        // INTEGRATORS MANAGEMENT (MANUFACTURER & DEALERS)
+        // ======================================================================
+        async function fetchIntegrators() {
+            if (!currentUser || currentUser.role === 'integrator') return;
+            try {
+                const res = await fetch('/api/integrators?t=' + Date.now());
+                if (res.ok) {
+                    integratorsList = await res.json();
+                    renderIntegratorsUI();
+                    updateIntegratorDropdowns();
+                }
+            } catch (err) {
+                console.error("Error fetching integrators:", err);
+            }
+        }
+
+        function renderIntegratorsUI(dealerFilter = 'all') {
+            const badge = document.getElementById('badge-integrator-count');
+            if (badge) badge.innerText = integratorsList.length;
+
+            const ovIntegratorsCount = document.getElementById('ov-integrators-count');
+            if (ovIntegratorsCount) ovIntegratorsCount.innerText = integratorsList.length;
+
+            // Filter if manufacturer picked a dealer
+            let filteredList = integratorsList;
+            if (currentUser.role === 'manufacturer' && dealerFilter !== 'all') {
+                filteredList = integratorsList.filter(it => it.dealer_id === dealerFilter);
+            }
+
+            // If Dealer, render summary workforce breakdown in Overview tab
+            if (currentUser.role === 'dealer') {
+                const ovBody = document.getElementById('overview-dealers-body');
+                if (ovBody) {
+                    ovBody.innerHTML = filteredList.map(it => `
+                        <tr>
+                            <td style="font-weight: 600; color: #fff;">
+                                <div>${escapeHtml(it.name)}</div>
+                                <div style="font-size: 11px; color: #64748b; font-family: monospace;">ID: ${escapeHtml(it.id)}</div>
+                            </td>
+                            <td style="font-family: monospace; color: #cbd5e1;">${escapeHtml(it.username)}</td>
+                            <td>
+                                <span class="badge-role" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3);">
+                                    ${it.client_count} Supervised Site(s)
+                                </span>
+                            </td>
+                            <td>
+                                <span style="color: #10b981; font-weight: 600;">${it.online_count} Online</span> / 
+                                <span style="color: ${it.lost_count > 0 ? '#ef4444' : '#64748b'}; font-weight: 600;">${it.lost_count} Lost</span>
+                            </td>
+                            <td style="font-size: 12px; color: #94a3b8;">
+                                <div>${escapeHtml(it.email || '—')}</div>
+                                <div style="font-size: 11px; color: #64748b;">${escapeHtml(it.phone || '—')}</div>
+                            </td>
+                            <td>
+                                <span class="badge-status ${it.status === 'active' ? 'status-online' : 'status-lost'}">
+                                    ${it.status.toUpperCase()}
+                                </span>
+                            </td>
+                            <td>
+                                <button class="btn-sm" onclick="switchTab('integrators')">Manage Workforce ➔</button>
+                            </td>
+                        </tr>
+                    `).join('') || `<tr><td colspan="7" style="text-align: center; color: #64748b; padding: 24px;">No integrators registered in your dealership yet. Click "+ Register New Integrator" above.</td></tr>`;
+                }
+            }
+
+            // Dedicated Integrators Directory Table (With Password Reveal & Edit for Manufacturer and Dealer)
+            const dirBody = document.getElementById('integrators-management-body');
+            if (dirBody) {
+                dirBody.innerHTML = filteredList.map(it => `
+                    <tr>
+                        <td style="font-weight: 600; color: #fff;">
+                            <div style="font-size: 14px;">${escapeHtml(it.name)}</div>
+                            <div style="font-size: 11px; color: #64748b; font-family: monospace;">UUID: ${escapeHtml(it.id)}</div>
+                        </td>
+                        ${currentUser.role === 'manufacturer' ? `
+                            <td style="color: #c084fc; font-size: 13px; font-weight: 500;">
+                                <div>${escapeHtml(it.dealer_name || 'Direct')}</div>
+                                <div style="font-size: 11px; color: #64748b; font-family: monospace;">${escapeHtml(it.dealer_id)}</div>
+                            </td>
+                        ` : ''}
+                        <td style="font-family: monospace; color: #cbd5e1; font-weight: 600;">
+                            ${escapeHtml(it.username)}
+                        </td>
+                        <td>
+                            <div class="pwd-cell-wrap">
+                                <span class="pwd-masked" id="int-pwd-val-${it.id}" data-plain="${escapeHtml(it.password_plain || '')}">••••••••</span>
+                                <button type="button" class="btn-icon-pwd" onclick="toggleTablePassword('int-pwd-val-${it.id}')" title="Show / Hide Password">👁️</button>
+                                <button type="button" class="btn-icon-pwd" onclick="copyPassword('${escapeHtml(it.password_plain || '')}')" title="Copy Password">📋</button>
+                            </div>
+                        </td>
+                        <td style="font-size: 12px; color: #cbd5e1;">
+                            <div>📧 ${escapeHtml(it.email || 'None')}</div>
+                            <div style="margin-top: 2px;">📞 ${escapeHtml(it.phone || 'None')}</div>
+                        </td>
+                        <td>
+                            <span class="badge-role" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3);">
+                                ${it.client_count} Supervised Site(s)
+                            </span>
+                        </td>
+                        <td>
+                            <span class="badge-status ${it.status === 'active' ? 'status-online' : 'status-lost'}">
+                                ${it.status.toUpperCase()}
+                            </span>
+                        </td>
+                        <td>
+                            <div style="display: flex; gap: 6px;">
+                                <button class="btn-action-icon" onclick="openEditIntegratorModal('${it.id}')" title="Edit Integrator & Password">✏️ Edit</button>
+                                <button class="btn-action-icon" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.3);" onclick="promptDeleteIntegrator('${it.id}', '${escapeHtml(it.name)}')" title="Delete Integrator">🗑️</button>
+                            </div>
+                        </td>
+                    </tr>
+                `).join('') || `<tr><td colspan="${currentUser.role === 'manufacturer' ? 8 : 7}" style="text-align: center; color: #64748b; padding: 24px;">No integrators registered.</td></tr>`;
+            }
+        }
+
+        function updateIntegratorDropdowns() {
+            // Onboard modal integrator select
+            const onbIntSel = document.getElementById('onb-integrator-select');
+            if (onbIntSel) {
+                onbIntSel.innerHTML = '<option value="">Direct Dealer Supervision (No Integrator)</option>' +
+                    integratorsList.map(it => `<option value="${it.id}">${escapeHtml(it.name)} (${escapeHtml(it.username)})</option>`).join('');
+            }
+
+            // Edit client modal integrator select
+            const editIntSel = document.getElementById('edit-integrator-select');
+            if (editIntSel) {
+                editIntSel.innerHTML = '<option value="">Direct Dealer Supervision (No Integrator)</option>' +
+                    integratorsList.map(it => `<option value="${it.id}">${escapeHtml(it.name)} (${escapeHtml(it.username)})</option>`).join('');
+            }
+        }
+
+        function openCreateIntegratorModal() {
+            document.getElementById('integrator-modal-title').innerText = 'Register New Technical Integrator';
+            document.getElementById('int-id').value = '';
+            document.getElementById('int-name').value = '';
+            document.getElementById('int-username').value = '';
+            document.getElementById('int-password').value = '';
+            document.getElementById('int-password').required = true;
+            document.getElementById('int-pwd-hint').style.display = 'none';
+            document.getElementById('int-email').value = '';
+            document.getElementById('int-phone').value = '';
+
+            const dWrap = document.getElementById('int-dealer-select-wrap');
+            if (currentUser.role === 'manufacturer') {
+                dWrap.style.display = 'block';
+                updateDealerDropdowns();
+            } else {
+                dWrap.style.display = 'none';
+            }
+
+            document.getElementById('integrator-modal').classList.add('active');
+        }
+
+        function openEditIntegratorModal(intId) {
+            const it = integratorsList.find(x => x.id === intId);
+            if (!it) return;
+
+            document.getElementById('integrator-modal-title').innerText = `Edit Integrator: ${it.name}`;
+            document.getElementById('int-id').value = it.id;
+            document.getElementById('int-name').value = it.name;
+            document.getElementById('int-username').value = it.username;
+            
+            // POPULATE PLAIN PASSWORD FOR MANUFACTURER AND DEALER TO SEE AND EDIT!
+            document.getElementById('int-password').value = it.password_plain || '';
+            document.getElementById('int-password').required = false;
+            document.getElementById('int-pwd-hint').style.display = 'block';
+
+            document.getElementById('int-email').value = it.email || '';
+            document.getElementById('int-phone').value = it.phone || '';
+
+            const dWrap = document.getElementById('int-dealer-select-wrap');
+            if (currentUser.role === 'manufacturer') {
+                dWrap.style.display = 'block';
+                const dSel = document.getElementById('int-dealer-select');
+                if (dSel) dSel.value = it.dealer_id || '';
+            } else {
+                dWrap.style.display = 'none';
+            }
+
+            document.getElementById('integrator-modal').classList.add('active');
+        }
+
+        function closeIntegratorModal() {
+            document.getElementById('integrator-modal').classList.remove('active');
+        }
+
+        async function handleIntegratorSubmit(e) {
+            e.preventDefault();
+            const id = document.getElementById('int-id').value;
+            const payload = {
+                name: document.getElementById('int-name').value.trim(),
+                username: document.getElementById('int-username').value.trim(),
+                password: document.getElementById('int-password').value,
+                email: document.getElementById('int-email').value.trim(),
+                phone: document.getElementById('int-phone').value.trim()
+            };
+
+            if (currentUser.role === 'manufacturer') {
+                payload.dealer_id = document.getElementById('int-dealer-select').value;
+            }
+
+            const endpoint = id ? '/api/update_integrator' : '/api/create_integrator';
+            if (id) {
+                payload.id = id;
+            }
+
+            try {
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast(data.message || 'Integrator saved successfully', 'success');
+                    closeIntegratorModal();
+                    fetchIntegrators();
+                    fetchFleet();
+                } else {
+                    showToast(data.error || 'Operation failed', 'error');
+                }
+            } catch (err) {
+                showToast('Network error while saving integrator', 'error');
+            }
+        }
+
+        function promptDeleteIntegrator(intId, intName) {
+            currentDeleteTarget = { type: 'integrator', id: intId, name: intName };
+            document.getElementById('delete-modal-title').innerText = `Delete Integrator: ${intName}`;
+            document.getElementById('delete-modal-msg').innerHTML = `
+                Are you sure you want to delete technical integrator <strong>${escapeHtml(intName)}</strong>?<br><br>
+                <span style="color: #10b981; font-weight: 600;">✓ SAFETY GUARANTEE:</span> All client gateways currently supervised by this integrator will <strong>NOT</strong> be deleted. They will automatically be transferred to <strong>Direct Dealer Supervision</strong>.
+            `;
+            document.getElementById('delete-modal').classList.add('active');
+        }
+
+        // ======================================================================
+        // CLIENT SUPERVISION REASSIGNMENT MODAL
+        // ======================================================================
+        function openReassignModal(clientId) {
+            const client = currentFleetData.find(c => c.client_id === clientId);
+            if (!client) return;
+
+            document.getElementById('reassign-client-id').value = clientId;
+            document.getElementById('reassign-client-name').innerText = `${client.name} (${client.client_id})`;
+
+            const dealerWrap = document.getElementById('reassign-dealer-wrap');
+            const dealerSelect = document.getElementById('reassign-dealer-select');
+            const intSelect = document.getElementById('reassign-integrator-select');
+
+            if (currentUser.role === 'manufacturer') {
+                dealerWrap.style.display = 'block';
+                dealerSelect.innerHTML = '<option value="owner_master">Master Manufacturer (Direct)</option>' +
+                    dealersList.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+                dealerSelect.value = client.dealer_id || 'owner_master';
+                onReassignDealerChange(client.integrator_id);
+            } else {
+                // Dealer role
+                dealerWrap.style.display = 'none';
+                intSelect.innerHTML = '<option value="none">Direct Dealer Supervision (No Integrator)</option>' +
+                    integratorsList.map(it => `<option value="${it.id}">${escapeHtml(it.name)} (${escapeHtml(it.username)})</option>`).join('');
+                intSelect.value = client.integrator_id || 'none';
+            }
+
+            document.getElementById('reassign-modal').classList.add('active');
+        }
+
+        function onReassignDealerChange(preSelectedIntId = null) {
+            const dealerId = document.getElementById('reassign-dealer-select').value;
+            const intSelect = document.getElementById('reassign-integrator-select');
+
+            const filteredIntegrators = integratorsList.filter(it => it.dealer_id === dealerId);
+            intSelect.innerHTML = '<option value="none">Direct Dealer Supervision (No Integrator)</option>' +
+                filteredIntegrators.map(it => `<option value="${it.id}">${escapeHtml(it.name)} (${escapeHtml(it.username)})</option>`).join('');
+
+            if (preSelectedIntId) {
+                intSelect.value = preSelectedIntId;
+            }
+        }
+
+        function closeReassignModal() {
+            document.getElementById('reassign-modal').classList.remove('active');
+        }
+
+        async function handleReassignSubmit(e) {
+            e.preventDefault();
+            const clientId = document.getElementById('reassign-client-id').value;
+            const payload = { client_id: clientId };
+
+            if (currentUser.role === 'manufacturer') {
+                payload.dealer_id = document.getElementById('reassign-dealer-select').value;
+            }
+            const intVal = document.getElementById('reassign-integrator-select').value;
+            payload.integrator_id = (intVal === 'none' || !intVal) ? null : intVal;
+
+            try {
+                const res = await fetch('/api/reassign_client', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast(data.message || 'Supervision reassigned successfully', 'success');
+                    closeReassignModal();
+                    fetchFleet();
+                    fetchIntegrators();
+                } else {
+                    showToast(data.error || 'Failed to reassign client', 'error');
+                }
+            } catch (err) {
+                showToast('Network error during reassignment', 'error');
+            }
+        }
+
+        // ======================================================================
+        // FLEET INVENTORY MANAGEMENT
         // ======================================================================
         async function fetchFleet() {
             try {
                 const res = await fetch('/api/fleet?t=' + Date.now());
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                if (!res.ok) {
+                    if (res.status === 401) checkAuth();
+                    return;
+                }
                 const data = await res.json();
                 currentFleetData = data;
                 renderTable(data);
-            } catch(e) {
-                console.error("Fetch fleet error:", e);
-                const tbody = document.getElementById('fleet-table-body');
-                if (tbody && tbody.children.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; padding: 40px; color: #ef4444;">⚠️ Fleet Sync Reconnecting...</td></tr>`;
-                }
+            } catch (err) {
+                console.error("Error fetching fleet:", err);
             }
         }
 
         function handleSearch(q) {
-            fleetSearchQuery = q.trim().toLowerCase();
+            fleetSearchQuery = q.toLowerCase();
             fleetCurrentPage = 1;
             renderTable(currentFleetData);
         }
@@ -2379,17 +3168,14 @@ HTML_PAGE = """<!DOCTYPE html>
         function setFleetFilter(f) {
             fleetStatusFilter = f;
             fleetCurrentPage = 1;
-            const pAll = document.getElementById('filter-pill-all');
-            const pOn = document.getElementById('filter-pill-online');
-            const pLost = document.getElementById('filter-pill-lost');
-            if (pAll) pAll.classList.toggle('active', f === 'ALL');
-            if (pOn) pOn.classList.toggle('active', f === 'ONLINE');
-            if (pLost) pLost.classList.toggle('active', f === 'LOST');
+            document.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+            const clicked = Array.from(document.querySelectorAll('.filter-pill')).find(p => p.innerText.includes(f));
+            if (clicked) clicked.classList.add('active');
             renderTable(currentFleetData);
         }
 
         function handlePageSizeChange(val) {
-            fleetPageSize = (val === 'all') ? 'all' : parseInt(val, 10);
+            fleetPageSize = parseInt(val);
             fleetCurrentPage = 1;
             renderTable(currentFleetData);
         }
@@ -2400,268 +3186,190 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         function renderTable(data) {
-            const tbody = document.getElementById('fleet-table-body');
-            if (!tbody) return;
-            tbody.innerHTML = '';
-            
-            let total = 0, online = 0, lostCount = 0, remoteActive = 0;
+            if (!Array.isArray(data)) return;
+
             const now = Math.floor(Date.now() / 1000);
-            const allEntries = Object.entries(data || {});
+            let onlineCount = 0;
+            let warningCount = 0;
+            let offlineCount = 0;
 
-            for (const [id, c] of allEntries) {
-                total++;
-                const lastHb = c.last_heartbeat || 0;
-                const diff = now - lastHb;
-                const isOnline = (lastHb > 0 && diff <= 75);
-                if (isOnline) online++; else lostCount++;
-                if (c.remote_enabled !== false) remoteActive++;
-            }
+            // Optional Dealer Filter for Manufacturer
+            const dFilter = document.getElementById('fleet-dealer-filter');
+            const selectedDealer = (dFilter && currentUser.role === 'manufacturer') ? dFilter.value : 'all';
 
-            // Update Metrics (Fleet tab + Overview tab)
-            const elTotal = document.getElementById('val-total');
-            const elOnline = document.getElementById('val-online');
-            const elOnlineSub = document.getElementById('val-online-sub');
-            const elLost = document.getElementById('val-lost');
-            const elRemote = document.getElementById('val-remote-count');
-            const badgeFleet = document.getElementById('badge-fleet-count');
-            const ovClientsTotal = document.getElementById('ov-total-clients');
-            const ovOnline = document.getElementById('ov-online-clients');
-            const ovLost = document.getElementById('ov-lost-clients');
+            const filtered = data.filter(c => {
+                if (selectedDealer !== 'all' && c.dealer_id !== selectedDealer) return false;
 
-            if (elTotal) elTotal.innerText = total;
-            if (elOnline) elOnline.innerText = online;
-            if (elOnlineSub) elOnlineSub.innerText = `${online} of ${total} Gateways Online`;
-            if (elLost) elLost.innerText = lostCount;
-            if (elRemote) elRemote.innerText = `${remoteActive}/${total} ACTIVE`;
-            if (badgeFleet) badgeFleet.innerText = total;
-            if (ovClientsTotal) ovClientsTotal.innerText = total;
-            if (ovOnline) ovOnline.innerText = online;
-            if (ovLost) ovLost.innerText = lostCount;
+                const diff = now - (c.last_heartbeat || 0);
+                if (diff <= 75) onlineCount++;
+                else if (diff <= 180) warningCount++;
+                else offlineCount++;
 
-            // Pill Counts
-            const pAllCount = document.getElementById('pill-count-all');
-            const pOnCount = document.getElementById('pill-count-online');
-            const pLostCount = document.getElementById('pill-count-lost');
-            if (pAllCount) pAllCount.innerText = total;
-            if (pOnCount) pOnCount.innerText = online;
-            if (pLostCount) pLostCount.innerText = lostCount;
-
-            // Filter Entries
-            const filtered = allEntries.filter(([id, c]) => {
-                const lastHb = c.last_heartbeat || 0;
-                const diff = now - lastHb;
-                const isOnline = (lastHb > 0 && diff <= 75);
-
-                if (fleetStatusFilter === 'ONLINE' && !isOnline) return false;
-                if (fleetStatusFilter === 'LOST' && isOnline) return false;
+                if (fleetStatusFilter === 'ONLINE' && diff > 75) return false;
+                if (fleetStatusFilter === 'WARNING' && (diff <= 75 || diff > 180)) return false;
+                if (fleetStatusFilter === 'OFFLINE' && diff <= 180) return false;
 
                 if (fleetSearchQuery) {
-                    const name = (c.name || '').toLowerCase();
-                    const slug = (c.client_id || id).toLowerCase();
-                    const domain = (c.domain || '').toLowerCase();
-                    const dName = (c.dealer_name || '').toLowerCase();
-                    const ip = (c.network && c.network.local_ipv4 ? c.network.local_ipv4 : '').toLowerCase();
-                    const mac = (c.network && c.network.mac_address ? c.network.mac_address : '').toLowerCase();
-                    const knx = (c.knx_ip || '').toLowerCase();
-                    if (!name.includes(fleetSearchQuery) && !slug.includes(fleetSearchQuery) && 
-                        !domain.includes(fleetSearchQuery) && !dName.includes(fleetSearchQuery) && 
-                        !ip.includes(fleetSearchQuery) && !mac.includes(fleetSearchQuery) && 
-                        !knx.includes(fleetSearchQuery)) {
-                        return false;
-                    }
+                    const str = `${c.client_id} ${c.name} ${c.dealer_name || ''} ${c.integrator_name || ''} ${c.domain} ${c.knx_ip}`.toLowerCase();
+                    if (!str.includes(fleetSearchQuery)) return false;
                 }
                 return true;
             });
 
-            // Pagination Slicing
-            const totalFiltered = filtered.length;
-            let totalPages = 1;
-            let startIndex = 0;
-            let endIndex = totalFiltered;
-            let visible = filtered;
+            // Update metric counters
+            const mTotal = document.getElementById('metric-total');
+            const mOnline = document.getElementById('metric-online');
+            const mWarning = document.getElementById('metric-warning');
+            const mOffline = document.getElementById('metric-offline');
+            const ovTotal = document.getElementById('ov-total-clients');
+            const ovOnline = document.getElementById('ov-online-clients');
+            const ovLost = document.getElementById('ov-lost-clients');
 
-            if (fleetPageSize !== 'all') {
-                totalPages = Math.max(1, Math.ceil(totalFiltered / fleetPageSize));
-                if (fleetCurrentPage > totalPages) fleetCurrentPage = totalPages;
-                if (fleetCurrentPage < 1) fleetCurrentPage = 1;
-                startIndex = (fleetCurrentPage - 1) * fleetPageSize;
-                endIndex = Math.min(startIndex + fleetPageSize, totalFiltered);
-                visible = filtered.slice(startIndex, endIndex);
-            }
+            if (mTotal) mTotal.innerText = data.length;
+            if (mOnline) mOnline.innerText = onlineCount;
+            if (mWarning) mWarning.innerText = warningCount;
+            if (mOffline) mOffline.innerText = offlineCount;
+
+            if (ovTotal) ovTotal.innerText = data.length;
+            if (ovOnline) ovOnline.innerText = onlineCount;
+            if (ovLost) ovLost.innerText = offlineCount + warningCount;
+
+            // Pagination
+            const totalItems = filtered.length;
+            const totalPages = Math.ceil(totalItems / fleetPageSize) || 1;
+            if (fleetCurrentPage > totalPages) fleetCurrentPage = totalPages;
+            if (fleetCurrentPage < 1) fleetCurrentPage = 1;
+
+            const startIdx = (fleetCurrentPage - 1) * fleetPageSize;
+            const pageData = filtered.slice(startIdx, startIdx + fleetPageSize);
 
             const pageInfo = document.getElementById('fleet-page-info');
-            const btnPrev = document.getElementById('btn-fleet-prev');
-            const btnNext = document.getElementById('btn-fleet-next');
-            if (pageInfo) pageInfo.innerText = totalFiltered === 0 ? '0 of 0' : `${startIndex + 1}-${endIndex} of ${totalFiltered}`;
-            if (btnPrev) btnPrev.disabled = (fleetPageSize === 'all' || fleetCurrentPage <= 1);
-            if (btnNext) btnNext.disabled = (fleetPageSize === 'all' || fleetCurrentPage >= totalPages);
+            if (pageInfo) pageInfo.innerText = `Showing ${totalItems ? startIdx + 1 : 0}-${Math.min(startIdx + fleetPageSize, totalItems)} of ${totalItems}`;
 
-            if (visible.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; padding: 48px; color: #94a3b8;"><div style="font-size: 24px; margin-bottom: 8px;">🔍</div>No matching client gateways found.</td></tr>`;
-                return;
-            }
+            const prevBtn = document.getElementById('fleet-prev-btn');
+            const nextBtn = document.getElementById('fleet-next-btn');
+            if (prevBtn) prevBtn.disabled = fleetCurrentPage <= 1;
+            if (nextBtn) nextBtn.disabled = fleetCurrentPage >= totalPages;
 
-            for (const [id, c] of visible) {
-                const lastHb = c.last_heartbeat || 0;
-                const diff = now - lastHb;
-                const isOnline = (lastHb > 0 && diff <= 75);
-                const isRemoteOn = (c.remote_enabled !== false);
+            const tbody = document.getElementById('fleet-table-body');
+            if (!tbody) return;
 
-                const tr = document.createElement('tr');
-                
-                let slotBadge = `<span class="badge badge-green">Slot ${c.system ? c.system.boot_slot : "A"} (Good)</span>`;
-                if (c.system && c.system.is_recovery_mode) {
-                    slotBadge = `<span class="badge badge-amber">Slot ${c.system.boot_slot} (Recovery Alert!)</span>`;
-                }
+            tbody.innerHTML = pageData.map(c => {
+                const diff = now - (c.last_heartbeat || 0);
+                let stClass = 'status-online';
+                let stText = 'ONLINE';
+                if (diff > 180) { stClass = 'status-lost'; stText = 'OFFLINE'; }
+                else if (diff > 75) { stClass = 'status-warning'; stText = 'WARNING'; }
 
-                const devIp = (c.network && c.network.local_ipv4 && c.network.local_ipv4 !== 'Unknown' && c.network.local_ipv4 !== '0.0.0.0') 
-                    ? c.network.local_ipv4 
-                    : null;
-                
-                let knxSubtext = '';
-                if (c.knx_status && c.knx_status.reachable) {
-                    knxSubtext = `<div style="font-size: 10px; color: #34d399; margin-top: 3px; font-weight: 600;">🟢 KNX Bus: ${c.knx_status.latency_ms}ms (Active)</div>`;
-                } else {
-                    knxSubtext = `<div style="font-size: 10px; color: #fbbf24; margin-top: 3px;" title="KNX UDP Port 3671 in idle/standby ready for ETS">⚠️ KNX: Standby (Port 3671)</div>`;
-                }
+                const sys = c.system || {};
+                const net = c.network || {};
+                const knx = c.knx_status || {};
+                const isRecovery = sys.is_recovery_mode || false;
+                const slot = sys.boot_slot || 'A';
+                const remoteEnabled = c.remote_enabled !== false;
 
-                let knxBadge = '';
-                if (devIp) {
-                    knxBadge = `
-                        <div>
-                            <div style="font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 700; color: #fff; letter-spacing: 0.3px; display: flex; align-items: center; gap: 6px;">
-                                <span class="dot dot-green" style="width: 6px; height: 6px;"></span>
-                                <span>${devIp}</span>
-                            </div>
-                            <div style="font-size: 10px; color: #94a3b8; margin-top: 2px; font-family: 'JetBrains Mono', monospace;">
-                                MAC: ${c.network.mac_address || 'Auto-Detected'}
-                            </div>
-                            ${knxSubtext}
-                        </div>
-                    `;
-                } else {
-                    knxBadge = `
-                        <div>
-                            <div style="color: #94a3b8; font-size: 12px; display: flex; align-items: center; gap: 6px;">
-                                <span class="dot dot-amber" style="width: 6px; height: 6px;"></span>
-                                <span>Awaiting Device Sync</span>
-                            </div>
-                            <div style="font-size: 10px; color: #64748b; margin-top: 2px;">Auto-discovering LAN IP...</div>
-                            ${knxSubtext}
-                        </div>
-                    `;
-                }
-
-                const remoteBadge = isRemoteOn ?
-                    `<span class="badge badge-green">Active</span>` :
-                    `<span class="badge badge-amber">Disabled</span>`;
-
-                const dashBtnClass = isRemoteOn ? 'btn-sm btn-primary-sm' : 'btn-sm disabled';
-
-                let statusHtml = '';
-                if (isOnline) {
-                    const hbDate = new Date(lastHb * 1000);
-                    const timeStr = hbDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                    const agoText = diff <= 5 ? 'Just now' : `${diff}s ago`;
-                    statusHtml = `
-                        <div>
-                            <span class="badge badge-green"><span class="dot dot-green"></span> ONLINE</span>
-                            <div style="font-size: 11px; color: #34d399; margin-top: 5px; font-weight: 600;">⚡ Pulse: ${agoText}</div>
-                            <div style="font-size: 10px; color: #64748b; font-family: 'JetBrains Mono', monospace; margin-top: 1px;">${timeStr}</div>
-                        </div>
-                    `;
-                } else if (lastHb > 0) {
-                    const hbDate = new Date(lastHb * 1000);
-                    const dateStr = hbDate.toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' });
-                    const timeStr = hbDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                    
-                    let elapsedStr = diff < 3600 ? `${Math.floor(diff/60)}m ago` : diff < 86400 ? `${Math.floor(diff/3600)}h ago` : `${Math.floor(diff/86400)}d ago`;
-
-                    statusHtml = `
-                        <div style="background: rgba(239, 68, 68, 0.06); padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(239, 68, 68, 0.2);">
-                            <span class="badge badge-red"><span class="dot dot-red"></span> LOST HEARTBEAT</span>
-                            <div style="margin-top: 6px; font-size: 11px; line-height: 1.45;">
-                                <div><span style="color: #94a3b8;">Lost Time:</span> <strong style="color: #fff; font-family: 'JetBrains Mono', monospace;">${timeStr}</strong></div>
-                                <div><span style="color: #94a3b8;">Lost Date:</span> <strong style="color: #cbd5e1; font-family: 'JetBrains Mono', monospace;">${dateStr}</strong></div>
-                                <div style="color: #f87171; font-size: 10px; font-weight: 600; margin-top: 2px;">(${elapsedStr})</div>
-                            </div>
-                        </div>
-                    `;
-                } else {
-                    statusHtml = `
-                        <div>
-                            <span class="badge badge-red"><span class="dot dot-red"></span> NO HEARTBEAT</span>
-                            <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">Never checked in</div>
-                        </div>
-                    `;
-                }
-
-                // Dealer Column rendering
-                const isOwner = currentUser && currentUser.role === 'manufacturer';
-                const dealerCell = `
+                // Dealer cell (only for manufacturer)
+                const dealerCell = currentUser.role === 'manufacturer' ? `
                     <td>
-                        <span class="badge badge-purple" style="font-size: 11px;">
-                            ${escapeHtml(c.dealer_name || 'Direct')}
+                        <span class="badge-role" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3);">
+                            ${escapeHtml(c.dealer_name || 'Master Direct')}
                         </span>
                     </td>
-                `;
+                ` : '';
 
-                tr.innerHTML = `
+                // Integrator cell (for manufacturer and dealer)
+                const integratorCell = currentUser.role !== 'integrator' ? `
                     <td>
-                        <div class="client-info">
-                            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
-                                <strong style="color: #fff; font-size: 14px;">${escapeHtml(c.name)}</strong>
-                                <button class="btn-sm" style="padding: 3px 8px; font-size: 11px;" onclick="openLogsModal('${c.client_id}')" title="View diagnostic logs">📜 Logs</button>
+                        ${c.integrator_name && c.integrator_name !== 'Direct Dealer Supervision' ? `
+                            <span class="badge-role" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3);">
+                                🔧 ${escapeHtml(c.integrator_name)}
+                            </span>
+                        ` : `
+                            <span class="badge-role" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3);">
+                                🛡️ Direct Dealer Supervision
+                            </span>
+                        `}
+                    </td>
+                ` : '';
+
+                return `
+                    <tr>
+                        <td>
+                            <div style="font-weight: 600; color: #fff; font-size: 14px;">${escapeHtml(c.name)}</div>
+                            <div style="font-size: 11px; color: #64748b; font-family: monospace; margin-top: 2px;">
+                                ${escapeHtml(c.client_id)} &bull; <a href="https://${escapeHtml(c.domain)}" target="_blank" style="color: #00f0ff; text-decoration: none;">${escapeHtml(c.domain)} ↗</a>
                             </div>
-                            <span style="color: #94a3b8; font-size: 11px;">${c.domain}</span>
-                        </div>
-                    </td>
-                    ${dealerCell}
-                    <td>${statusHtml}</td>
-                    <td>
-                        <div class="switch-wrap">
-                            <label class="switch">
-                                <input type="checkbox" onchange="toggleRemoteAccess('${c.client_id}', this.checked)" ${isRemoteOn ? 'checked' : ''}>
-                                <span class="slider"></span>
+                        </td>
+                        ${dealerCell}
+                        ${integratorCell}
+                        <td>
+                            <div style="display: flex; align-items: center; gap: 6px;">
+                                <span class="badge-status ${stClass}">${stText}</span>
+                                <span style="font-size: 11px; color: #64748b;">${diff}s ago</span>
+                            </div>
+                        </td>
+                        <td>
+                            <label class="toggle-switch">
+                                <input type="checkbox" ${remoteEnabled ? 'checked' : ''} onchange="toggleRemoteAccess('${c.client_id}', this.checked)">
+                                <span class="toggle-slider"></span>
                             </label>
-                            ${remoteBadge}
-                        </div>
-                    </td>
-                    <td>${slotBadge}</td>
-                    <td>${knxBadge}</td>
-                    <td>
-                        <div class="mono-val" style="font-size: 11px;">CPU: ${c.system ? c.system.cpu_percent : 5}% | RAM: ${c.system ? c.system.memory_percent : 30}%</div>
-                        <div style="font-size: 11px; color: #64748b;">Disk Free: ${c.system ? c.system.disk_free_gb : 120} GB</div>
-                    </td>
-                    <td>
-                        <div class="action-links">
-                            <a href="https://${c.domain}" target="_blank" class="${dashBtnClass}">🌐 Dash</a>
-                            <button class="btn-sm" onclick="copySSH('${c.ssh_port}', '${c.client_id}')">💻 SSH</button>
-                            <button class="btn-sm btn-primary-sm" onclick="openEditModal('${c.client_id}')">✏️ Edit</button>
-                            <button class="btn-sm btn-danger-sm" onclick="promptDelete('${c.client_id}', '${escapeHtml(c.name)}')">🗑️ Delete</button>
-                        </div>
-                    </td>
+                        </td>
+                        <td>
+                            <span class="badge-slot slot-${slot.toLowerCase()}">SLOT ${slot}</span>
+                            ${isRecovery ? '<span class="badge-slot" style="background: rgba(239, 68, 68, 0.2); color: #ef4444; margin-left: 4px;">RECOVERY</span>' : ''}
+                        </td>
+                        <td style="font-size: 12px; font-family: monospace;">
+                            <div style="color: #cbd5e1;">IP: ${escapeHtml(net.local_ipv4 || '—')}</div>
+                            <div style="color: #94a3b8; font-size: 11px;">KNX: ${escapeHtml(c.knx_ip || '—')}:${c.knx_port || 3671}</div>
+                        </td>
+                        <td style="font-size: 12px;">
+                            <div style="color: #cbd5e1;">CPU: ${sys.cpu_percent || 0}% &bull; RAM: ${sys.memory_percent || 0}%</div>
+                            <div style="color: #64748b; font-size: 11px;">HAOS ${escapeHtml(sys.haos_version || '13.2')}</div>
+                        </td>
+                        <td>
+                            <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+                                <a href="https://${escapeHtml(c.domain)}" target="_blank" class="btn-action-icon" style="color: #00f0ff; border-color: rgba(0, 240, 255, 0.3);" title="Open Client Home Assistant Web GUI">🌐 Ingress</a>
+                                <button class="btn-action-icon" onclick="openLogsModal('${c.client_id}')" title="Audit Telemetry Logs">📋 Logs</button>
+                                ${currentUser.role !== 'integrator' ? `
+                                    <button class="btn-action-icon btn-reassign-sm" onclick="openReassignModal('${c.client_id}')" title="Reassign Supervision">🔄 Transfer</button>
+                                ` : ''}
+                                <button class="btn-action-icon" onclick="openEditModal('${c.client_id}')" title="Edit Site Config">✏️</button>
+                                <button class="btn-action-icon" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.3);" onclick="promptDelete('${c.client_id}', '${escapeHtml(c.name)}')" title="Delete Site">🗑️</button>
+                            </div>
+                        </td>
+                    </tr>
                 `;
-                tbody.appendChild(tr);
-            }
-        }
-
-        function copySSH(port, client) {
-            const cmd = `ssh -p ${port} root@hub.gavasah.com`;
-            navigator.clipboard.writeText(cmd).then(() => {
-                showToast(`SSH Command copied: ${cmd}`);
-            });
+            }).join('') || `<tr><td colspan="${currentUser.role === 'manufacturer' ? 9 : 8}" style="text-align: center; color: #64748b; padding: 32px;">No gateways match the selected filter.</td></tr>`;
         }
 
         // ======================================================================
-        // CLIENT ONBOARDING & EDITING
+        // CLIENT ONBOARDING & CONFIG MODALS
         // ======================================================================
         function openOnboardModal() {
             document.getElementById('onb-name').value = '';
-            document.getElementById('onb-slug').value = '';
+            document.getElementById('onb-id').value = '';
             document.getElementById('onb-secret').value = generateSecretStr();
-            document.getElementById('onb-knx').value = '192.168.1.111';
-            updateDealerDropdowns();
+            document.getElementById('onb-knx-ip').value = '192.168.1.100';
+            document.getElementById('onb-knx-port').value = '3671';
+            document.getElementById('onb-ssh-key').value = '';
+
+            const dGroup = document.getElementById('onb-dealer-group');
+            const intGroup = document.getElementById('onb-integrator-group');
+
+            if (currentUser.role === 'manufacturer') {
+                dGroup.style.display = 'block';
+                intGroup.style.display = 'block';
+                updateDealerDropdowns();
+                updateIntegratorDropdowns();
+            } else if (currentUser.role === 'dealer') {
+                dGroup.style.display = 'none';
+                intGroup.style.display = 'block';
+                updateIntegratorDropdowns();
+            } else {
+                dGroup.style.display = 'none';
+                intGroup.style.display = 'none';
+            }
+
             document.getElementById('onboard-modal').classList.add('active');
         }
 
@@ -2678,57 +3386,67 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         function generateSecretStr() {
-            const arr = new Uint8Array(8);
-            crypto.getRandomValues(arr);
-            return 'gav_sec_' + Array.from(arr, b => b.toString(16).padStart(2, '0')).join('');
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            let res = '';
+            for (let i = 0; i < 32; i++) res += chars.charAt(Math.floor(Math.random() * chars.length));
+            return res;
         }
 
         async function handleOnboardSubmit(e) {
             e.preventDefault();
-            const name = document.getElementById('onb-name').value.trim();
-            const slug = document.getElementById('onb-slug').value.trim().toLowerCase();
-            const auth_secret = document.getElementById('onb-secret').value.trim();
-            const knx = document.getElementById('onb-knx').value.trim();
+            const payload = {
+                name: document.getElementById('onb-name').value.trim(),
+                client_id: document.getElementById('onb-id').value.trim().toLowerCase(),
+                auth_secret: document.getElementById('onb-secret').value.trim(),
+                knx_ip: document.getElementById('onb-knx-ip').value.trim(),
+                knx_port: parseInt(document.getElementById('onb-knx-port').value) || 3671,
+                ssh_public_key: document.getElementById('onb-ssh-key').value.trim()
+            };
 
-            let dealer_id = null;
-            if (currentUser && currentUser.role === 'manufacturer') {
-                dealer_id = document.getElementById('onb-dealer-select').value;
+            if (currentUser.role === 'manufacturer') {
+                payload.dealer_id = document.getElementById('onb-dealer-select').value;
+                payload.integrator_id = document.getElementById('onb-integrator-select').value;
+            } else if (currentUser.role === 'dealer') {
+                payload.integrator_id = document.getElementById('onb-integrator-select').value;
             }
 
             try {
                 const res = await fetch('/api/onboard', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, slug, auth_secret, knx, dealer_id })
+                    body: JSON.stringify(payload)
                 });
-                const out = await res.json();
-                if (res.ok) {
-                    showToast(`Client ${name} provisioned! Ingress: Port ${out.dashboard_port}`, 'success');
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast(`Gateway '${payload.name}' onboarded successfully!`, 'success');
                     closeOnboardModal();
                     fetchFleet();
-                    if (currentUser && currentUser.role === 'manufacturer') fetchDealers();
                 } else {
-                    alert(out.error || "Onboarding failed.");
+                    showToast(data.error || 'Onboarding failed', 'error');
                 }
             } catch (err) {
-                alert("Error during onboarding: " + err);
+                showToast('Network error during onboarding', 'error');
             }
         }
 
         function openEditModal(clientId) {
-            const c = currentFleetData[clientId];
-            if (!c) return;
+            const client = currentFleetData.find(c => c.client_id === clientId);
+            if (!client) return;
 
-            document.getElementById('edit-client-id').value = clientId;
-            document.getElementById('edit-name').value = c.name || '';
-            document.getElementById('edit-secret').value = c.auth_secret || '';
-            document.getElementById('edit-knx-ip').value = c.knx_ip || '';
-            document.getElementById('edit-knx-port').value = c.knx_port || 3671;
+            document.getElementById('edit-id').value = client.client_id;
+            document.getElementById('edit-name').value = client.name;
+            document.getElementById('edit-knx-ip').value = client.knx_ip || '';
+            document.getElementById('edit-knx-port').value = client.knx_port || 3671;
+            document.getElementById('edit-secret').value = client.auth_secret || '';
 
-            if (currentUser && currentUser.role === 'manufacturer') {
-                updateDealerDropdowns();
-                const sel = document.getElementById('edit-dealer-select');
-                if (sel) sel.value = c.dealer_id || 'owner_master';
+            const intGroup = document.getElementById('edit-integrator-group');
+            if (currentUser.role !== 'integrator') {
+                intGroup.style.display = 'block';
+                updateIntegratorDropdowns();
+                const sel = document.getElementById('edit-integrator-select');
+                if (sel) sel.value = client.integrator_id || '';
+            } else {
+                intGroup.style.display = 'none';
             }
 
             document.getElementById('edit-modal').classList.add('active');
@@ -2740,16 +3458,14 @@ HTML_PAGE = """<!DOCTYPE html>
 
         async function handleClientEditSubmit(e) {
             e.preventDefault();
-            const client_id = document.getElementById('edit-client-id').value;
-            const name = document.getElementById('edit-name').value.trim();
-            const auth_secret = document.getElementById('edit-secret').value.trim();
-            const knx_ip = document.getElementById('edit-knx-ip').value.trim();
-            const knx_port = document.getElementById('edit-knx-port').value;
-
-            const payload = { client_id, name, auth_secret, knx_ip, knx_port };
-            if (currentUser && currentUser.role === 'manufacturer') {
-                payload.dealer_id = document.getElementById('edit-dealer-select').value;
-            }
+            const clientId = document.getElementById('edit-id').value;
+            const payload = {
+                client_id: clientId,
+                name: document.getElementById('edit-name').value.trim(),
+                knx_ip: document.getElementById('edit-knx-ip').value.trim(),
+                knx_port: parseInt(document.getElementById('edit-knx-port').value) || 3671,
+                auth_secret: document.getElementById('edit-secret').value.trim()
+            };
 
             try {
                 const res = await fetch('/api/update_client', {
@@ -2757,88 +3473,104 @@ HTML_PAGE = """<!DOCTYPE html>
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
-                const d = await res.json();
-                if (res.ok && d.success) {
-                    showToast("Client configuration updated!", 'success');
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast('Gateway configuration updated', 'success');
                     closeEditModal();
                     fetchFleet();
-                    if (currentUser && currentUser.role === 'manufacturer') fetchDealers();
                 } else {
-                    alert(d.error || "Update failed.");
+                    showToast(data.error || 'Update failed', 'error');
                 }
             } catch (err) {
-                alert("Error updating client: " + err);
+                showToast('Network error during update', 'error');
             }
         }
 
         async function toggleRemoteAccess(clientId, isEnabled) {
-            showToast(`Updating remote access for ${clientId}...`);
             try {
                 const res = await fetch('/api/toggle_remote', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({client_id: clientId, enabled: isEnabled})
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ client_id: clientId, enabled: isEnabled })
                 });
-                const d = await res.json();
-                if (d.success) {
-                    showToast(`Remote ingress ${isEnabled ? 'ENABLED' : 'DISABLED'} for ${clientId}`, 'success');
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast(`Remote ingress ${isEnabled ? 'enabled' : 'disabled'} for ${clientId}`, 'info');
                     fetchFleet();
                 } else {
-                    alert(d.error || "Remote toggle failed");
-                    fetchFleet();
+                    showToast(data.error || 'Failed to toggle remote access', 'error');
                 }
-            } catch(e) {
-                showToast("Network error toggling access", "error");
-                fetchFleet();
+            } catch (err) {
+                showToast('Network error toggling ingress', 'error');
             }
         }
 
         function promptDelete(clientId, clientName) {
-            document.getElementById('delete-modal-title').innerText = 'Delete Client Site';
+            currentDeleteTarget = { type: 'client', id: clientId, name: clientName };
+            document.getElementById('delete-modal-title').innerText = `Confirm Site Removal: ${clientName}`;
             document.getElementById('delete-modal-msg').innerHTML = `
-                Are you sure you want to permanently delete <strong>${escapeHtml(clientName)}</strong> (<code>${clientId}.gavasah.com</code>)?<br><br>
-                This will terminate all active reverse tunnels, remove dedicated system users, and purge Edge SSL certificates.
+                Are you sure you want to remove client site <strong>${escapeHtml(clientName)}</strong> (ID: <code>${escapeHtml(clientId)}</code>)?<br><br>
+                This will terminate reverse SSH ingress tunnels and remove ingress proxy rules.
             `;
-            const btn = document.getElementById('delete-confirm-btn');
-            btn.onclick = async () => {
-                try {
-                    const res = await fetch('/api/delete_site', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ client_id: clientId })
-                    });
-                    const d = await res.json();
-                    if (res.ok && d.success) {
-                        showToast(`Client ${clientName} deleted.`, 'success');
-                        closeDeleteModal();
-                        fetchFleet();
-                        if (currentUser && currentUser.role === 'manufacturer') fetchDealers();
-                    } else {
-                        alert(d.error || "Delete failed.");
-                    }
-                } catch(e) {
-                    alert("Error deleting client: " + e);
-                }
-            };
             document.getElementById('delete-modal').classList.add('active');
         }
 
         function closeDeleteModal() {
+            currentDeleteTarget = null;
             document.getElementById('delete-modal').classList.remove('active');
         }
 
+        async function confirmDeletion() {
+            if (!currentDeleteTarget) return;
+
+            const { type, id, name } = currentDeleteTarget;
+            let endpoint = '';
+            let payload = {};
+
+            if (type === 'client') {
+                endpoint = '/api/delete_site';
+                payload = { client_id: id };
+            } else if (type === 'dealer') {
+                endpoint = '/api/delete_dealer';
+                payload = { dealer_id: id };
+            } else if (type === 'integrator') {
+                endpoint = '/api/delete_integrator';
+                payload = { integrator_id: id };
+            }
+
+            try {
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast(data.message || `${name} deleted successfully`, 'success');
+                    closeDeleteModal();
+                    if (type === 'client') fetchFleet();
+                    else if (type === 'dealer') { fetchDealers(); fetchFleet(); }
+                    else if (type === 'integrator') { fetchIntegrators(); fetchFleet(); }
+                } else {
+                    showToast(data.error || 'Deletion failed', 'error');
+                }
+            } catch (err) {
+                showToast('Network error during deletion', 'error');
+            }
+        }
+
         // ======================================================================
-        // OWNER & DEALER PASSWORD CREDENTIALS
+        // SELF-SERVICE CREDENTIALS MODALS
         // ======================================================================
         async function handleOwnerCredentialsUpdate(e) {
             e.preventDefault();
-            const curr = document.getElementById('owner-curr-pwd').value;
-            const newU = document.getElementById('owner-new-username').value.trim();
-            const newP = document.getElementById('owner-new-pwd').value;
-            const confP = document.getElementById('owner-confirm-pwd').value;
+            const curr = document.getElementById('acc-current-pwd').value;
+            const newU = document.getElementById('acc-username').value.trim();
+            const newP = document.getElementById('acc-new-pwd').value;
+            const confP = document.getElementById('acc-confirm-pwd').value;
 
             if (newP && newP !== confP) {
-                alert("New passwords do not match!");
+                showToast('New passwords do not match!', 'error');
                 return;
             }
 
@@ -2852,26 +3584,25 @@ HTML_PAGE = """<!DOCTYPE html>
                         new_password: newP
                     })
                 });
-                const d = await res.json();
-                if (res.ok && d.success) {
-                    showToast("Owner credentials updated successfully!", 'success');
-                    currentUser.username = d.username;
-                    document.getElementById('sidebar-user-name').innerText = d.username;
-                    document.getElementById('owner-curr-pwd').value = '';
-                    document.getElementById('owner-new-pwd').value = '';
-                    document.getElementById('owner-confirm-pwd').value = '';
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast('Master credentials updated successfully!', 'success');
+                    document.getElementById('acc-current-pwd').value = '';
+                    document.getElementById('acc-new-pwd').value = '';
+                    document.getElementById('acc-confirm-pwd').value = '';
+                    checkAuth();
                 } else {
-                    alert(d.error || "Update failed.");
+                    showToast(data.error || 'Failed to update credentials', 'error');
                 }
             } catch (err) {
-                alert("Error updating owner credentials: " + err);
+                showToast('Network error updating credentials', 'error');
             }
         }
 
         function openDealerPasswordModal() {
-            document.getElementById('self-curr-pwd').value = '';
-            document.getElementById('self-new-pwd').value = '';
-            document.getElementById('self-confirm-pwd').value = '';
+            document.getElementById('dealer-pwd-current').value = '';
+            document.getElementById('dealer-pwd-new').value = '';
+            document.getElementById('dealer-pwd-confirm').value = '';
             document.getElementById('dealer-pwd-modal').classList.add('active');
         }
 
@@ -2881,12 +3612,12 @@ HTML_PAGE = """<!DOCTYPE html>
 
         async function handleDealerSelfPasswordChange(e) {
             e.preventDefault();
-            const curr = document.getElementById('self-curr-pwd').value;
-            const newP = document.getElementById('self-new-pwd').value;
-            const confP = document.getElementById('self-confirm-pwd').value;
+            const curr = document.getElementById('dealer-pwd-current').value;
+            const newP = document.getElementById('dealer-pwd-new').value;
+            const confP = document.getElementById('dealer-pwd-confirm').value;
 
             if (newP !== confP) {
-                alert("New passwords do not match!");
+                showToast('New passwords do not match!', 'error');
                 return;
             }
 
@@ -2894,90 +3625,101 @@ HTML_PAGE = """<!DOCTYPE html>
                 const res = await fetch('/api/change_dealer_password', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ current_password: curr, new_password: newP })
+                    body: JSON.stringify({
+                        current_password: curr,
+                        new_password: newP
+                    })
                 });
-                const d = await res.json();
-                if (res.ok && d.success) {
-                    showToast("Password updated successfully!", 'success');
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast('Your password was updated successfully!', 'success');
                     closeDealerPasswordModal();
                 } else {
-                    alert(d.error || "Password change failed.");
+                    showToast(data.error || 'Failed to change password', 'error');
                 }
             } catch (err) {
-                alert("Error updating password: " + err);
+                showToast('Network error changing password', 'error');
             }
         }
 
         // ======================================================================
-        // DIAGNOSTIC LOGS & SSL MODALS
+        // AUDIT LOGS MODAL
         // ======================================================================
         async function openLogsModal(clientId) {
             currentLogsClient = clientId;
-            const c = currentFleetData[clientId] || { name: clientId };
-            document.getElementById('log-client-title').innerText = c.name || clientId;
+            document.getElementById('logs-modal-title').innerText = `Telemetry Audit Logs: ${clientId}`;
             document.getElementById('logs-modal').classList.add('active');
             refreshCurrentLogs();
         }
 
         function closeLogsModal() {
+            currentLogsClient = null;
             document.getElementById('logs-modal').classList.remove('active');
         }
 
         async function refreshCurrentLogs() {
             if (!currentLogsClient) return;
-            const term = document.getElementById('logs-terminal');
-            term.innerHTML = '<div style="color: #64748b;">Loading telemetry logs...</div>';
+            const body = document.getElementById('logs-modal-body');
+            body.innerHTML = '<div style="color: #64748b; font-size: 13px;">Streaming operational telemetry...</div>';
+
             try {
-                const res = await fetch(`/api/logs?client_id=${currentLogsClient}`);
-                const logs = await res.json();
-                term.innerHTML = '';
-                if (!logs || logs.length === 0) {
-                    term.innerHTML = '<div style="color: #64748b;">No telemetry logs recorded yet.</div>';
+                const res = await fetch(`/api/logs?client_id=${encodeURIComponent(currentLogsClient)}&t=${Date.now()}`);
+                if (!res.ok) {
+                    body.innerHTML = '<div style="color: #ef4444;">Failed to load logs.</div>';
                     return;
                 }
-                logs.forEach(l => {
-                    const row = document.createElement('div');
-                    row.className = 'log-line';
-                    row.innerHTML = `
-                        <span class="log-time">${l.timestamp}</span>
-                        <span class="log-tag log-tag-${l.level || 'INFO'}">${l.type || l.level || 'INFO'}</span>
-                        <span style="color: #e2e8f0;">${escapeHtml(l.message)}</span>
+                const logs = await res.json();
+                if (!logs.length) {
+                    body.innerHTML = '<div style="color: #64748b;">No audit logs recorded for this gateway yet.</div>';
+                    return;
+                }
+                body.innerHTML = logs.map(l => {
+                    let color = '#38bdf8';
+                    if (l.level === 'WARNING') color = '#fbbf24';
+                    else if (l.level === 'ERROR') color = '#ef4444';
+                    const timeStr = new Date(l.timestamp * 1000).toLocaleTimeString();
+                    return `
+                        <div style="margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 6px;">
+                            <span style="color: #64748b;">[${timeStr}]</span>
+                            <span style="color: ${color}; font-weight: 600; margin: 0 4px;">[${l.level}]</span>
+                            <span style="color: #c084fc; margin-right: 6px;">&lt;${l.type}&gt;</span>
+                            <span style="color: #cbd5e1;">${escapeHtml(l.message)}</span>
+                        </div>
                     `;
-                    term.appendChild(row);
-                });
-                term.scrollTop = term.scrollHeight;
+                }).join('');
             } catch (err) {
-                term.innerHTML = `<div style="color: #ef4444;">Error loading logs: ${err}</div>`;
+                body.innerHTML = '<div style="color: #ef4444;">Connection error fetching logs.</div>';
             }
         }
 
         function copyCurrentLogs() {
-            const term = document.getElementById('logs-terminal');
-            navigator.clipboard.writeText(term.innerText).then(() => {
-                showToast("Logs copied to clipboard!");
+            const body = document.getElementById('logs-modal-body');
+            navigator.clipboard.writeText(body.innerText).then(() => {
+                showToast('Audit logs copied to clipboard!', 'success');
             });
         }
 
+        // ======================================================================
+        // SSL INSPECTOR MODAL
+        // ======================================================================
         async function triggerSslCheck() {
-            showToast("Verifying Edge SSL / TLS Certificates...");
+            document.getElementById('ssl-modal').classList.add('active');
+            const tbody = document.getElementById('ssl-table-body');
+            tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #64748b;">Validating TLS certificates...</td></tr>';
+
             try {
-                const res = await fetch('/api/ssl_status');
-                const d = await res.json();
-                const tbody = document.getElementById('ssl-table-body');
-                tbody.innerHTML = '';
-                (d.domains || []).forEach(item => {
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td style="font-family: 'JetBrains Mono', monospace; color: #38bdf8;">${item.domain}</td>
-                        <td><span class="badge badge-green">${item.issuer}</span></td>
-                        <td style="color: #94a3b8;">${item.expires}</td>
-                        <td style="color: #34d399; font-weight: 600;">${item.auto_renew_date}</td>
-                    `;
-                    tbody.appendChild(tr);
-                });
-                document.getElementById('ssl-modal').classList.add('active');
-            } catch(e) {
-                showToast("Error retrieving SSL certificate status", "error");
+                const res = await fetch('/api/ssl_status?t=' + Date.now());
+                const certs = await res.json();
+                tbody.innerHTML = certs.map(c => `
+                    <tr>
+                        <td style="font-family: monospace; color: #fff;">${escapeHtml(c.domain)}</td>
+                        <td style="color: #94a3b8;">${escapeHtml(c.authority)}</td>
+                        <td>${c.valid_days_left} Days Remaining</td>
+                        <td><span class="badge-status ${c.status === 'active' ? 'status-online' : 'status-lost'}">${c.status.toUpperCase()}</span></td>
+                    </tr>
+                `).join('');
+            } catch (err) {
+                tbody.innerHTML = '<tr><td colspan="4" style="color: #ef4444;">Error inspecting SSL certificates.</td></tr>';
             }
         }
 
@@ -2985,125 +3727,155 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('ssl-modal').classList.remove('active');
         }
 
+        // ======================================================================
+        // UTILITY HELPERS
+        // ======================================================================
         function escapeHtml(str) {
             if (!str) return '';
-            return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
 
         function showToast(msg, type = 'info') {
             const box = document.getElementById('toast-box');
             if (!box) return;
-            const t = document.createElement('div');
-            t.className = `toast ${type}`;
-            t.innerText = msg;
-            box.appendChild(t);
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.innerText = msg;
+            box.appendChild(toast);
             setTimeout(() => {
-                t.style.opacity = '0';
-                t.style.transition = 'opacity 0.3s';
-                setTimeout(() => t.remove(), 300);
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateY(10px)';
+                setTimeout(() => toast.remove(), 300);
             }, 3500);
         }
 
-        // ======================================================================
-        // INITIALIZATION
-        // ======================================================================
+        // Initialization
         window.addEventListener('DOMContentLoaded', () => {
             checkAuth();
             setInterval(() => {
                 if (currentUser) {
-                    if (activeTab === 'fleet') fetchFleet();
-                    else if (activeTab === 'overview' || activeTab === 'dealers') fetchDealers();
+                    fetchFleet();
                 }
-            }, 6000);
+            }, 10000); // 10s polling interval
         });
-    </script>
-</body>
-</html>
 
 """
 
+import os
+import sys
+import json
+import time
+import socket
+import threading
+import subprocess
+import urllib.request
+import http.server
+from urllib.parse import urlparse, parse_qs
+
+# ==============================================================================
+# Client Audit Logging Helpers
+# ==============================================================================
+
 def generate_client_seed_logs(client_id):
-    now = datetime.datetime.now()
-    t = lambda m_ago: (now - datetime.timedelta(minutes=m_ago)).strftime("%Y-%m-%d %H:%M:%S")
-    e = lambda m_ago: int(time.time()) - (m_ago * 60)
-    
-    lan_ip = "192.168.1.111"
-    mac = "4E:5B:1C:0E:EF:8D"
-    slot = "A"
-    haos = "18.0"
-    port = 10010
-    domain = f"{client_id}.gavasah.com"
-
-    data = load_clients_state()
-    if client_id in data:
-        cdata = data[client_id]
-        lan_ip = cdata.get('network', {}).get('local_ipv4') or cdata.get('knx_ip') or lan_ip
-        mac = cdata.get('network', {}).get('mac_address', mac)
-        slot = cdata.get('system', {}).get('boot_slot', slot)
-        haos = cdata.get('system', {}).get('haos_version', haos)
-        port = cdata.get('dashboard_port', port)
-        domain = cdata.get('domain', domain)
-
+    """Generate realistic initial operational audit logs for a client site."""
+    now = int(time.time())
     return [
-        {"timestamp": t(45), "epoch": e(45), "level": "INFO", "type": "BOOT", "message": f"Host system booted into RAUC Slot {slot} (HAOS {haos}, generic-aarch64)."},
-        {"timestamp": t(44), "epoch": e(44), "level": "INFO", "type": "NETWORK", "message": f"Network interface connected. Auto-retrieved local LAN IP: {lan_ip}, Gateway: 192.168.1.1, MAC: {mac}."},
-        {"timestamp": t(42), "epoch": e(42), "level": "INFO", "type": "AGENT", "message": "Gavasah Cloud Agent v1.0.1 service initialized with supervisor_api & host_dbus privileges."},
-        {"timestamp": t(40), "epoch": e(40), "level": "INFO", "type": "TUNNEL", "message": f"AutoSSH reverse tunnel active: Local 8123 -> Hub Port {port} ({domain})."},
-        {"timestamp": t(38), "epoch": e(38), "level": "WARN", "type": "KNX", "message": "KNX Bus Watchdog: listening on UDP 3671 (Standby mode - ready for ETS telegrams)."},
-        {"timestamp": t(5), "epoch": e(5), "level": "INFO", "type": "HEARTBEAT", "message": f"Telemetry heartbeat synchronized. Slot {slot} healthy, Local LAN IP {lan_ip} confirmed."},
-        {"timestamp": t(1), "epoch": e(1), "level": "INFO", "type": "HEARTBEAT", "message": f"Telemetry heartbeat synchronized. All services nominal, tunnel active on port {port}."}
+        {
+            "id": f"log_{client_id}_{now-120}",
+            "timestamp": now - 120,
+            "level": "INFO",
+            "type": "SYSTEM_BOOT",
+            "message": "HAOS controller system booted successfully. RAUC Slot A active.",
+            "source": "kernel"
+        },
+        {
+            "id": f"log_{client_id}_{now-110}",
+            "timestamp": now - 110,
+            "level": "INFO",
+            "type": "KNX_LINK",
+            "message": "KNX-IP Gateway communication initialized over UDP 3671.",
+            "source": "knx_daemon"
+        },
+        {
+            "id": f"log_{client_id}_{now-90}",
+            "timestamp": now - 90,
+            "level": "INFO",
+            "type": "TUNNEL_ESTABLISHED",
+            "message": f"Reverse SSH tunnel established to gateway (dealer.gavasah.com).",
+            "source": "autossh"
+        },
+        {
+            "id": f"log_{client_id}_{now-30}",
+            "timestamp": now - 30,
+            "level": "INFO",
+            "type": "HEALTH_CHECK",
+            "message": "Telemetry periodic heartbeat ACK received with zero packet loss.",
+            "source": "supervisor"
+        }
     ]
 
 def get_client_logs(client_id):
+    """Retrieve audit logs for a client site, creating initial logs if needed."""
     with LOGS_LOCK:
-        os.makedirs(LOGS_DIR, exist_ok=True)
+        if not os.path.exists(LOGS_DIR):
+            os.makedirs(LOGS_DIR, exist_ok=True)
         log_file = os.path.join(LOGS_DIR, f"{client_id}.json")
         if os.path.exists(log_file):
             try:
-                with open(log_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    if data:
-                        return data
-            except Exception:
-                pass
-        seed = generate_client_seed_logs(client_id)
-        try:
-            with open(log_file, 'w', encoding='utf-8') as f:
-                json.dump(seed, f, indent=2)
-        except Exception:
-            pass
-        return seed
+                with open(log_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"[!] Error reading logs for {client_id}: {e}")
+                return generate_client_seed_logs(client_id)
+        else:
+            seed = generate_client_seed_logs(client_id)
+            try:
+                with open(log_file, "w", encoding="utf-8") as f:
+                    json.dump(seed, f, indent=2)
+            except Exception as e:
+                print(f"[!] Error writing initial logs for {client_id}: {e}")
+            return seed
 
 def append_client_log(client_id, level, type_, msg):
+    """Thread-safe append of a new audit log entry."""
     with LOGS_LOCK:
-        try:
+        if not os.path.exists(LOGS_DIR):
             os.makedirs(LOGS_DIR, exist_ok=True)
-            log_file = os.path.join(LOGS_DIR, f"{client_id}.json")
-            logs = []
-            if os.path.exists(log_file):
-                try:
-                    with open(log_file, 'r', encoding='utf-8') as f:
-                        logs = json.load(f)
-                except Exception:
-                    logs = []
-            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            logs.append({
-                "timestamp": now_str,
-                "epoch": int(time.time()),
-                "level": level,
-                "type": type_,
-                "message": msg
-            })
-            if len(logs) > 150:
-                logs = logs[-150:]
-            tmp_log = f"{log_file}.tmp.{os.getpid()}"
-            with open(tmp_log, 'w', encoding='utf-8') as f:
-                json.dump(logs, f)
-            os.replace(tmp_log, log_file)
+        log_file = os.path.join(LOGS_DIR, f"{client_id}.json")
+        logs = []
+        if os.path.exists(log_file):
+            try:
+                with open(log_file, "r", encoding="utf-8") as f:
+                    logs = json.load(f)
+            except Exception:
+                logs = []
+        now = int(time.time())
+        logs.insert(0, {
+            "id": f"log_{client_id}_{now}_{len(logs)}",
+            "timestamp": now,
+            "level": level.upper(),
+            "type": type_.upper(),
+            "message": msg,
+            "source": "cloud_portal"
+        })
+        logs = logs[:100]
+        try:
+            with open(log_file, "w", encoding="utf-8") as f:
+                json.dump(logs, f, indent=2)
         except Exception as e:
-            print(f"Error appending client log: {e}")
+            print(f"[!] Error appending log for {client_id}: {e}")
 
-class DealerPortalHandler(BaseHTTPRequestHandler):
+# ==============================================================================
+# Multi-Tenant HTTP Request Handler (Manufacturer -> Dealers -> Integrators)
+# ==============================================================================
+
+class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
+
     def get_authenticated_user(self):
         """Extract session token from Cookie or Authorization header and return user profile."""
         cookie_header = self.headers.get('Cookie', '')
@@ -3118,153 +3890,233 @@ class DealerPortalHandler(BaseHTTPRequestHandler):
         if not token:
             auth_header = self.headers.get('Authorization', '')
             if auth_header.startswith('Bearer '):
-                token = auth_header.split(' ', 1)[1].strip()
+                token = auth_header.split('Bearer ', 1)[1].strip()
 
         if not token:
             return None
 
-        auth_data = load_auth_state()
-        sessions = auth_data.get('sessions', {})
+        auth = load_auth_state()
+        sessions = auth.get('sessions', {})
         session = sessions.get(token)
         if not session:
             return None
 
-        # Check expiration
-        if session.get('expires', 0) < time.time():
+        now = int(time.time())
+        if now > session.get('expires_at', 0):
+            with AUTH_LOCK:
+                auth = load_auth_state()
+                if token in auth.get('sessions', {}):
+                    del auth['sessions'][token]
+                    save_auth_state(auth)
             return None
 
         user_id = session.get('user_id')
         role = session.get('role')
 
-        if role == 'manufacturer':
-            owner = auth_data.get('owner', {})
-            if owner.get('id') == user_id:
-                return {
-                    'id': owner['id'],
-                    'username': owner['username'],
-                    'name': owner.get('name', 'Master Manufacturer'),
-                    'role': 'manufacturer',
-                    'token': token
-                }
+        if role == 'manufacturer' and user_id == 'owner_master':
+            owner = auth.get('owner', {})
+            return {
+                'id': 'owner_master',
+                'username': owner.get('username', 'admin'),
+                'name': owner.get('name', 'Master Manufacturer'),
+                'role': 'manufacturer',
+                'session_token': token
+            }
         elif role == 'dealer':
-            dealers = auth_data.get('dealers', {})
-            dealer = dealers.get(user_id)
-            if dealer:
+            dealers = auth.get('dealers', {})
+            d = dealers.get(user_id)
+            if d:
+                if d.get('status') == 'suspended':
+                    return None
                 return {
-                    'id': dealer['id'],
-                    'username': dealer['username'],
-                    'name': dealer.get('name', dealer['username']),
+                    'id': d['id'],
+                    'username': d.get('username', ''),
+                    'name': d.get('name', ''),
+                    'email': d.get('email', ''),
+                    'phone': d.get('phone', ''),
                     'role': 'dealer',
-                    'token': token
+                    'status': d.get('status', 'active'),
+                    'session_token': token
+                }
+        elif role == 'integrator':
+            integrators = auth.get('integrators', {})
+            it = integrators.get(user_id)
+            if it:
+                if it.get('status') == 'suspended':
+                    return None
+                return {
+                    'id': it['id'],
+                    'dealer_id': it.get('dealer_id', ''),
+                    'dealer_name': it.get('dealer_name', ''),
+                    'username': it.get('username', ''),
+                    'name': it.get('name', ''),
+                    'email': it.get('email', ''),
+                    'phone': it.get('phone', ''),
+                    'role': 'integrator',
+                    'status': it.get('status', 'active'),
+                    'session_token': token
                 }
 
         return None
 
     def send_json(self, status_code, data, extra_headers=None):
-        payload = json.dumps(data).encode('utf-8')
+        """Send formatted JSON HTTP response with optional custom headers."""
+        body = json.dumps(data).encode('utf-8')
         self.send_response(status_code)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(payload)))
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
         if extra_headers:
             for k, v in extra_headers.items():
                 self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(payload)
+        self.wfile.write(body)
 
     def do_HEAD(self):
         self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.end_headers()
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        
-        # 1. Main Web Page
+
+        # 1. Root / UI SPA Serving
         if parsed.path in ['/', '/index.html']:
-            payload = HTML_PAGE.encode('utf-8')
+            body = HTML_PAGE.encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.send_header('Content-Length', str(len(payload)))
-            self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
-            self.send_header('Pragma', 'no-cache')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Cache-Control', 'no-cache')
             self.end_headers()
-            self.wfile.write(payload)
+            self.wfile.write(body)
             return
 
-        # 2. Who Am I / Session Check
+        # 2. Authenticated Session Info
         elif parsed.path == '/api/me':
             user = self.get_authenticated_user()
-            if user:
-                self.send_json(200, {
-                    'authenticated': True,
-                    'user': {
-                        'id': user['id'],
-                        'username': user['username'],
-                        'name': user['name'],
-                        'role': user['role']
-                    }
-                })
-            else:
+            if not user:
                 self.send_json(200, {'authenticated': False})
+                return
+            resp_user = {
+                'id': user['id'],
+                'username': user['username'],
+                'name': user['name'],
+                'role': user['role']
+            }
+            if user['role'] == 'integrator':
+                resp_user['dealer_id'] = user.get('dealer_id')
+                resp_user['dealer_name'] = user.get('dealer_name')
+            self.send_json(200, {
+                'authenticated': True,
+                'user': resp_user
+            })
             return
 
-        # 3. Client Fleet List (Role-Filtered)
+        # 3. Fleet Inventory (Scoped by Role)
         elif parsed.path == '/api/fleet':
             user = self.get_authenticated_user()
             if not user:
                 self.send_json(401, {'error': 'Authentication required'})
                 return
 
-            all_clients = load_clients_state()
-            
-            # If Dealer, return only their clients; if Manufacturer, return all clients
-            if user['role'] == 'dealer':
-                filtered_clients = {
-                    cid: c for cid, c in all_clients.items()
-                    if c.get('dealer_id') == user['id']
-                }
-                self.send_json(200, filtered_clients)
+            c_data = load_clients_state()
+            all_clients = list(c_data.values())
+
+            if user['role'] == 'manufacturer':
+                filtered = all_clients
+            elif user['role'] == 'dealer':
+                filtered = [c for c in all_clients if c.get('dealer_id') == user['id']]
+            elif user['role'] == 'integrator':
+                filtered = [c for c in all_clients if c.get('integrator_id') == user['id']]
             else:
-                self.send_json(200, all_clients)
+                filtered = []
+
+            self.send_json(200, filtered)
             return
 
-        # 4. Dealers Management Directory (Manufacturer Only)
+        # 4. Dealers Directory (Manufacturer Only)
         elif parsed.path == '/api/dealers':
             user = self.get_authenticated_user()
             if not user or user['role'] != 'manufacturer':
                 self.send_json(403, {'error': 'Manufacturer privilege required'})
                 return
 
-            auth_data = load_auth_state()
-            dealers_dict = auth_data.get('dealers', {})
-            all_clients = load_clients_state()
+            auth = load_auth_state()
+            dealers_dict = auth.get('dealers', {})
+            integrators_dict = auth.get('integrators', {})
+            c_data = load_clients_state()
 
-            # Calculate client stats per dealer
-            now = int(time.time())
-            dealers_out = []
-            for d_id, d in dealers_dict.items():
-                owned_clients = [c for c in all_clients.values() if c.get('dealer_id') == d_id]
-                online_count = sum(1 for c in owned_clients if (now - c.get('last_heartbeat', 0)) <= 75 and c.get('last_heartbeat', 0) > 0)
-                lost_count = len(owned_clients) - online_count
+            res = []
+            for did, d in dealers_dict.items():
+                dealer_clients = [c for c in c_data.values() if c.get('dealer_id') == did]
+                dealer_ints = [it for it in integrators_dict.values() if it.get('dealer_id') == did]
+                
+                now = int(time.time())
+                online_c = sum(1 for c in dealer_clients if (now - c.get('last_heartbeat', 0)) <= 75)
+                lost_c = len(dealer_clients) - online_c
 
-                dealers_out.append({
-                    'id': d_id,
-                    'username': d.get('username'),
-                    'name': d.get('name', d.get('username')),
+                res.append({
+                    'id': d['id'],
+                    'name': d.get('name', ''),
+                    'username': d.get('username', ''),
+                    'password_plain': d.get('password_plain', ''),  # Revealed for Manufacturer
                     'email': d.get('email', ''),
                     'phone': d.get('phone', ''),
+                    'role': 'dealer',
                     'status': d.get('status', 'active'),
                     'created_at': d.get('created_at', 0),
-                    'client_count': len(owned_clients),
-                    'online_count': online_count,
-                    'lost_count': lost_count
+                    'client_count': len(dealer_clients),
+                    'integrator_count': len(dealer_ints),
+                    'online_count': online_c,
+                    'lost_count': lost_c
                 })
 
-            dealers_out.sort(key=lambda x: x.get('name', '').lower())
-            self.send_json(200, dealers_out)
+            self.send_json(200, res)
             return
 
-        # 5. Diagnostic Client Logs
+        # 5. Integrators Directory (Manufacturer & Dealers)
+        elif parsed.path == '/api/integrators':
+            user = self.get_authenticated_user()
+            if not user or user['role'] not in ['manufacturer', 'dealer']:
+                self.send_json(403, {'error': 'Access denied: Manufacturer or Dealer privilege required'})
+                return
+
+            auth = load_auth_state()
+            integrators_dict = auth.get('integrators', {})
+            c_data = load_clients_state()
+            now = int(time.time())
+
+            res = []
+            for iid, it in integrators_dict.items():
+                # If logged in as Dealer, only show integrators belonging to this Dealer
+                if user['role'] == 'dealer' and it.get('dealer_id') != user['id']:
+                    continue
+
+                supervised_clients = [c for c in c_data.values() if c.get('integrator_id') == iid]
+                online_c = sum(1 for c in supervised_clients if (now - c.get('last_heartbeat', 0)) <= 75)
+                lost_c = len(supervised_clients) - online_c
+
+                res.append({
+                    'id': it['id'],
+                    'dealer_id': it.get('dealer_id', ''),
+                    'dealer_name': it.get('dealer_name', ''),
+                    'name': it.get('name', ''),
+                    'username': it.get('username', ''),
+                    'password_plain': it.get('password_plain', ''),  # Revealed to Manufacturer and Dealer
+                    'email': it.get('email', ''),
+                    'phone': it.get('phone', ''),
+                    'role': 'integrator',
+                    'status': it.get('status', 'active'),
+                    'created_at': it.get('created_at', 0),
+                    'client_count': len(supervised_clients),
+                    'online_count': online_c,
+                    'lost_count': lost_c
+                })
+
+            self.send_json(200, res)
+            return
+
+        # 6. Audit Logs for a specific client
         elif parsed.path == '/api/logs':
             user = self.get_authenticated_user()
             if not user:
@@ -3272,798 +4124,1043 @@ class DealerPortalHandler(BaseHTTPRequestHandler):
                 return
 
             qs = parse_qs(parsed.query)
-            client_id = qs.get('client_id', [''])[0]
-            if not client_id:
-                self.send_json(400, {'error': 'Missing client_id'})
+            cid = qs.get('client_id', [None])[0]
+            if not cid:
+                self.send_json(400, {'error': 'client_id parameter required'})
                 return
 
-            all_clients = load_clients_state()
-            client = all_clients.get(client_id)
+            c_data = load_clients_state()
+            client = c_data.get(cid)
             if not client:
-                self.send_json(404, {'error': 'Client not found'})
+                self.send_json(404, {'error': 'Client site not found'})
                 return
 
-            # Check dealer authorization
+            # Check permissions
             if user['role'] == 'dealer' and client.get('dealer_id') != user['id']:
-                self.send_json(403, {'error': 'Access denied to this client'})
+                self.send_json(403, {'error': 'Access denied to client logs'})
+                return
+            elif user['role'] == 'integrator' and client.get('integrator_id') != user['id']:
+                self.send_json(403, {'error': 'Access denied to client logs'})
                 return
 
-            logs = get_client_logs(client_id)
+            logs = get_client_logs(cid)
             self.send_json(200, logs)
             return
 
-        # 6. Edge SSL Status
+        # 7. SSL Certificate Infrastructure Status
         elif parsed.path == '/api/ssl_status':
             user = self.get_authenticated_user()
             if not user:
                 self.send_json(401, {'error': 'Authentication required'})
                 return
 
-            domain_list = [
-                {"domain": "gavasah.com", "issuer": "Let's Encrypt", "expires": "Dec 27, 2026", "auto_renew_date": "Nov 27, 2026 (Zero-Touch)"},
-                {"domain": "www.gavasah.com", "issuer": "Let's Encrypt", "expires": "Dec 27, 2026", "auto_renew_date": "Nov 27, 2026 (Zero-Touch)"},
-                {"domain": "dealer.gavasah.com", "issuer": "Let's Encrypt", "expires": "Dec 30, 2026", "auto_renew_date": "Nov 30, 2026 (Zero-Touch)"}
+            c_data = load_clients_state()
+            now = int(time.time())
+
+            certs = [
+                {
+                    'domain': 'dealer.gavasah.com',
+                    'role': 'Central Dealer Management Hub',
+                    'authority': 'ZeroSSL Production ECC RSA',
+                    'valid_days_left': 72,
+                    'status': 'active',
+                    'auto_renew': True
+                }
             ]
-            clients = load_clients_state()
-            for cid, cdata in clients.items():
-                c_dom = cdata.get('domain', f"{cid}.gavasah.com")
-                domain_list.append({
-                    "domain": c_dom,
-                    "issuer": "Let's Encrypt",
-                    "expires": "90d ACME Cycle",
-                    "auto_renew_date": "Auto-Renewing (Zero-Touch)"
+
+            for cid, c in c_data.items():
+                if user['role'] == 'dealer' and c.get('dealer_id') != user['id']:
+                    continue
+                if user['role'] == 'integrator' and c.get('integrator_id') != user['id']:
+                    continue
+                certs.append({
+                    'domain': c.get('domain', f'{cid}.gavasah.com'),
+                    'role': f"Ingress Proxy ({c.get('name', cid)})",
+                    'authority': "Let's Encrypt Authority X3",
+                    'valid_days_left': 84,
+                    'status': 'active' if c.get('remote_enabled', True) else 'disabled',
+                    'auto_renew': True
                 })
 
-            ssl_info = {
-                "active_engine": "Caddy ACME ARI (RFC 9444 / RFC 8555)",
-                "wildcard_ready": True,
-                "autonomous_renewal": True,
-                "status": "Healthy & Active",
-                "domains": domain_list
-            }
-            self.send_json(200, ssl_info)
+            self.send_json(200, certs)
             return
 
-        self.send_response(404)
-        self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        content_len = int(self.headers.get('Content-Length', 0))
-        post_body = self.rfile.read(content_len)
 
-        # ----------------------------------------------------------------------
-        # A. AUTHENTICATION ENDPOINTS
-        # ----------------------------------------------------------------------
+        # 1. Login Authentication (Manufacturer, Dealers & Integrators)
         if parsed.path == '/api/login':
+            content_length = int(self.headers.get('Content-Length', 0))
+            raw_body = self.rfile.read(content_length).decode('utf-8')
             try:
-                payload = json.loads(post_body.decode('utf-8'))
-                username = payload.get('username', '').strip()
-                password = payload.get('password', '')
+                body = json.loads(raw_body)
+            except Exception:
+                self.send_json(400, {'error': 'Invalid JSON body'})
+                return
 
-                if not username or not password:
-                    self.send_json(400, {'error': 'Username and password required'})
-                    return
+            username = body.get('username', '').strip()
+            password = body.get('password', '').strip()
 
-                auth_data = load_auth_state()
-                matched_user = None
+            if not username or not password:
+                self.send_json(400, {'error': 'Username and password are required'})
+                return
 
-                # Check Master Manufacturer account
-                owner = auth_data.get('owner', {})
-                if owner.get('username', '').lower() == username.lower():
-                    if verify_password(password, owner.get('salt'), owner.get('password_hash')):
-                        matched_user = {
-                            'id': owner.get('id', 'owner_master'),
-                            'username': owner.get('username'),
-                            'name': owner.get('name', 'Master Manufacturer'),
-                            'role': 'manufacturer'
-                        }
+            auth = load_auth_state()
 
-                # Check Dealer accounts
-                if not matched_user:
-                    dealers = auth_data.get('dealers', {})
-                    for d_id, d in dealers.items():
-                        if d.get('username', '').lower() == username.lower():
-                            if d.get('status') == 'suspended':
-                                self.send_json(403, {'error': 'Dealer account has been suspended by manufacturer.'})
-                                return
-                            if verify_password(password, d.get('salt'), d.get('password_hash')):
-                                matched_user = {
-                                    'id': d_id,
-                                    'username': d.get('username'),
-                                    'name': d.get('name', d.get('username')),
-                                    'role': 'dealer'
-                                }
-                                break
+            # Check Owner / Manufacturer
+            owner = auth.get('owner', {})
+            authenticated_user = None
+            if username.lower() == owner.get('username', '').lower():
+                if verify_password(password, owner.get('salt', ''), owner.get('password_hash', '')):
+                    authenticated_user = {
+                        'id': 'owner_master',
+                        'username': owner['username'],
+                        'name': owner.get('name', 'Master Manufacturer'),
+                        'role': 'manufacturer'
+                    }
 
-                if not matched_user:
-                    self.send_json(401, {'error': 'Invalid username or password.'})
-                    return
+            # Check Dealers
+            if not authenticated_user:
+                for did, d in auth.get('dealers', {}).items():
+                    if username.lower() == d.get('username', '').lower():
+                        if d.get('status') == 'suspended':
+                            self.send_json(403, {'error': 'This dealer account is currently suspended. Please contact the manufacturer.'})
+                            return
+                        if verify_password(password, d.get('salt', ''), d.get('password_hash', '')):
+                            authenticated_user = {
+                                'id': d['id'],
+                                'username': d['username'],
+                                'name': d.get('name', ''),
+                                'role': 'dealer'
+                            }
+                            break
 
-                # Create 7-day session token
-                session_token = secrets.token_hex(32)
-                expires_at = int(time.time()) + (7 * 86400)
+            # Check Integrators
+            if not authenticated_user:
+                for iid, it in auth.get('integrators', {}).items():
+                    if username.lower() == it.get('username', '').lower():
+                        if it.get('status') == 'suspended':
+                            self.send_json(403, {'error': 'This integrator account is currently suspended. Please contact your dealer.'})
+                            return
+                        if verify_password(password, it.get('salt', ''), it.get('password_hash', '')):
+                            authenticated_user = {
+                                'id': it['id'],
+                                'dealer_id': it.get('dealer_id', ''),
+                                'dealer_name': it.get('dealer_name', ''),
+                                'username': it['username'],
+                                'name': it.get('name', ''),
+                                'role': 'integrator'
+                            }
+                            break
 
-                sessions = auth_data.setdefault('sessions', {})
-                sessions[session_token] = {
-                    'user_id': matched_user['id'],
-                    'role': matched_user['role'],
-                    'username': matched_user['username'],
-                    'created_at': int(time.time()),
-                    'expires': expires_at
+            if not authenticated_user:
+                self.send_json(401, {'error': 'Invalid credentials. Please verify your username and password.'})
+                return
+
+            # Generate session token
+            session_token = secrets.token_hex(24)
+            now = int(time.time())
+            expires_at = now + 86400 * 7  # 7 days
+
+            with AUTH_LOCK:
+                auth = load_auth_state()
+                if 'sessions' not in auth:
+                    auth['sessions'] = {}
+                auth['sessions'][session_token] = {
+                    'user_id': authenticated_user['id'],
+                    'role': authenticated_user['role'],
+                    'created_at': now,
+                    'expires_at': expires_at
                 }
-                save_auth_state(auth_data)
+                save_auth_state(auth)
 
-                cookie_val = f"gavasah_session={session_token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800"
-                self.send_json(200, {
-                    'success': True,
-                    'token': session_token,
-                    'user': matched_user
-                }, extra_headers={'Set-Cookie': cookie_val})
-                return
-            except Exception as e:
-                self.send_json(500, {'error': str(e)})
-                return
+            cookie_str = f"gavasah_session={session_token}; Path=/; Max-Age={86400*7}; HttpOnly; SameSite=Lax"
+            self.send_json(200, {
+                'ok': True,
+                'user': authenticated_user,
+                'token': session_token
+            }, extra_headers={'Set-Cookie': cookie_str})
+            return
 
+        # 2. Logout Session Termination
         elif parsed.path == '/api/logout':
             user = self.get_authenticated_user()
             if user:
-                token = user.get('token')
-                auth_data = load_auth_state()
-                if 'sessions' in auth_data and token in auth_data['sessions']:
-                    auth_data['sessions'].pop(token, None)
-                    save_auth_state(auth_data)
+                token = user.get('session_token')
+                if token:
+                    with AUTH_LOCK:
+                        auth = load_auth_state()
+                        if token in auth.get('sessions', {}):
+                            del auth['sessions'][token]
+                            save_auth_state(auth)
 
-            cookie_clear = "gavasah_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
-            self.send_json(200, {'success': True}, extra_headers={'Set-Cookie': cookie_clear})
+            cookie_str = "gavasah_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+            self.send_json(200, {'ok': True}, extra_headers={'Set-Cookie': cookie_str})
             return
 
+        # 3. Manufacturer Self-Service Credential Change
         elif parsed.path == '/api/change_owner_credentials':
             user = self.get_authenticated_user()
             if not user or user['role'] != 'manufacturer':
-                self.send_json(403, {'error': 'Manufacturer authorization required'})
+                self.send_json(403, {'error': 'Manufacturer privilege required'})
                 return
 
-            try:
-                payload = json.loads(post_body.decode('utf-8'))
-                curr_pwd = payload.get('current_password', '')
-                new_username = payload.get('new_username', '').strip()
-                new_pwd = payload.get('new_password', '')
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            curr_pwd = body.get('current_password', '')
+            new_user = body.get('new_username', '').strip()
+            new_pwd = body.get('new_password', '')
 
-                auth_data = load_auth_state()
-                owner = auth_data.get('owner', {})
-                if not verify_password(curr_pwd, owner.get('salt'), owner.get('password_hash')):
-                    self.send_json(400, {'error': 'Incorrect current password.'})
+            with AUTH_LOCK:
+                auth = load_auth_state()
+                owner = auth.get('owner', {})
+                if not verify_password(curr_pwd, owner.get('salt', ''), owner.get('password_hash', '')):
+                    self.send_json(400, {'error': 'Current password verification failed'})
                     return
 
-                if new_username:
-                    owner['username'] = new_username
-
+                if new_user:
+                    owner['username'] = new_user
                 if new_pwd:
-                    new_salt, new_hash = hash_password(new_pwd)
-                    owner['salt'] = new_salt
-                    owner['password_hash'] = new_hash
+                    salt, pwd_hash = hash_password(new_pwd)
+                    owner['salt'] = salt
+                    owner['password_hash'] = pwd_hash
 
-                auth_data['owner'] = owner
-                save_auth_state(auth_data)
-                self.send_json(200, {'success': True, 'username': owner['username']})
-                return
-            except Exception as e:
-                self.send_json(500, {'error': str(e)})
-                return
+                auth['owner'] = owner
+                save_auth_state(auth)
 
+            self.send_json(200, {'ok': True, 'message': 'Manufacturer credentials updated successfully'})
+            return
+
+        # 4. Dealer / Integrator Self-Service Password Change
         elif parsed.path == '/api/change_dealer_password':
             user = self.get_authenticated_user()
-            if not user or user['role'] != 'dealer':
-                self.send_json(403, {'error': 'Dealer authorization required'})
+            if not user or user['role'] not in ['dealer', 'integrator']:
+                self.send_json(403, {'error': 'Account password change privilege required'})
                 return
 
-            try:
-                payload = json.loads(post_body.decode('utf-8'))
-                curr_pwd = payload.get('current_password', '')
-                new_pwd = payload.get('new_password', '')
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            curr_pwd = body.get('current_password', '')
+            new_pwd = body.get('new_password', '')
 
-                if not new_pwd:
-                    self.send_json(400, {'error': 'New password cannot be empty'})
-                    return
-
-                auth_data = load_auth_state()
-                dealers = auth_data.get('dealers', {})
-                dealer = dealers.get(user['id'])
-                if not dealer:
-                    self.send_json(404, {'error': 'Dealer profile not found'})
-                    return
-
-                if not verify_password(curr_pwd, dealer.get('salt'), dealer.get('password_hash')):
-                    self.send_json(400, {'error': 'Incorrect current password'})
-                    return
-
-                new_salt, new_hash = hash_password(new_pwd)
-                dealer['salt'] = new_salt
-                dealer['password_hash'] = new_hash
-                dealers[user['id']] = dealer
-                save_auth_state(auth_data)
-
-                self.send_json(200, {'success': True})
-                return
-            except Exception as e:
-                self.send_json(500, {'error': str(e)})
+            if not new_pwd:
+                self.send_json(400, {'error': 'New password cannot be empty'})
                 return
 
-        # ----------------------------------------------------------------------
-        # B. DEALERS MANAGEMENT ENDPOINTS (MANUFACTURER ONLY)
-        # ----------------------------------------------------------------------
+            with AUTH_LOCK:
+                auth = load_auth_state()
+                if user['role'] == 'dealer':
+                    dealer = auth.get('dealers', {}).get(user['id'])
+                    if not dealer:
+                        self.send_json(404, {'error': 'Dealer record not found'})
+                        return
+                    if not verify_password(curr_pwd, dealer.get('salt', ''), dealer.get('password_hash', '')):
+                        self.send_json(400, {'error': 'Current password incorrect'})
+                        return
+
+                    salt, pwd_hash = hash_password(new_pwd)
+                    dealer['salt'] = salt
+                    dealer['password_hash'] = pwd_hash
+                    dealer['password_plain'] = new_pwd
+                    auth['dealers'][user['id']] = dealer
+                    save_auth_state(auth)
+                else:
+                    integrator = auth.get('integrators', {}).get(user['id'])
+                    if not integrator:
+                        self.send_json(404, {'error': 'Integrator record not found'})
+                        return
+                    if not verify_password(curr_pwd, integrator.get('salt', ''), integrator.get('password_hash', '')):
+                        self.send_json(400, {'error': 'Current password incorrect'})
+                        return
+
+                    salt, pwd_hash = hash_password(new_pwd)
+                    integrator['salt'] = salt
+                    integrator['password_hash'] = pwd_hash
+                    integrator['password_plain'] = new_pwd
+                    auth['integrators'][user['id']] = integrator
+                    save_auth_state(auth)
+
+            self.send_json(200, {'ok': True, 'message': 'Password updated successfully'})
+            return
+
+        # 5. Create Dealer (Manufacturer Only)
         elif parsed.path == '/api/create_dealer':
             user = self.get_authenticated_user()
             if not user or user['role'] != 'manufacturer':
                 self.send_json(403, {'error': 'Manufacturer privilege required'})
                 return
 
-            try:
-                payload = json.loads(post_body.decode('utf-8'))
-                name = payload.get('name', '').strip()
-                username = payload.get('username', '').strip().lower()
-                password = payload.get('password', '')
-                email = payload.get('email', '').strip()
-                phone = payload.get('phone', '').strip()
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            name = body.get('name', '').strip()
+            username = body.get('username', '').strip()
+            password = body.get('password', '').strip()
+            email = body.get('email', '').strip()
+            phone = body.get('phone', '').strip()
 
-                if not name or not username or not password:
-                    self.send_json(400, {'error': 'Name, username, and password are required'})
+            if not name or not username or not password:
+                self.send_json(400, {'error': 'Dealer name, username, and password are required'})
+                return
+
+            clean_slug = re.sub(r'[^a-zA-Z0-9_]', '', username.lower())
+            if not clean_slug:
+                self.send_json(400, {'error': 'Invalid username format'})
+                return
+
+            with AUTH_LOCK:
+                auth = load_auth_state()
+                # Check uniqueness across owner, dealers, integrators
+                if clean_slug == auth.get('owner', {}).get('username', '').lower():
+                    self.send_json(400, {'error': 'Username already taken by Manufacturer'})
                     return
-
-                if not re.match(r'^[a-z0-9_-]+$', username):
-                    self.send_json(400, {'error': 'Username can only contain letters, numbers, hyphens, and underscores'})
-                    return
-
-                auth_data = load_auth_state()
-                dealers = auth_data.setdefault('dealers', {})
-
-                # Check uniqueness against owner and other dealers
-                if username == auth_data.get('owner', {}).get('username', '').lower():
-                    self.send_json(400, {'error': 'Username is already taken by the owner'})
-                    return
-
-                for d in dealers.values():
-                    if d.get('username', '').lower() == username:
-                        self.send_json(400, {'error': 'Dealer username already exists'})
+                for d in auth.get('dealers', {}).values():
+                    if d.get('username', '').lower() == clean_slug:
+                        self.send_json(400, {'error': 'Username already exists for another Dealer'})
+                        return
+                for it in auth.get('integrators', {}).values():
+                    if it.get('username', '').lower() == clean_slug:
+                        self.send_json(400, {'error': 'Username already taken by an Integrator'})
                         return
 
-                dealer_id = f"dealer_{username}_{secrets.token_hex(3)}"
+                dealer_id = f"dealer_{clean_slug}"
                 salt, pwd_hash = hash_password(password)
 
-                new_dealer = {
+                auth['dealers'][dealer_id] = {
                     'id': dealer_id,
                     'name': name,
-                    'username': username,
+                    'username': clean_slug,
+                    'password_plain': password,  # Stored plain for Manufacturer visibility & editing
                     'email': email,
                     'phone': phone,
-                    'status': 'active',
                     'role': 'dealer',
+                    'status': 'active',
                     'salt': salt,
                     'password_hash': pwd_hash,
                     'created_at': int(time.time())
                 }
+                save_auth_state(auth)
 
-                dealers[dealer_id] = new_dealer
-                save_auth_state(auth_data)
+            self.send_json(200, {'ok': True, 'message': f'Dealer {name} registered successfully', 'dealer_id': dealer_id})
+            return
 
-                self.send_json(200, {'success': True, 'dealer': {'id': dealer_id, 'name': name, 'username': username}})
-                return
-            except Exception as e:
-                self.send_json(500, {'error': str(e)})
-                return
-
+        # 6. Update Dealer (Manufacturer Only - Can See & Edit Dealer Password)
         elif parsed.path == '/api/update_dealer':
             user = self.get_authenticated_user()
             if not user or user['role'] != 'manufacturer':
                 self.send_json(403, {'error': 'Manufacturer privilege required'})
                 return
 
-            try:
-                payload = json.loads(post_body.decode('utf-8'))
-                dealer_id = payload.get('dealer_id')
-                name = payload.get('name', '').strip()
-                username = payload.get('username', '').strip().lower()
-                password = payload.get('password', '')
-                email = payload.get('email', '').strip()
-                phone = payload.get('phone', '').strip()
-                status = payload.get('status', 'active')
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            dealer_id = body.get('id', '').strip()
+            name = body.get('name', '').strip()
+            username = body.get('username', '').strip()
+            new_password = body.get('password', '').strip()
+            email = body.get('email', '').strip()
+            phone = body.get('phone', '').strip()
+            status = body.get('status', 'active')
 
-                if not dealer_id:
-                    self.send_json(400, {'error': 'Missing dealer_id'})
-                    return
-
-                auth_data = load_auth_state()
-                dealers = auth_data.get('dealers', {})
-                if dealer_id not in dealers:
+            with AUTH_LOCK:
+                auth = load_auth_state()
+                dealer = auth.get('dealers', {}).get(dealer_id)
+                if not dealer:
                     self.send_json(404, {'error': 'Dealer not found'})
                     return
 
-                dealer = dealers[dealer_id]
-                if name: dealer['name'] = name
-                if username:
-                    # Check uniqueness if username changed
-                    if username != dealer.get('username', '').lower():
-                        for oid, od in dealers.items():
-                            if oid != dealer_id and od.get('username', '').lower() == username:
-                                self.send_json(400, {'error': 'Username already taken by another dealer'})
-                                return
-                        dealer['username'] = username
+                # Check username uniqueness if changed
+                if username and username.lower() != dealer.get('username', '').lower():
+                    for did, d in auth.get('dealers', {}).items():
+                        if did != dealer_id and d.get('username', '').lower() == username.lower():
+                            self.send_json(400, {'error': 'Username already in use by another Dealer'})
+                            return
+                    dealer['username'] = username
 
-                if password:
-                    salt, pwd_hash = hash_password(password)
-                    dealer['salt'] = salt
-                    dealer['password_hash'] = pwd_hash
-
+                if name:
+                    dealer['name'] = name
                 dealer['email'] = email
                 dealer['phone'] = phone
                 dealer['status'] = status
-                dealers[dealer_id] = dealer
-                save_auth_state(auth_data)
 
-                # Update dealer name in all associated clients
-                clients = load_clients_state()
-                c_changed = False
-                for c in clients.values():
-                    if c.get('dealer_id') == dealer_id:
-                        c['dealer_name'] = dealer['name']
-                        c_changed = True
-                if c_changed:
-                    save_clients_state(clients)
+                # Manufacturer can update / reset dealer password directly!
+                if new_password:
+                    salt, pwd_hash = hash_password(new_password)
+                    dealer['salt'] = salt
+                    dealer['password_hash'] = pwd_hash
+                    dealer['password_plain'] = new_password
 
-                self.send_json(200, {'success': True, 'dealer': {'id': dealer_id, 'name': dealer['name']}})
-                return
-            except Exception as e:
-                self.send_json(500, {'error': str(e)})
-                return
+                auth['dealers'][dealer_id] = dealer
+                save_auth_state(auth)
 
+                # Also update dealer_name in clients_state if name changed
+                if name:
+                    c_data = load_clients_state()
+                    c_dirty = False
+                    for cid, c in c_data.items():
+                        if c.get('dealer_id') == dealer_id:
+                            c['dealer_name'] = name
+                            c_dirty = True
+                    if c_dirty:
+                        save_clients_state(c_data)
+
+            self.send_json(200, {'ok': True, 'message': f'Dealer {name} updated successfully'})
+            return
+
+        # 7. Delete Dealer (Manufacturer Only)
         elif parsed.path == '/api/delete_dealer':
             user = self.get_authenticated_user()
             if not user or user['role'] != 'manufacturer':
                 self.send_json(403, {'error': 'Manufacturer privilege required'})
                 return
 
-            try:
-                payload = json.loads(post_body.decode('utf-8'))
-                dealer_id = payload.get('dealer_id')
-                if not dealer_id:
-                    self.send_json(400, {'error': 'Missing dealer_id'})
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            dealer_id = body.get('dealer_id', '').strip()
+
+            if not dealer_id:
+                self.send_json(400, {'error': 'dealer_id is required'})
+                return
+
+            with AUTH_LOCK:
+                auth = load_auth_state()
+                if dealer_id not in auth.get('dealers', {}):
+                    self.send_json(404, {'error': 'Dealer not found'})
                     return
 
-                auth_data = load_auth_state()
-                dealers = auth_data.get('dealers', {})
-                if dealer_id in dealers:
-                    dealers.pop(dealer_id)
-                    # Invalidate any active sessions for this dealer
-                    sessions = auth_data.get('sessions', {})
-                    to_del = [t for t, s in sessions.items() if s.get('user_id') == dealer_id]
-                    for t in to_del:
-                        sessions.pop(t, None)
-                    save_auth_state(auth_data)
-
-                # Safely reassign any clients owned by this dealer to the Master Manufacturer
-                clients = load_clients_state()
-                c_changed = False
-                for c in clients.values():
+                # Reassign clients under this dealer to Master Manufacturer
+                c_data = load_clients_state()
+                c_dirty = False
+                for cid, c in c_data.items():
                     if c.get('dealer_id') == dealer_id:
                         c['dealer_id'] = 'owner_master'
                         c['dealer_name'] = 'Master Manufacturer (Direct)'
-                        c_changed = True
-                if c_changed:
-                    save_clients_state(clients)
+                        c['integrator_id'] = None
+                        c['integrator_name'] = 'Direct Dealer Supervision'
+                        c_dirty = True
+                if c_dirty:
+                    save_clients_state(c_data)
 
-                self.send_json(200, {'success': True, 'dealer_id': dealer_id})
-                return
-            except Exception as e:
-                self.send_json(500, {'error': str(e)})
+                # Reassign or clean up integrators under this dealer
+                for iid, it in list(auth.get('integrators', {}).items()):
+                    if it.get('dealer_id') == dealer_id:
+                        it['status'] = 'suspended'
+
+                # Terminate dealer sessions
+                for token, sess in list(auth.get('sessions', {}).items()):
+                    if sess.get('user_id') == dealer_id:
+                        del auth['sessions'][token]
+
+                del auth['dealers'][dealer_id]
+                save_auth_state(auth)
+
+            self.send_json(200, {'ok': True, 'message': 'Dealer deleted. All assigned clients retained under Direct Supervision.'})
+            return
+
+        # 8. Create Integrator (Manufacturer & Dealers)
+        elif parsed.path == '/api/create_integrator':
+            user = self.get_authenticated_user()
+            if not user or user['role'] not in ['manufacturer', 'dealer']:
+                self.send_json(403, {'error': 'Manufacturer or Dealer privilege required'})
                 return
 
-        # ----------------------------------------------------------------------
-        # C. CLIENT FLEET ENDPOINTS
-        # ----------------------------------------------------------------------
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            name = body.get('name', '').strip()
+            username = body.get('username', '').strip()
+            password = body.get('password', '').strip()
+            email = body.get('email', '').strip()
+            phone = body.get('phone', '').strip()
+
+            if not name or not username or not password:
+                self.send_json(400, {'error': 'Integrator name, username, and password are required'})
+                return
+
+            clean_slug = re.sub(r'[^a-zA-Z0-9_]', '', username.lower())
+            if not clean_slug:
+                self.send_json(400, {'error': 'Invalid username format'})
+                return
+
+            auth = load_auth_state()
+
+            # Determine Dealership Assignment
+            if user['role'] == 'dealer':
+                dealer_id = user['id']
+                dealer_name = user['name']
+            else:
+                # Manufacturer can assign to any dealer
+                dealer_id = body.get('dealer_id', '').strip()
+                if not dealer_id or dealer_id not in auth.get('dealers', {}):
+                    # fallback to first dealer or self
+                    if auth.get('dealers'):
+                        dealer_id = list(auth['dealers'].keys())[0]
+                        dealer_name = auth['dealers'][dealer_id]['name']
+                    else:
+                        dealer_id = 'owner_master'
+                        dealer_name = 'Master Manufacturer (Direct)'
+                else:
+                    dealer_name = auth['dealers'][dealer_id]['name']
+
+            with AUTH_LOCK:
+                auth = load_auth_state()
+                # Uniqueness check
+                if clean_slug == auth.get('owner', {}).get('username', '').lower():
+                    self.send_json(400, {'error': 'Username already taken by Manufacturer'})
+                    return
+                for d in auth.get('dealers', {}).values():
+                    if d.get('username', '').lower() == clean_slug:
+                        self.send_json(400, {'error': 'Username already taken by a Dealer'})
+                        return
+                for it in auth.get('integrators', {}).values():
+                    if it.get('username', '').lower() == clean_slug:
+                        self.send_json(400, {'error': 'Username already exists for an Integrator'})
+                        return
+
+                int_id = f"int_{clean_slug}_{int(time.time()) % 10000}"
+                salt, pwd_hash = hash_password(password)
+
+                auth['integrators'][int_id] = {
+                    'id': int_id,
+                    'dealer_id': dealer_id,
+                    'dealer_name': dealer_name,
+                    'name': name,
+                    'username': clean_slug,
+                    'password_plain': password,  # Stored plain for Manufacturer and Dealer visibility & editing
+                    'email': email,
+                    'phone': phone,
+                    'role': 'integrator',
+                    'status': 'active',
+                    'salt': salt,
+                    'password_hash': pwd_hash,
+                    'created_at': int(time.time())
+                }
+                save_auth_state(auth)
+
+            self.send_json(200, {'ok': True, 'message': f'Integrator {name} registered successfully', 'integrator_id': int_id})
+            return
+
+        # 9. Update Integrator (Manufacturer & Dealers - Can See & Edit Integrator Password)
+        elif parsed.path == '/api/update_integrator':
+            user = self.get_authenticated_user()
+            if not user or user['role'] not in ['manufacturer', 'dealer']:
+                self.send_json(403, {'error': 'Manufacturer or Dealer privilege required'})
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            int_id = body.get('id', '').strip()
+            name = body.get('name', '').strip()
+            username = body.get('username', '').strip()
+            new_password = body.get('password', '').strip()
+            email = body.get('email', '').strip()
+            phone = body.get('phone', '').strip()
+            status = body.get('status', 'active')
+            new_dealer_id = body.get('dealer_id', '').strip()
+
+            with AUTH_LOCK:
+                auth = load_auth_state()
+                integrator = auth.get('integrators', {}).get(int_id)
+                if not integrator:
+                    self.send_json(404, {'error': 'Integrator not found'})
+                    return
+
+                # If Dealer, verify ownership
+                if user['role'] == 'dealer' and integrator.get('dealer_id') != user['id']:
+                    self.send_json(403, {'error': 'Access denied: You can only edit your own integrators'})
+                    return
+
+                # Check username uniqueness if changed
+                if username and username.lower() != integrator.get('username', '').lower():
+                    for iid, it in auth.get('integrators', {}).items():
+                        if iid != int_id and it.get('username', '').lower() == username.lower():
+                            self.send_json(400, {'error': 'Username already taken by another Integrator'})
+                            return
+                    integrator['username'] = username
+
+                if name:
+                    integrator['name'] = name
+                integrator['email'] = email
+                integrator['phone'] = phone
+                integrator['status'] = status
+
+                # Manufacturer and Dealer can update / reset Integrator's password directly!
+                if new_password:
+                    salt, pwd_hash = hash_password(new_password)
+                    integrator['salt'] = salt
+                    integrator['password_hash'] = pwd_hash
+                    integrator['password_plain'] = new_password
+
+                # Manufacturer can transfer integrator to another dealer
+                if user['role'] == 'manufacturer' and new_dealer_id and new_dealer_id in auth.get('dealers', {}):
+                    integrator['dealer_id'] = new_dealer_id
+                    integrator['dealer_name'] = auth['dealers'][new_dealer_id]['name']
+
+                auth['integrators'][int_id] = integrator
+                save_auth_state(auth)
+
+                # Update client integrator_name if name changed
+                if name:
+                    c_data = load_clients_state()
+                    c_dirty = False
+                    for cid, c in c_data.items():
+                        if c.get('integrator_id') == int_id:
+                            c['integrator_name'] = name
+                            c_dirty = True
+                    if c_dirty:
+                        save_clients_state(c_data)
+
+            self.send_json(200, {'ok': True, 'message': f'Integrator {name} updated successfully'})
+            return
+
+        # 10. Delete Integrator (Manufacturer & Dealers - SAFETY RULE: Retain Clients)
+        elif parsed.path == '/api/delete_integrator':
+            user = self.get_authenticated_user()
+            if not user or user['role'] not in ['manufacturer', 'dealer']:
+                self.send_json(403, {'error': 'Manufacturer or Dealer privilege required'})
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            int_id = body.get('integrator_id', '').strip()
+
+            if not int_id:
+                self.send_json(400, {'error': 'integrator_id is required'})
+                return
+
+            with AUTH_LOCK:
+                auth = load_auth_state()
+                integrator = auth.get('integrators', {}).get(int_id)
+                if not integrator:
+                    self.send_json(404, {'error': 'Integrator not found'})
+                    return
+
+                # If Dealer, verify ownership
+                if user['role'] == 'dealer' and integrator.get('dealer_id') != user['id']:
+                    self.send_json(403, {'error': 'Access denied: You can only delete your own integrators'})
+                    return
+
+                # CRITICAL SAFETY REQUIREMENT:
+                # Clients created or supervised by this integrator must NOT be deleted!
+                # Move them automatically into Direct Dealer Supervision!
+                c_data = load_clients_state()
+                reassigned_count = 0
+                for cid, c in c_data.items():
+                    if c.get('integrator_id') == int_id:
+                        c['integrator_id'] = None
+                        c['integrator_name'] = 'Direct Dealer Supervision'
+                        reassigned_count += 1
+                        append_client_log(
+                            cid, 'WARNING', 'SUPERVISION_TRANSFER',
+                            f"Assigned integrator '{integrator.get('name')}' removed. Client transferred to Direct Dealer Supervision."
+                        )
+                if reassigned_count > 0:
+                    save_clients_state(c_data)
+
+                # Terminate any active sessions for this integrator
+                for token, sess in list(auth.get('sessions', {}).items()):
+                    if sess.get('user_id') == int_id:
+                        del auth['sessions'][token]
+
+                del auth['integrators'][int_id]
+                save_auth_state(auth)
+
+            self.send_json(200, {
+                'ok': True,
+                'message': f"Integrator deleted safely. {reassigned_count} client(s) preserved and moved to Direct Dealer Supervision."
+            })
+            return
+
+        # 11. Reassign Client Supervision (Manufacturer & Dealers)
+        elif parsed.path == '/api/reassign_client':
+            user = self.get_authenticated_user()
+            if not user or user['role'] not in ['manufacturer', 'dealer']:
+                self.send_json(403, {'error': 'Manufacturer or Dealer privilege required'})
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            client_id = body.get('client_id', '').strip()
+            new_dealer_id = body.get('dealer_id', '').strip()
+            new_integrator_id = body.get('integrator_id', '').strip()
+
+            if not client_id:
+                self.send_json(400, {'error': 'client_id is required'})
+                return
+
+            c_data = load_clients_state()
+            client = c_data.get(client_id)
+            if not client:
+                self.send_json(404, {'error': 'Client site not found'})
+                return
+
+            auth = load_auth_state()
+
+            # Authorization and Reassignment Logic
+            if user['role'] == 'dealer':
+                # Dealer can only reassign clients they own
+                if client.get('dealer_id') != user['id']:
+                    self.send_json(403, {'error': 'Access denied: You can only reassign clients in your dealership'})
+                    return
+
+                # Dealer cannot change dealer_id
+                if new_integrator_id in ['', 'none', None]:
+                    client['integrator_id'] = None
+                    client['integrator_name'] = 'Direct Dealer Supervision'
+                else:
+                    it = auth.get('integrators', {}).get(new_integrator_id)
+                    if not it or it.get('dealer_id') != user['id']:
+                        self.send_json(400, {'error': 'Selected integrator does not belong to your dealership'})
+                        return
+                    client['integrator_id'] = it['id']
+                    client['integrator_name'] = it['name']
+
+            elif user['role'] == 'manufacturer':
+                # Manufacturer can change dealer AND integrator
+                if new_dealer_id:
+                    if new_dealer_id == 'owner_master':
+                        client['dealer_id'] = 'owner_master'
+                        client['dealer_name'] = 'Master Manufacturer (Direct)'
+                    elif new_dealer_id in auth.get('dealers', {}):
+                        client['dealer_id'] = new_dealer_id
+                        client['dealer_name'] = auth['dealers'][new_dealer_id]['name']
+                    else:
+                        self.send_json(400, {'error': 'Target dealer not found'})
+                        return
+
+                if new_integrator_id in ['', 'none', None]:
+                    client['integrator_id'] = None
+                    client['integrator_name'] = 'Direct Dealer Supervision'
+                else:
+                    it = auth.get('integrators', {}).get(new_integrator_id)
+                    if not it:
+                        self.send_json(400, {'error': 'Target integrator not found'})
+                        return
+                    # Match client's current dealer
+                    client['integrator_id'] = it['id']
+                    client['integrator_name'] = it['name']
+
+            save_clients_state(c_data)
+            append_client_log(
+                client_id, 'INFO', 'SUPERVISION_REASSIGNED',
+                f"Supervision reassigned by {user['name']}: Dealer='{client.get('dealer_name')}', Integrator='{client.get('integrator_name')}'."
+            )
+
+            self.send_json(200, {
+                'ok': True,
+                'message': f"Client supervision transferred to {client.get('integrator_name')} ({client.get('dealer_name')})",
+                'client': client
+            })
+            return
+
+        # 12. Onboard New Client Site (Manufacturer, Dealers & Integrators)
         elif parsed.path == '/api/onboard':
             user = self.get_authenticated_user()
             if not user:
                 self.send_json(401, {'error': 'Authentication required'})
                 return
 
+            content_length = int(self.headers.get('Content-Length', 0))
+            raw_body = self.rfile.read(content_length).decode('utf-8')
             try:
-                req = json.loads(post_body.decode('utf-8'))
-                slug = (req.get('slug') or req.get('site_id') or req.get('client_id') or '').strip().lower()
-                name = (req.get('name') or req.get('client_name') or slug).strip()
-                if not slug:
-                    self.send_json(400, {'error': 'Slug or Site ID is required.'})
-                    return
+                body = json.loads(raw_body)
+            except Exception:
+                self.send_json(400, {'error': 'Invalid JSON body'})
+                return
 
-                knx = req.get('knx', '192.168.1.111').strip()
-                auth_secret = req.get('auth_secret', '').strip()
-                if not auth_secret:
-                    auth_secret = 'gav_sec_' + secrets.token_hex(8)
+            client_name = body.get('name', '').strip()
+            client_id = body.get('client_id', '').strip().lower()
+            ssh_key = body.get('ssh_public_key', '').strip()
+            auth_secret = body.get('auth_secret', '').strip()
+            knx_ip = body.get('knx_ip', '192.168.1.100').strip()
+            knx_port = int(body.get('knx_port', 3671))
 
-                # Determine assigned dealer
-                if user['role'] == 'dealer':
-                    assigned_dealer_id = user['id']
-                    assigned_dealer_name = user['name']
-                else:
-                    # Manufacturer can assign to any dealer or self
-                    req_dealer = req.get('dealer_id', 'owner_master')
-                    auth_data = load_auth_state()
-                    if req_dealer == 'owner_master':
-                        assigned_dealer_id = 'owner_master'
-                        assigned_dealer_name = 'Master Manufacturer (Direct)'
+            if not client_name or not client_id:
+                self.send_json(400, {'error': 'Site name and unique identifier are required'})
+                return
+
+            clean_id = re.sub(r'[^a-z0-9\-]', '', client_id)
+            if not clean_id:
+                self.send_json(400, {'error': 'Client identifier must contain valid characters'})
+                return
+
+            c_data = load_clients_state()
+            if clean_id in c_data:
+                self.send_json(400, {'error': f'Client identifier {clean_id} is already in use'})
+                return
+
+            # Allocate dynamic ports
+            existing_dash_ports = [c.get('dashboard_port', 0) for c in c_data.values()]
+            existing_ssh_ports = [c.get('ssh_port', 0) for c in c_data.values()]
+            dash_port = 10001
+            while dash_port in existing_dash_ports:
+                dash_port += 1
+            ssh_port = 22001
+            while ssh_port in existing_ssh_ports:
+                ssh_port += 1
+
+            domain = f"{clean_id}.gavasah.com"
+            auth = load_auth_state()
+
+            # Determine Dealer & Integrator Assignment based on User Role
+            if user['role'] == 'integrator':
+                assigned_dealer_id = user['dealer_id']
+                assigned_dealer_name = user['dealer_name']
+                assigned_int_id = user['id']
+                assigned_int_name = user['name']
+            elif user['role'] == 'dealer':
+                assigned_dealer_id = user['id']
+                assigned_dealer_name = user['name']
+                req_int_id = body.get('integrator_id', '').strip()
+                if req_int_id and req_int_id in auth.get('integrators', {}):
+                    it = auth['integrators'][req_int_id]
+                    if it.get('dealer_id') == user['id']:
+                        assigned_int_id = it['id']
+                        assigned_int_name = it['name']
                     else:
-                        d_info = auth_data.get('dealers', {}).get(req_dealer)
-                        assigned_dealer_id = req_dealer
-                        assigned_dealer_name = d_info.get('name', 'Dealer') if d_info else 'Direct'
+                        assigned_int_id = None
+                        assigned_int_name = 'Direct Dealer Supervision'
+                else:
+                    assigned_int_id = None
+                    assigned_int_name = 'Direct Dealer Supervision'
+            else:
+                # Manufacturer can pick both dealer and integrator
+                req_dealer_id = body.get('dealer_id', '').strip()
+                if req_dealer_id and req_dealer_id in auth.get('dealers', {}):
+                    assigned_dealer_id = req_dealer_id
+                    assigned_dealer_name = auth['dealers'][req_dealer_id]['name']
+                elif req_dealer_id == 'owner_master':
+                    assigned_dealer_id = 'owner_master'
+                    assigned_dealer_name = 'Master Manufacturer (Direct)'
+                else:
+                    assigned_dealer_id = 'owner_master'
+                    assigned_dealer_name = 'Master Manufacturer (Direct)'
 
-                data = load_clients_state()
-                existing_dash_ports = [c.get('dashboard_port', 10000) for c in data.values()]
-                next_dash_port = max(existing_dash_ports, default=10000) + 1
-                next_ssh_port = next_dash_port + 12000
+                req_int_id = body.get('integrator_id', '').strip()
+                if req_int_id and req_int_id in auth.get('integrators', {}):
+                    it = auth['integrators'][req_int_id]
+                    assigned_int_id = it['id']
+                    assigned_int_name = it['name']
+                else:
+                    assigned_int_id = None
+                    assigned_int_name = 'Direct Dealer Supervision'
 
-                client_record = {
-                    "client_id": slug,
-                    "site_id": slug,
-                    "name": name,
-                    "dealer_id": assigned_dealer_id,
-                    "dealer_name": assigned_dealer_name,
-                    "domain": f"{slug}.gavasah.com",
-                    "auth_secret": auth_secret,
-                    "dashboard_port": next_dash_port,
-                    "ssh_port": next_ssh_port,
-                    "knx_ip": knx,
-                    "knx_port": 3671,
-                    "last_heartbeat": int(time.time()),
-                    "status": "online",
-                    "remote_enabled": True,
-                    "system": {
-                        "haos_version": "13.2",
-                        "core_version": "2026.9.3",
-                        "boot_slot": "A",
-                        "is_recovery_mode": False,
-                        "slot_a_status": "good",
-                        "slot_b_status": "standby",
-                        "cpu_percent": 5.0,
-                        "memory_percent": 30.0,
-                        "disk_free_gb": 150.0
-                    },
-                    "network": {
-                        "local_ipv4": "192.168.1.100",
-                        "gateway": "192.168.1.1",
-                        "mac_address": "00:00:00:00:00:00"
-                    },
-                    "knx_status": {
-                        "reachable": True,
-                        "latency_ms": 1.5
-                    }
+            new_client = {
+                'client_id': clean_id,
+                'dealer_id': assigned_dealer_id,
+                'dealer_name': assigned_dealer_name,
+                'integrator_id': assigned_int_id,
+                'integrator_name': assigned_int_name,
+                'name': client_name,
+                'domain': domain,
+                'auth_secret': auth_secret or secrets.token_hex(16),
+                'dashboard_port': dash_port,
+                'ssh_port': ssh_port,
+                'knx_ip': knx_ip,
+                'knx_port': knx_port,
+                'last_heartbeat': int(time.time()),
+                'status': 'online',
+                'remote_enabled': True,
+                'system': {
+                    'haos_version': '13.2',
+                    'core_version': '2026.9.3',
+                    'boot_slot': 'A',
+                    'is_recovery_mode': False,
+                    'slot_a_status': 'good',
+                    'slot_b_status': 'standby',
+                    'cpu_percent': 5.0,
+                    'memory_percent': 28.0,
+                    'disk_free_gb': 120.0
+                },
+                'network': {
+                    'local_ipv4': '192.168.1.150',
+                    'gateway': '192.168.1.1',
+                    'mac_address': 'E4:5F:01:FF:AA:BB'
+                },
+                'knx_status': {
+                    'reachable': True,
+                    'latency_ms': 1.8
                 }
+            }
 
-                data[slug] = client_record
-                save_clients_state(data)
+            c_data[clean_id] = new_client
+            save_clients_state(c_data)
 
-                # Pre-create system user on Linux
-                if os.name != 'nt':
-                    try:
-                        subprocess.run(["groupadd", "-f", "haclients"], check=False)
-                        ret = subprocess.run(["id", slug], capture_output=True)
-                        if ret.returncode != 0:
-                            subprocess.run(["useradd", "-m", "-s", "/bin/bash", "-g", "haclients", slug], check=False)
-                        ssh_dir = f"/home/{slug}/.ssh"
-                        os.makedirs(ssh_dir, mode=0o700, exist_ok=True)
-                        auth_keys_path = f"{ssh_dir}/authorized_keys"
-                        if not os.path.exists(auth_keys_path):
-                            with open(auth_keys_path, "w") as f:
-                                pass
-                        subprocess.run(["chmod", "700", ssh_dir], check=False)
-                        subprocess.run(["chmod", "600", auth_keys_path], check=False)
-                        subprocess.run(["chown", "-R", f"{slug}:haclients", ssh_dir], check=False)
-                    except Exception as err:
-                        print(f"[-] Subprocess warning in user creation: {err}")
+            # Ingress and SSH config
+            sync_caddy_ingress(clean_id, dash_port, 'http', True)
+            if ssh_key:
+                sync_client_ssh_user(clean_id, ssh_key)
 
-                # Sync initial Caddy configuration
-                sync_caddy_ingress(slug, next_dash_port, "http", force=True)
+            append_client_log(clean_id, 'INFO', 'ONBOARD_COMPLETE', f"Site '{client_name}' onboarded successfully by {user['name']}.")
+            self.send_json(200, {'ok': True, 'client': new_client})
+            return
 
-                self.send_json(200, client_record)
-                return
-            except Exception as e:
-                self.send_json(500, {'error': str(e)})
-                return
-
+        # 13. Update Client Site Details
         elif parsed.path == '/api/update_client':
             user = self.get_authenticated_user()
             if not user:
                 self.send_json(401, {'error': 'Authentication required'})
                 return
 
-            try:
-                payload = json.loads(post_body.decode('utf-8'))
-                client_id = payload.get('client_id')
-                if not client_id:
-                    self.send_json(400, {'error': 'Missing client_id'})
-                    return
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            client_id = body.get('client_id', '').strip()
 
-                data = load_clients_state()
-                if client_id not in data:
-                    self.send_json(404, {'error': 'Client not found'})
-                    return
-
-                client = data[client_id]
-
-                # Check dealer ownership
-                if user['role'] == 'dealer' and client.get('dealer_id') != user['id']:
-                    self.send_json(403, {'error': 'You do not have permission to modify this client.'})
-                    return
-
-                if 'name' in payload and payload['name'].strip():
-                    client['name'] = payload['name'].strip()
-                if 'auth_secret' in payload and payload['auth_secret'].strip():
-                    client['auth_secret'] = payload['auth_secret'].strip()
-                if 'knx_ip' in payload:
-                    client['knx_ip'] = payload['knx_ip'].strip()
-                if 'knx_port' in payload:
-                    try:
-                        client['knx_port'] = int(payload['knx_port'])
-                    except:
-                        pass
-
-                # If Manufacturer, can reassign dealer
-                if user['role'] == 'manufacturer' and 'dealer_id' in payload:
-                    req_dealer = payload['dealer_id']
-                    auth_data = load_auth_state()
-                    if req_dealer == 'owner_master':
-                        client['dealer_id'] = 'owner_master'
-                        client['dealer_name'] = 'Master Manufacturer (Direct)'
-                    else:
-                        d_info = auth_data.get('dealers', {}).get(req_dealer)
-                        client['dealer_id'] = req_dealer
-                        client['dealer_name'] = d_info.get('name', 'Dealer') if d_info else 'Direct'
-
-                save_clients_state(data)
-                self.send_json(200, {'success': True, 'client': client})
-                return
-            except Exception as e:
-                self.send_json(500, {'error': str(e)})
+            c_data = load_clients_state()
+            client = c_data.get(client_id)
+            if not client:
+                self.send_json(404, {'error': 'Client site not found'})
                 return
 
+            # Role verification
+            if user['role'] == 'dealer' and client.get('dealer_id') != user['id']:
+                self.send_json(403, {'error': 'Access denied to this client site'})
+                return
+            elif user['role'] == 'integrator' and client.get('integrator_id') != user['id']:
+                self.send_json(403, {'error': 'Access denied to this client site'})
+                return
+
+            if body.get('name'):
+                client['name'] = body['name'].strip()
+            if body.get('knx_ip'):
+                client['knx_ip'] = body['knx_ip'].strip()
+            if body.get('knx_port'):
+                client['knx_port'] = int(body['knx_port'])
+            if body.get('auth_secret'):
+                client['auth_secret'] = body['auth_secret'].strip()
+
+            save_clients_state(c_data)
+            append_client_log(client_id, 'INFO', 'CONFIG_UPDATE', f"Configuration updated by {user['name']}.")
+            self.send_json(200, {'ok': True, 'client': client})
+            return
+
+        # 14. Toggle Remote Ingress
         elif parsed.path == '/api/toggle_remote':
             user = self.get_authenticated_user()
             if not user:
                 self.send_json(401, {'error': 'Authentication required'})
                 return
 
-            try:
-                payload = json.loads(post_body.decode('utf-8'))
-                client_id = payload.get('client_id')
-                enabled = bool(payload.get('enabled'))
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            client_id = body.get('client_id', '').strip()
+            enabled = bool(body.get('enabled', True))
 
-                data = load_clients_state()
-                if client_id not in data:
-                    self.send_json(404, {'error': 'Client not found'})
-                    return
-
-                # Check dealer authorization
-                if user['role'] == 'dealer' and data[client_id].get('dealer_id') != user['id']:
-                    self.send_json(403, {'error': 'Access denied to this client'})
-                    return
-
-                data[client_id]['remote_enabled'] = enabled
-                save_clients_state(data)
-
-                target_port = data.get(client_id, {}).get('dashboard_port', 10010)
-                local_ip = data.get(client_id, {}).get('network', {}).get('local_ipv4', '')
-                ha_proto = data.get(client_id, {}).get('ha_proto')
-                if not ha_proto:
-                    ha_proto = 'https' if local_ip in ['192.168.6.17'] else 'http'
-                sync_caddy_ingress(client_id, target_port, ha_proto, enabled=enabled, force=True)
-
-                status_str = "ACTIVATED" if enabled else "SUSPENDED"
-                append_client_log(client_id, 'WARN' if not enabled else 'INFO', 'REMOTE_ACCESS', f'Remote access {status_str} by {user["name"]}')
-
-                self.send_json(200, {'success': True, 'client_id': client_id, 'remote_enabled': enabled})
-                return
-            except Exception as e:
-                self.send_json(500, {'error': str(e)})
+            c_data = load_clients_state()
+            client = c_data.get(client_id)
+            if not client:
+                self.send_json(404, {'error': 'Client site not found'})
                 return
 
+            # Role verification
+            if user['role'] == 'dealer' and client.get('dealer_id') != user['id']:
+                self.send_json(403, {'error': 'Access denied'})
+                return
+            elif user['role'] == 'integrator' and client.get('integrator_id') != user['id']:
+                self.send_json(403, {'error': 'Access denied'})
+                return
+
+            client['remote_enabled'] = enabled
+            save_clients_state(c_data)
+            sync_caddy_ingress(client_id, client.get('dashboard_port', 10001), 'http', enabled)
+
+            append_client_log(
+                client_id, 'WARNING' if not enabled else 'INFO', 'INGRESS_TOGGLE',
+                f"Remote dashboard access set to {'ENABLED' if enabled else 'DISABLED'} by {user['name']}."
+            )
+            self.send_json(200, {'ok': True, 'remote_enabled': enabled})
+            return
+
+        # 15. Delete Client Site
         elif parsed.path == '/api/delete_site':
             user = self.get_authenticated_user()
             if not user:
                 self.send_json(401, {'error': 'Authentication required'})
                 return
 
-            try:
-                payload = json.loads(post_body.decode('utf-8'))
-                client_id = payload.get('client_id')
-                if not client_id:
-                    self.send_json(400, {'error': 'Missing client_id'})
-                    return
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            client_id = body.get('client_id', '').strip()
 
-                data = load_clients_state()
-                if client_id not in data:
-                    self.send_json(404, {'error': 'Client not found'})
-                    return
-
-                # Check dealer authorization
-                if user['role'] == 'dealer' and data[client_id].get('dealer_id') != user['id']:
-                    self.send_json(403, {'error': 'Access denied to this client'})
-                    return
-
-                client_rec = data.pop(client_id, None)
-                save_clients_state(data)
-
-                domain = client_rec.get('domain', f'{client_id}.gavasah.com') if client_rec else f'{client_id}.gavasah.com'
-
-                # Remove system user and kill any active tunnel processes for client on Linux
-                if os.name != 'nt':
-                    try:
-                        subprocess.run(["pkill", "-u", client_id], check=False)
-                        subprocess.run(["userdel", "-r", client_id], check=False)
-                    except Exception as err:
-                        print(f"[-] Subprocess warning in user removal: {err}")
-
-                # Evict caches
-                to_remove_keys = [k for k in REGISTERED_SSH_KEYS if k[0] == client_id]
-                for k in to_remove_keys:
-                    REGISTERED_SSH_KEYS.remove(k)
-                SYNCED_CADDY_ROUTES.pop(client_id, None)
-
-                # Purge Caddy block
-                py_purge = f"""import re
-with open('/home/tejoram97/Caddyfile.unified', 'r') as f:
-    text = f.read()
-
-domain = '{domain}'
-pattern = re.compile(r'(?:^[ \\t]*#[^\\n]*\\n)?^[ \\t]*' + re.escape(domain) + r'[ \\t]*\\{{[\\s\\S]*?(?=^(?:[a-zA-Z0-9_#\\(\\)]|\\Z))', re.MULTILINE)
-text = pattern.sub('', text).strip() + '\\n'
-with open('/home/tejoram97/Caddyfile.unified', 'w') as f:
-    f.write(text)
-"""
-                purge_extra = (
-                    f"docker exec trezoriq-caddy-1 sh -c 'rm -rf /data/caddy/certificates/*/{domain} /data/caddy/ocsp/*{domain}*' && "
-                    f"docker exec trezoriq-caddy-1 caddy reload --config /etc/caddy/Caddyfile"
-                )
-                run_caddy_cmd(py_purge, purge_extra)
-
-                self.send_json(200, {
-                    "success": True,
-                    "client_id": client_id,
-                    "domain": domain,
-                    "ssl_purged": True
-                })
-                return
-            except Exception as e:
-                self.send_json(500, {'error': str(e)})
+            c_data = load_clients_state()
+            client = c_data.get(client_id)
+            if not client:
+                self.send_json(404, {'error': 'Client site not found'})
                 return
 
-        # ----------------------------------------------------------------------
-        # D. CLIENT HARDWARE TELEMETRY HEARTBEAT (AUTHENTICATED VIA AUTH_KEY)
-        # ----------------------------------------------------------------------
+            # Role verification
+            if user['role'] == 'dealer' and client.get('dealer_id') != user['id']:
+                self.send_json(403, {'error': 'Access denied'})
+                return
+            elif user['role'] == 'integrator' and client.get('integrator_id') != user['id']:
+                self.send_json(403, {'error': 'Access denied'})
+                return
+
+            del c_data[client_id]
+            save_clients_state(c_data)
+            sync_caddy_ingress(client_id, 0, 'http', False)
+
+            self.send_json(200, {'ok': True, 'message': f'Client site {client_id} removed successfully'})
+            return
+
+        # 16. Gateway Telemetry Heartbeat (KNX-IP Controller Ingestion)
         elif parsed.path == '/api/heartbeat':
+            content_length = int(self.headers.get('Content-Length', 0))
+            raw_body = self.rfile.read(content_length).decode('utf-8')
             try:
-                payload = json.loads(post_body.decode('utf-8'))
-                client_id = payload.get('client_id') or payload.get('site_id')
-                if not client_id:
-                    self.send_json(400, {'error': 'Missing client_id or site_id'})
-                    return
-
-                data = load_clients_state()
-                dash_port = payload.get('tunnels', {}).get('assigned_dashboard_port', 10001)
-                ssh_port = payload.get('tunnels', {}).get('assigned_ssh_port', 22001)
-
-                if client_id not in data:
-                    data[client_id] = {
-                        "client_id": client_id,
-                        "dealer_id": "owner_master",
-                        "dealer_name": "Master Manufacturer (Direct)",
-                        "name": client_id.replace('-', ' ').title(),
-                        "domain": f"{client_id}.gavasah.com",
-                        "dashboard_port": dash_port,
-                        "ssh_port": ssh_port,
-                        "remote_enabled": True,
-                        "knx_ip": payload.get('knx_status', {}).get('gateway_ip', '192.168.1.111')
-                    }
-
-                # Verify auth_key if configured
-                expected_secret = data[client_id].get('auth_secret')
-                incoming_auth = payload.get('auth_key', '').strip()
-                if expected_secret and incoming_auth and incoming_auth != expected_secret:
-                    append_client_log(client_id, 'WARN', 'AUTH', f'Rejecting heartbeat: auth_key mismatch from {self.client_address[0]}')
-                    self.send_json(403, {'error': 'Unauthorized auth_key'})
-                    return
-
-                # Autonomous SSH user & key authorization
-                ssh_pub = payload.get('ssh_public_key', '').strip()
-                if ssh_pub and data[client_id].get('ssh_key_synced') != ssh_pub:
-                    data[client_id]['ssh_public_key'] = ssh_pub
-                    ok, msg = sync_client_ssh_user(client_id, ssh_pub)
-                    if ok:
-                        data[client_id]['ssh_key_synced'] = ssh_pub
-                        append_client_log(client_id, 'SUCCESS', 'SSH_TUNNEL', f'SSH public key registered for {client_id}')
-
-                # Auto-detect upstream protocol
-                ha_proto = payload.get('tunnels', {}).get('ha_proto', '')
-                if not ha_proto:
-                    local_ip = payload.get('network', {}).get('local_ipv4', '')
-                    if local_ip in ['192.168.6.17'] or 'duckdns' in str(payload):
-                        ha_proto = 'https'
-                    else:
-                        ha_proto = 'http'
-                data[client_id]['ha_proto'] = ha_proto
-
-                # Caddy Ingress Sync ONLY if changed
-                remote_on = data[client_id].get('remote_enabled', True)
-                target_dash_port = data[client_id].get('dashboard_port', dash_port)
-                prev_caddy_synced = data[client_id].get('caddy_synced', False)
-                prev_proto = data[client_id].get('caddy_proto')
-                prev_port = data[client_id].get('caddy_port')
-                prev_enabled = data[client_id].get('caddy_enabled')
-
-                needs_caddy_sync = (
-                    not prev_caddy_synced or
-                    prev_proto != ha_proto or
-                    prev_port != target_dash_port or
-                    prev_enabled != remote_on
-                )
-
-                if needs_caddy_sync:
-                    try:
-                        ok = sync_caddy_ingress(client_id, target_dash_port, ha_proto, enabled=remote_on)
-                        if ok:
-                            data[client_id]['caddy_synced'] = True
-                            data[client_id]['caddy_proto'] = ha_proto
-                            data[client_id]['caddy_port'] = target_dash_port
-                            data[client_id]['caddy_enabled'] = remote_on
-                            append_client_log(client_id, 'INFO', 'INGRESS', f'Caddy ingress route updated: {ha_proto.upper()} -> port {target_dash_port} (Active: {remote_on})')
-                    except Exception as ce:
-                        print(f"[!] sync_caddy_ingress error for {client_id}: {ce}")
-
-                # Update telemetry state
-                hb_slot = payload.get('system', {}).get('boot_slot', 'A')
-                hb_ip = payload.get('network', {}).get('local_ipv4', 'N/A')
-                hb_cpu = payload.get('system', {}).get('cpu_percent', 0)
-                hb_ram = payload.get('system', {}).get('memory_percent', 0)
-
-                prev_slot = data[client_id].get('system', {}).get('boot_slot')
-                prev_ip = data[client_id].get('network', {}).get('local_ipv4')
-                prev_status = data[client_id].get('status')
-                last_logged_hb = data[client_id].get('_last_hb_log_time', 0)
-                cur_now = int(time.time())
-
-                data[client_id]['last_heartbeat'] = cur_now
-                data[client_id]['status'] = 'online'
-                data[client_id]['system'] = payload.get('system', {})
-                data[client_id]['network'] = payload.get('network', {})
-                data[client_id]['knx_status'] = payload.get('knx_status', {})
-
-                save_clients_state(data)
-
-                # Rate-limit routine heartbeat disk logs
-                hb_state_changed = (
-                    prev_status != 'online' or
-                    prev_slot != hb_slot or
-                    prev_ip != hb_ip or
-                    (cur_now - last_logged_hb) > 300
-                )
-                if hb_state_changed:
-                    data[client_id]['_last_hb_log_time'] = cur_now
-                    append_client_log(
-                        client_id,
-                        'INFO',
-                        'HEARTBEAT',
-                        f'Telemetry heartbeat synced from {self.client_address[0]}. Slot {hb_slot} healthy, LAN IP: {hb_ip}, CPU: {hb_cpu}%, RAM: {hb_ram}%'
-                    )
-
-                self.send_json(200, {'status': 'ok', 'received': True})
-                return
-            except Exception as e:
-                self.send_json(400, {'error': str(e)})
+                body = json.loads(raw_body)
+            except Exception:
+                self.send_json(400, {'error': 'Invalid JSON body'})
                 return
 
-        self.send_response(404)
-        self.end_headers()
+            client_id = body.get('client_id', '').strip()
+            secret = body.get('auth_secret', '').strip()
+
+            c_data = load_clients_state()
+            client = c_data.get(client_id)
+            if not client:
+                self.send_json(404, {'error': 'Client not registered'})
+                return
+
+            # Validate auth_secret if set on client
+            if client.get('auth_secret') and client['auth_secret'] != secret:
+                self.send_json(403, {'error': 'Unauthorized gateway heartbeat'})
+                return
+
+            # Update telemetry data
+            now = int(time.time())
+            client['last_heartbeat'] = now
+            client['status'] = 'online'
+
+            if 'system' in body:
+                client['system'] = body['system']
+            if 'network' in body:
+                client['network'] = body['network']
+            if 'knx_status' in body:
+                client['knx_status'] = body['knx_status']
+
+            save_clients_state(c_data)
+            self.send_json(200, {'ok': True, 'server_time': now, 'remote_enabled': client.get('remote_enabled', True)})
+            return
+
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+# ==============================================================================
+# HTTP Daemon Server Initialization
+# ==============================================================================
+
+def run_server(port=PORT):
+    server_address = ('', port)
+    httpd = http.server.ThreadingHTTPServer(server_address, DealerPortalHandler)
+    print(f"[*] GAVASAH Multi-Tenant Cloud Hub listening on port {port}...")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("[!] Stopping server...")
+        httpd.server_close()
 
 if __name__ == '__main__':
-    print(f"GAVASAH Multi-Tenant Cloud Hub starting on port {PORT}...")
-    server = ThreadingHTTPServer(('0.0.0.0', PORT), DealerPortalHandler)
-    server.daemon_threads = True
-    server.serve_forever()
+    run_server()
