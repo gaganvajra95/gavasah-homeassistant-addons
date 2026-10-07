@@ -6449,7 +6449,7 @@ PersistentKeepalive = 25
 
             client_id = body.get('client_id', '').strip()
             auth_hdr = self.headers.get('Authorization', '').replace('Bearer ', '').strip()
-            secret = body.get('auth_secret', '').strip() or body.get('secret', '').strip() or auth_hdr
+            secret = (body.get('auth_key') or body.get('auth_secret') or body.get('secret') or auth_hdr or '').strip()
 
             c_data = load_clients_state()
             client = c_data.get(client_id)
