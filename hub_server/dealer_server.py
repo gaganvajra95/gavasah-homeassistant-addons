@@ -2116,6 +2116,47 @@ HTML_PAGE = """<!DOCTYPE html>
             background: #0d1424;
         }
 
+        /* Reduced Client Site Column Width by 20% in Client Fleet */
+        #tab-fleet .table-wrap th:first-child,
+        #tab-fleet .table-wrap td:first-child {
+            width: 210px !important;
+            max-width: 220px !important;
+            min-width: 190px !important;
+            box-sizing: border-box;
+            padding: 10px 14px !important;
+        }
+
+        .site-name-text {
+            font-weight: 600;
+            color: #fff;
+            font-size: 13px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 195px;
+        }
+
+        .site-slug-text {
+            font-size: 11px;
+            color: #64748b;
+            font-family: 'JetBrains Mono', monospace;
+            margin-top: 2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 195px;
+        }
+
+        .site-domain-link {
+            color: #38bdf8;
+            text-decoration: none;
+            transition: color 0.15s ease;
+        }
+        .site-domain-link:hover {
+            color: #00f0ff;
+            text-decoration: underline;
+        }
+
         /* Sticky Right Column: Actions stay pinned */
         .table-wrap th:last-child,
         .table-wrap td:last-child {
@@ -2230,14 +2271,24 @@ HTML_PAGE = """<!DOCTYPE html>
             gap: 6px;
             white-space: nowrap;
         }
-        .btn-action-ingress {
+        .btn-action-dashboard {
             color: #00f0ff !important;
-            border-color: rgba(0, 240, 255, 0.35) !important;
-            background: rgba(0, 240, 255, 0.08) !important;
+            border: 1px solid rgba(0, 240, 255, 0.45) !important;
+            background: rgba(0, 240, 255, 0.12) !important;
+            font-weight: 600 !important;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 5px 10px;
+            border-radius: 6px;
+            transition: all 0.18s ease;
         }
-        .btn-action-ingress:hover {
-            background: rgba(0, 240, 255, 0.22) !important;
-            box-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
+        .btn-action-dashboard:hover {
+            background: rgba(0, 240, 255, 0.28) !important;
+            border-color: #00f0ff !important;
+            box-shadow: 0 0 12px rgba(0, 240, 255, 0.5);
+            transform: translateY(-1px);
         }
         .btn-action-logs {
             color: #94a3b8 !important;
@@ -4088,9 +4139,9 @@ HTML_PAGE = """<!DOCTYPE html>
                 return `
                     <tr>
                         <td>
-                            <div style="font-weight: 600; color: #fff; font-size: 14px;">${escapeHtml(c.name)}</div>
-                            <div style="font-size: 11px; color: #64748b; font-family: monospace; margin-top: 2px;">
-                                ${escapeHtml(c.client_id)} &bull; <a href="https://${escapeHtml(c.domain)}" target="_blank" style="color: #00f0ff; text-decoration: none;">${escapeHtml(c.domain)} ↗</a>
+                            <div class="site-name-text" title="${escapeHtml(c.name)} (${escapeHtml(c.client_id)})">${escapeHtml(c.name)}</div>
+                            <div class="site-slug-text">
+                                <a href="https://${escapeHtml(c.domain)}" target="_blank" class="site-domain-link" title="Open Remote GUI: ${escapeHtml(c.domain)}">${escapeHtml(c.domain)} ↗</a>
                             </div>
                         </td>
                         ${dealerCell}
@@ -4124,7 +4175,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </td>
                         <td class="col-actions-sticky">
                             <div class="actions-btn-flex">
-                                <a href="https://${escapeHtml(c.domain)}" target="_blank" class="btn-action-icon btn-action-ingress" title="Open Client Home Assistant Web GUI">🌐 Ingress</a>
+                                <a href="https://${escapeHtml(c.domain)}" target="_blank" class="btn-action-icon btn-action-dashboard" title="Open Client Remote User Interface (Home Assistant Dashboard)">📊 Dashboard ↗</a>
                                 <button class="btn-action-icon btn-action-logs" onclick="openLogsModal('${c.client_id}')" title="Audit Telemetry Logs">📋 Logs</button>
                                 ${currentUser.role !== 'integrator' ? `
                                     <button class="btn-action-icon btn-reassign-sm" onclick="openReassignModal('${c.client_id}')" title="Reassign Supervision">🔄 Transfer</button>
