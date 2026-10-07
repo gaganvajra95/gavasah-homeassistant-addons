@@ -567,17 +567,6 @@ HTML_PAGE = """<!DOCTYPE html>
             box-shadow: 0 0 28px rgba(0, 240, 255, 0.45);
         }
 
-        .login-hint-pill {
-            margin-top: 24px;
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px dashed var(--border);
-            border-radius: 10px;
-            padding: 12px 14px;
-            font-size: 11px;
-            color: #64748b;
-            line-height: 1.6;
-        }
-
         .login-error {
             background: rgba(239, 68, 68, 0.12);
             border: 1px solid rgba(239, 68, 68, 0.35);
@@ -1393,12 +1382,6 @@ HTML_PAGE = """<!DOCTYPE html>
 
                 <button type="submit" id="login-submit-btn" class="btn-submit-login">Sign In to Fleet Command ➔</button>
             </form>
-
-            <div class="login-hint-pill">
-                <div style="font-weight: 700; color: #94a3b8; margin-bottom: 4px;">Default Portal Credentials:</div>
-                <div>👑 <strong>Manufacturer:</strong> <span style="font-family: 'JetBrains Mono', monospace; color: #38bdf8;">admin</span> / <span style="font-family: 'JetBrains Mono', monospace; color: #38bdf8;">gavasah2026!</span></div>
-                <div style="margin-top: 2px;">🏢 <strong>Dealer:</strong> <span style="font-family: 'JetBrains Mono', monospace; color: #34d399;">apex_dealer</span> / <span style="font-family: 'JetBrains Mono', monospace; color: #34d399;">apex123!</span></div>
-            </div>
         </div>
     </div>
 
