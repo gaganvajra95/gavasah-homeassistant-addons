@@ -1894,6 +1894,218 @@ HTML_PAGE = """<!DOCTYPE html>
             }
         }
 
+    
+        /* ==============================================================
+           GLOBAL BUTTON RESET & GLASSMORPHIC ACTION BUTTONS
+           ============================================================== */
+        button {
+            font-family: inherit;
+            border: none;
+            background: transparent;
+            color: inherit;
+            cursor: pointer;
+            outline: none;
+        }
+
+        .btn-action-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            color: #e2e8f0;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            white-space: nowrap;
+            outline: none;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+        }
+
+        .btn-action-icon:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.25);
+            color: #fff;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        }
+
+        /* Suspend Button (Amber / Warning) */
+        .btn-action-icon[style*="#fbbf24"],
+        .btn-action-icon.btn-suspend {
+            background: rgba(245, 158, 11, 0.12) !important;
+            border: 1px solid rgba(245, 158, 11, 0.35) !important;
+            color: #fbbf24 !important;
+        }
+        .btn-action-icon[style*="#fbbf24"]:hover,
+        .btn-action-icon.btn-suspend:hover {
+            background: rgba(245, 158, 11, 0.22) !important;
+            border-color: #fbbf24 !important;
+            box-shadow: 0 0 12px rgba(245, 158, 11, 0.35) !important;
+        }
+
+        /* Activate Button (Emerald / Success) */
+        .btn-action-icon[style*="#34d399"],
+        .btn-action-icon.btn-activate {
+            background: rgba(16, 185, 129, 0.12) !important;
+            border: 1px solid rgba(16, 185, 129, 0.35) !important;
+            color: #34d399 !important;
+        }
+        .btn-action-icon[style*="#34d399"]:hover,
+        .btn-action-icon.btn-activate:hover {
+            background: rgba(16, 185, 129, 0.22) !important;
+            border-color: #34d399 !important;
+            box-shadow: 0 0 12px rgba(16, 185, 129, 0.35) !important;
+        }
+
+        /* Edit Button (Sky Blue Accent) */
+        .btn-action-icon.btn-edit,
+        button.btn-action-icon:not([style*="#"]):not(.btn-reassign-sm) {
+            background: rgba(56, 189, 248, 0.1) !important;
+            border: 1px solid rgba(56, 189, 248, 0.3) !important;
+            color: #38bdf8 !important;
+        }
+        .btn-action-icon.btn-edit:hover,
+        button.btn-action-icon:not([style*="#"]):not(.btn-reassign-sm):hover {
+            background: rgba(56, 189, 248, 0.2) !important;
+            border-color: #38bdf8 !important;
+            box-shadow: 0 0 12px rgba(56, 189, 248, 0.35) !important;
+        }
+
+        /* Delete Button (Rose / Danger) */
+        .btn-action-icon[style*="#ef4444"],
+        .btn-action-icon.btn-delete {
+            background: rgba(239, 68, 68, 0.12) !important;
+            border: 1px solid rgba(239, 68, 68, 0.35) !important;
+            color: #ef4444 !important;
+        }
+        .btn-action-icon[style*="#ef4444"]:hover,
+        .btn-action-icon.btn-delete:hover {
+            background: rgba(239, 68, 68, 0.22) !important;
+            border-color: #ef4444 !important;
+            box-shadow: 0 0 12px rgba(239, 68, 68, 0.35) !important;
+        }
+
+        /* Ingress Button (Cyan Glow) */
+        .btn-action-icon[style*="#00f0ff"] {
+            background: rgba(0, 240, 255, 0.1) !important;
+            border: 1px solid rgba(0, 240, 255, 0.3) !important;
+            color: #00f0ff !important;
+        }
+        .btn-action-icon[style*="#00f0ff"]:hover {
+            background: rgba(0, 240, 255, 0.2) !important;
+            border-color: #00f0ff !important;
+            box-shadow: 0 0 12px var(--accent-glow) !important;
+        }
+
+        /* Reassign Transfer Button (Purple) */
+        .btn-reassign-sm {
+            background: rgba(168, 85, 247, 0.12) !important;
+            border: 1px solid rgba(168, 85, 247, 0.35) !important;
+            color: #c084fc !important;
+        }
+        .btn-reassign-sm:hover {
+            background: rgba(168, 85, 247, 0.22) !important;
+            border-color: #c084fc !important;
+            box-shadow: 0 0 12px rgba(168, 85, 247, 0.35) !important;
+        }
+
+        /* ==============================================================
+           TABLE HORIZONTAL SCROLL CONTAINMENT (FIX FOR FLEX OVERFLOW)
+           ============================================================== */
+        html, body {
+            max-width: 100vw;
+            overflow-x: hidden;
+        }
+
+        .main-wrapper {
+            flex: 1;
+            margin-left: var(--sidebar-width);
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+            min-width: 0 !important;
+            max-width: calc(100vw - var(--sidebar-width)) !important;
+            width: calc(100% - var(--sidebar-width));
+            overflow-x: hidden;
+            transition: margin-left 0.28s cubic-bezier(0.4, 0, 0.2, 1), max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        body.sidebar-collapsed .main-wrapper,
+        body.is-integrator .main-wrapper {
+            margin-left: 0 !important;
+            max-width: 100vw !important;
+            width: 100% !important;
+        }
+
+        @media (max-width: 900px) {
+            .main-wrapper {
+                margin-left: 0 !important;
+                max-width: 100vw !important;
+                width: 100% !important;
+            }
+        }
+
+        .content-container {
+            padding: 24px 32px;
+            max-width: 100%;
+            width: 100%;
+            min-width: 0 !important;
+            box-sizing: border-box;
+        }
+
+        .tab-pane {
+            width: 100%;
+            max-width: 100%;
+            min-width: 0 !important;
+        }
+
+        .table-wrap {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            width: 100%;
+            max-width: 100%;
+            min-width: 0 !important;
+            overflow-x: auto !important;
+            -webkit-overflow-scrolling: touch;
+            backdrop-filter: blur(12px);
+            margin-bottom: 24px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+        }
+
+        .table-wrap table {
+            width: 100%;
+            min-width: 960px;
+            border-collapse: collapse;
+        }
+
+        .table-wrap th,
+        .table-wrap td {
+            white-space: nowrap;
+        }
+
+        /* Sleek Cyberpunk Horizontal Scrollbar */
+        .table-wrap::-webkit-scrollbar {
+            height: 8px;
+        }
+        .table-wrap::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.7);
+            border-radius: 4px;
+        }
+        .table-wrap::-webkit-scrollbar-thumb {
+            background: rgba(0, 240, 255, 0.35);
+            border-radius: 4px;
+        }
+        .table-wrap::-webkit-scrollbar-thumb:hover {
+            background: var(--accent);
+        }
+
     </style>
 </head>
 <body>
