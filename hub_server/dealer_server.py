@@ -445,7 +445,28 @@ def save_clients_state(data):
                 for cid in existing_cids - current_cids:
                     conn.execute("DELETE FROM clients WHERE client_id = ?", (cid,))
 
+                used_dash_ports = set()
+                used_ssh_ports = set()
+                next_dash = 10001
+                next_ssh = 22001
+
                 for cid, c in data.items():
+                    d_port = c.get('dashboard_port')
+                    if not d_port or d_port in used_dash_ports:
+                        while next_dash in used_dash_ports:
+                            next_dash += 1
+                        d_port = next_dash
+                    used_dash_ports.add(d_port)
+                    c['dashboard_port'] = d_port
+
+                    s_port = c.get('ssh_port')
+                    if not s_port or s_port in used_ssh_ports:
+                        while next_ssh in used_ssh_ports:
+                            next_ssh += 1
+                        s_port = next_ssh
+                    used_ssh_ports.add(s_port)
+                    c['ssh_port'] = s_port
+
                     sys_json = json.dumps(c.get('system', {}))
                     net_json = json.dumps(c.get('network', {}))
                     knx_json = json.dumps(c.get('knx_status', {}))
@@ -457,7 +478,7 @@ def save_clients_state(data):
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (c.get('client_id', cid), c.get('name', cid), c.get('dealer_id', 'owner_master'), c.get('dealer_name', 'Master Manufacturer (Direct)'),
                          c.get('integrator_id'), c.get('integrator_name', 'Direct Dealer Supervision'), c.get('domain', f"{cid}.gavasah.com"),
-                         c.get('auth_secret', ''), int(c.get('dashboard_port', 10001)), int(c.get('ssh_port', 22001)),
+                         c.get('auth_secret', ''), int(c.get('dashboard_port', d_port)), int(c.get('ssh_port', s_port)),
                          c.get('knx_ip', '192.168.1.100'), int(c.get('knx_port', 3671)), int(c.get('last_heartbeat', int(time.time()))),
                          c.get('status', 'online'), 1 if c.get('remote_enabled', True) else 0,
                          sys_json, net_json, knx_json,
@@ -3896,12 +3917,17 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function promptDelete(clientId, clientName) {
             currentDeleteTarget = { type: 'client', id: clientId, name: clientName };
-            document.getElementById('delete-modal-title').innerText = `Confirm Site Removal: ${clientName}`;
-            document.getElementById('delete-modal-msg').innerHTML = `
-                Are you sure you want to remove client site <strong>${escapeHtml(clientName)}</strong> (ID: <code>${escapeHtml(clientId)}</code>)?<br><br>
-                This will terminate reverse SSH ingress tunnels and remove ingress proxy rules.
-            `;
-            document.getElementById('delete-modal').classList.add('active');
+            const titleEl = document.getElementById('delete-modal-title');
+            const msgEl = document.getElementById('delete-modal-msg');
+            if (titleEl) titleEl.innerText = `Confirm Site Removal: ${clientName}`;
+            if (msgEl) {
+                msgEl.innerHTML = `
+                    Are you sure you want to permanently delete client site <strong>${escapeHtml(clientName)}</strong> (<code>${escapeHtml(clientId)}</code>)?<br><br>
+                    <span style="color: #f59e0b; font-size: 13px;">⚡ <strong>Active Gateway Policy:</strong> Even if this client is currently active and streaming telemetry, its WireGuard mesh tunnel, telemetry pulse, and cloud ingress will be immediately severed and purged.</span>
+                `;
+            }
+            const modal = document.getElementById('delete-modal');
+            if (modal) modal.classList.add('active');
         }
 
         function closeDeleteModal() {
@@ -5852,7 +5878,7 @@ PersistentKeepalive = 25
             self.send_json(200, {'ok': True, 'remote_enabled': enabled})
             return
 
-        # 15. Delete Client Site
+        # 15. Delete Client Site (Manufacturer, Dealer, or Integrator - Active or Inactive)
         elif parsed.path in ['/api/delete_site', '/api/delete_client']:
             user = self.get_authenticated_user()
             if not user:
@@ -5869,23 +5895,38 @@ PersistentKeepalive = 25
                 self.send_json(404, {'error': 'Client site not found'})
                 return
 
-            # Role verification
+            # Role verification:
+            # - Manufacturer: Can delete ANY client across all dealers & integrators
+            # - Dealer: Can delete any client in their dealership
+            # - Integrator: Can delete any client assigned to them
             if user['role'] == 'dealer' and client.get('dealer_id') != user['id']:
-                self.send_json(403, {'error': 'Access denied'})
+                self.send_json(403, {'error': 'Access denied: You can only delete clients in your dealership'})
                 return
             elif user['role'] == 'integrator' and client.get('integrator_id') != user['id']:
-                self.send_json(403, {'error': 'Access denied'})
+                self.send_json(403, {'error': 'Access denied: You can only delete clients assigned to you'})
                 return
 
+            # Active client teardown: Immediately remove WireGuard tunnel peer from kernel interface
             wg_pub = client.get('wg_pubkey')
             if wg_pub:
                 remove_wireguard_peer(wg_pub)
 
-            del c_data[client_id]
-            save_clients_state(c_data)
+            # Invalidate ingress routing
             sync_caddy_ingress(client_id, 0, 'http', False)
 
-            self.send_json(200, {'ok': True, 'message': f'Client site {client_id} removed successfully'})
+            # Purge client record from persistent database
+            del c_data[client_id]
+            save_clients_state(c_data)
+
+            append_client_log(
+                client_id, 'INFO', 'CLIENT_DELETE',
+                f"Client site '{client.get('name', client_id)}' ({client_id}) deleted by {user['role']} {user['name']} (active state terminated)."
+            )
+
+            self.send_json(200, {
+                'ok': True,
+                'message': f"Client site '{client.get('name', client_id)}' deleted successfully (active session terminated)"
+            })
             return
 
         # 16. Gateway Telemetry Heartbeat (KNX-IP Controller Ingestion)
