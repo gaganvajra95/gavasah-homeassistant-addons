@@ -3943,20 +3943,72 @@ HTML_PAGE = """<!DOCTYPE html>
             }
         }
 
-        function updateIntegratorDropdowns() {
-            // Onboard modal integrator select
+        function isIntegratorInDealer(it, dealerId) {
+            if (!dealerId || dealerId === 'owner_master' || dealerId === 'direct') {
+                return !it.dealer_id || it.dealer_id === 'owner_master' || it.dealer_id === 'direct';
+            }
+            return it.dealer_id === dealerId;
+        }
+
+        function updateOnboardIntegratorDropdown(selectedIntegratorId) {
             const onbIntSel = document.getElementById('onb-integrator-select');
-            if (onbIntSel) {
-                onbIntSel.innerHTML = '<option value="">Direct Dealer Supervision (No Integrator)</option>' +
-                    integratorsList.map(it => `<option value="${it.id}">${escapeHtml(it.name)} (${escapeHtml(it.username)})</option>`).join('');
+            if (!onbIntSel) return;
+
+            let dealerId = 'owner_master';
+            if (currentUser && currentUser.role === 'dealer') {
+                dealerId = currentUser.id;
+            } else {
+                const dSel = document.getElementById('onb-dealer-select');
+                if (dSel && dSel.value) dealerId = dSel.value;
             }
 
-            // Edit client modal integrator select
-            const editIntSel = document.getElementById('edit-integrator-select');
-            if (editIntSel) {
-                editIntSel.innerHTML = '<option value="">Direct Dealer Supervision (No Integrator)</option>' +
-                    integratorsList.map(it => `<option value="${it.id}">${escapeHtml(it.name)} (${escapeHtml(it.username)})</option>`).join('');
+            const filtered = integratorsList.filter(it => isIntegratorInDealer(it, dealerId));
+            const prevVal = (selectedIntegratorId !== undefined) ? selectedIntegratorId : onbIntSel.value;
+
+            let html = '<option value="">Direct Dealer Supervision (No Integrator)</option>';
+            if (filtered.length > 0) {
+                html += filtered.map(it => `<option value="${it.id}">${escapeHtml(it.name)} (${escapeHtml(it.username)})</option>`).join('');
             }
+            onbIntSel.innerHTML = html;
+
+            if (prevVal && filtered.some(it => it.id === prevVal)) {
+                onbIntSel.value = prevVal;
+            } else {
+                onbIntSel.value = '';
+            }
+        }
+
+        function updateEditIntegratorDropdown(selectedIntegratorId) {
+            const editIntSel = document.getElementById('edit-integrator-select');
+            if (!editIntSel) return;
+
+            let dealerId = 'owner_master';
+            if (currentUser && currentUser.role === 'dealer') {
+                dealerId = currentUser.id;
+            } else {
+                const dSel = document.getElementById('edit-dealer-select');
+                if (dSel && dSel.value) dealerId = dSel.value;
+            }
+
+            const filtered = integratorsList.filter(it => isIntegratorInDealer(it, dealerId));
+            const prevVal = (selectedIntegratorId !== undefined) ? selectedIntegratorId : editIntSel.value;
+
+            let html = '<option value="">Direct Dealer Supervision (No Integrator)</option>';
+            if (filtered.length > 0) {
+                html += filtered.map(it => `<option value="${it.id}">${escapeHtml(it.name)} (${escapeHtml(it.username)})</option>`).join('');
+            }
+            editIntSel.innerHTML = html;
+
+            if (prevVal && filtered.some(it => it.id === prevVal)) {
+                editIntSel.value = prevVal;
+            } else {
+                editIntSel.value = '';
+            }
+        }
+
+        function updateIntegratorDropdowns() {
+            updateOnboardIntegratorDropdown();
+            updateEditIntegratorDropdown();
         }
 
         function openCreateIntegratorModal() {
@@ -4090,9 +4142,10 @@ HTML_PAGE = """<!DOCTYPE html>
             } else {
                 // Dealer role
                 dealerWrap.style.display = 'none';
+                const filteredIntegrators = integratorsList.filter(it => isIntegratorInDealer(it, currentUser.id));
                 intSelect.innerHTML = '<option value="none">Direct Dealer Supervision (No Integrator)</option>' +
-                    integratorsList.map(it => `<option value="${it.id}">${escapeHtml(it.name)} (${escapeHtml(it.username)})</option>`).join('');
-                intSelect.value = client.integrator_id || 'none';
+                    filteredIntegrators.map(it => `<option value="${it.id}">${escapeHtml(it.name)} (${escapeHtml(it.username)})</option>`).join('');
+                intSelect.value = (client.integrator_id && filteredIntegrators.some(it => it.id === client.integrator_id)) ? client.integrator_id : 'none';
             }
 
             document.getElementById('reassign-modal').classList.add('active');
@@ -4102,12 +4155,14 @@ HTML_PAGE = """<!DOCTYPE html>
             const dealerId = document.getElementById('reassign-dealer-select').value;
             const intSelect = document.getElementById('reassign-integrator-select');
 
-            const filteredIntegrators = integratorsList.filter(it => it.dealer_id === dealerId);
+            const filteredIntegrators = integratorsList.filter(it => isIntegratorInDealer(it, dealerId));
             intSelect.innerHTML = '<option value="none">Direct Dealer Supervision (No Integrator)</option>' +
                 filteredIntegrators.map(it => `<option value="${it.id}">${escapeHtml(it.name)} (${escapeHtml(it.username)})</option>`).join('');
 
-            if (preSelectedIntId) {
+            if (preSelectedIntId && filteredIntegrators.some(it => it.id === preSelectedIntId)) {
                 intSelect.value = preSelectedIntId;
+            } else {
+                intSelect.value = 'none';
             }
         }
 
@@ -4510,11 +4565,13 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (dGroup) dGroup.style.display = 'block';
                 if (intGroup) intGroup.style.display = 'block';
                 updateDealerDropdowns();
-                updateIntegratorDropdowns();
+                const dSel = document.getElementById('onb-dealer-select');
+                if (dSel && !dSel.value) dSel.value = 'owner_master';
+                updateOnboardIntegratorDropdown('');
             } else if (currentUser.role === 'dealer') {
                 if (dGroup) dGroup.style.display = 'none';
                 if (intGroup) intGroup.style.display = 'block';
-                updateIntegratorDropdowns();
+                updateOnboardIntegratorDropdown('');
             } else {
                 if (dGroup) dGroup.style.display = 'none';
                 if (intGroup) intGroup.style.display = 'none';
@@ -4677,9 +4734,7 @@ auto_update_external_url: true`;
             const intGroup = document.getElementById('edit-integrator-group');
             if (currentUser.role !== 'integrator') {
                 if (intGroup) intGroup.style.display = 'block';
-                updateIntegratorDropdowns();
-                const sel = document.getElementById('edit-integrator-select');
-                if (sel) sel.value = client.integrator_id || '';
+                updateEditIntegratorDropdown(client.integrator_id || '');
             } else {
                 if (intGroup) intGroup.style.display = 'none';
             }
@@ -4704,7 +4759,7 @@ auto_update_external_url: true`;
         }
 
         function onEditDealerChange() {
-            updateIntegratorDropdowns();
+            updateEditIntegratorDropdown('');
         }
 
         async function handleClientEditSubmit(e) {
@@ -5130,7 +5185,7 @@ All active sessions for this integrator will be terminated immediately.` : '';
 
         function onOnboardDealerChange() {
             updateOnboardDomainPreview();
-            updateIntegratorDropdowns();
+            updateOnboardIntegratorDropdown('');
         }
 
     </script>
