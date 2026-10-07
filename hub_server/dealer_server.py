@@ -493,6 +493,36 @@ def save_clients_state(data):
 # ==============================================================================
 # Local Ingress & OpenSSH Helpers (CT 150 Self-Contained)
 # ==============================================================================
+def generate_ssh_keypair(comment="client"):
+    try:
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+        from cryptography.hazmat.primitives import serialization
+        priv_key = ed25519.Ed25519PrivateKey.generate()
+        pub_key = priv_key.public_key()
+        priv_str = priv_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.OpenSSH,
+            encryption_algorithm=serialization.NoEncryption()
+        ).decode('utf-8').strip()
+        pub_str = pub_key.public_bytes(
+            encoding=serialization.Encoding.OpenSSH,
+            format=serialization.PublicFormat.OpenSSH
+        ).decode('utf-8').strip() + f" {comment}@gavasah"
+        return priv_str, pub_str
+    except Exception:
+        import tempfile
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                kf = os.path.join(tmpdir, "id_ed25519")
+                subprocess.run(["ssh-keygen", "-t", "ed25519", "-N", "", "-C", f"{comment}@gavasah", "-f", kf], capture_output=True, timeout=5)
+                if os.path.exists(f"{kf}.pub"):
+                    with open(f"{kf}.pub", "r", encoding="utf-8") as f: pub_str = f.read().strip()
+                    with open(kf, "r", encoding="utf-8") as f: priv_str = f.read().strip()
+                    return priv_str, pub_str
+        except Exception:
+            pass
+        return "", ""
+
 def sync_client_ssh_user(client_id, ssh_public_key):
     if not ssh_public_key:
         return True
@@ -3000,10 +3030,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <label class="form-label">KNX PORT</label>
                         <input type="number" id="onb-knx-port" class="form-input" value="3671">
                     </div>
-                    <div class="form-group">
-                        <label class="form-label">CLIENT SSH PUBLIC KEY (OPTIONAL)</label>
-                        <input type="text" id="onb-ssh-key" class="form-input" placeholder="ssh-ed25519 AAAAC3... (auto-authorized upon heartbeat)">
-                    </div>
+                    <input type="hidden" id="onb-ssh-key">
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn-sm" onclick="closeOnboardModal()">Cancel</button>
@@ -6512,6 +6539,13 @@ PersistentKeepalive = 25
             wg_priv, wg_pub = generate_wg_keypair()
             sync_wireguard_peer(wg_pub, wg_ip)
 
+            # Auto-assign OpenSSH Ed25519 keypair if not provided
+            if not ssh_key:
+                ssh_priv, ssh_pub = generate_ssh_keypair(comment=clean_id)
+                ssh_key = ssh_pub
+            else:
+                ssh_priv = ""
+
             # Fallback legacy ports
             existing_dash_ports = [c.get('dashboard_port', 0) for c in c_data.values()]
             existing_ssh_ports = [c.get('ssh_port', 0) for c in c_data.values()]
@@ -6531,6 +6565,8 @@ PersistentKeepalive = 25
                 'name': client_name,
                 'domain': domain,
                 'auth_secret': auth_secret or secrets.token_hex(16),
+                'ssh_public_key': ssh_key,
+                'ssh_private_key': ssh_priv,
                 'dashboard_port': dash_port,
                 'ssh_port': ssh_port,
                 'wg_ip': wg_ip,
