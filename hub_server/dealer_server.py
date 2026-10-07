@@ -236,6 +236,7 @@ def init_sqlite_database():
                 )
                 sync_wireguard_peer(pub, assigned_ip)
                 print(f"[OK] Migrated '{cid}' -> IP: {assigned_ip}, PubKey: {pub[:14]}...")
+            conn.commit()
 
 
         # Migration logic if database is newly initialized
