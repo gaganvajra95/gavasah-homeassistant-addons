@@ -2993,7 +2993,15 @@ HTML_PAGE = """<!DOCTYPE html>
 
                     <div class="form-group">
                         <label class="form-label">KNX IP ROUTER / INTERFACE IP</label>
-                        <input type="text" id="onb-knx" class="form-input" value="192.168.1.111">
+                        <input type="text" id="onb-knx-ip" class="form-input" value="192.168.1.100">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">KNX PORT</label>
+                        <input type="number" id="onb-knx-port" class="form-input" value="3671">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">CLIENT SSH PUBLIC KEY (OPTIONAL)</label>
+                        <input type="text" id="onb-ssh-key" class="form-input" placeholder="ssh-ed25519 AAAAC3... (auto-authorized upon heartbeat)">
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -3014,6 +3022,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <form onsubmit="handleClientEditSubmit(event)">
                 <div class="modal-body">
                     <input type="hidden" id="edit-client-id">
+                    <input type="hidden" id="edit-id">
                     
                     <div class="form-group" id="edit-dealer-group">
                         <label class="form-label">ASSIGNED DEALER</label>
@@ -3623,6 +3632,7 @@ HTML_PAGE = """<!DOCTYPE html>
             if (filterSel && currentUser.role === 'manufacturer') {
                 const prev = filterSel.value;
                 filterSel.innerHTML = '<option value="all">All Dealer Networks</option>' +
+                    '<option value="owner_master">Master Manufacturer (Direct Supervision)</option>' +
                     dealersList.map(d => `<option value="${d.id}">${escapeHtml(d.name)} (${d.client_count || 0})</option>`).join('');
                 filterSel.value = prev || 'all';
             }
@@ -3632,6 +3642,7 @@ HTML_PAGE = """<!DOCTYPE html>
             if (intDealerFilter && currentUser.role === 'manufacturer') {
                 const prev = intDealerFilter.value;
                 intDealerFilter.innerHTML = '<option value="all">All Dealers Workforce</option>' +
+                    '<option value="owner_master">Master Manufacturer (Direct)</option>' +
                     dealersList.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
                 intDealerFilter.value = prev || 'all';
             }
@@ -3646,8 +3657,30 @@ HTML_PAGE = """<!DOCTYPE html>
             // Integrator modal dealer select
             const intDealerSel = document.getElementById('int-dealer-select');
             if (intDealerSel && currentUser.role === 'manufacturer') {
-                intDealerSel.innerHTML = dealersList.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+                intDealerSel.innerHTML = '<option value="owner_master">Master Manufacturer (Direct Supervision)</option>' +
+                    dealersList.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
             }
+
+            // Edit client modal dealer select
+            const editDealerSel = document.getElementById('edit-dealer-select');
+            if (editDealerSel && currentUser.role === 'manufacturer') {
+                editDealerSel.innerHTML = '<option value="owner_master">Master Manufacturer (Direct Supervision)</option>' +
+                    dealersList.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+            }
+        }
+
+        function filterIntegratorsByDealer(dealerId) {
+            switchTab('integrators');
+            const sel = document.getElementById('integrator-dealer-filter');
+            if (sel) {
+                sel.value = dealerId;
+            }
+            renderIntegratorsUI(dealerId);
+        }
+
+        function renderIntegratorsTable() {
+            const sel = document.getElementById('integrator-dealer-filter');
+            renderIntegratorsUI(sel ? sel.value : 'all');
         }
 
         function filterFleetByDealer(dealerId) {
@@ -3659,9 +3692,7 @@ HTML_PAGE = """<!DOCTYPE html>
             }
         }
 
-        function filterIntegratorsByDealer(dealerId) {
-            renderIntegratorsUI(dealerId);
-        }
+
 
         function openCreateDealerModal() {
             document.getElementById('dealer-modal-title').innerText = 'Register New Authorized Dealer';
@@ -3906,6 +3937,8 @@ HTML_PAGE = """<!DOCTYPE html>
             if (currentUser.role === 'manufacturer') {
                 dWrap.style.display = 'block';
                 updateDealerDropdowns();
+                const dSel = document.getElementById('int-dealer-select');
+                if (dSel) dSel.value = 'owner_master';
             } else {
                 dWrap.style.display = 'none';
             }
@@ -3933,8 +3966,9 @@ HTML_PAGE = """<!DOCTYPE html>
             const dWrap = document.getElementById('int-dealer-select-wrap');
             if (currentUser.role === 'manufacturer') {
                 dWrap.style.display = 'block';
+                updateDealerDropdowns();
                 const dSel = document.getElementById('int-dealer-select');
-                if (dSel) dSel.value = it.dealer_id || '';
+                if (dSel) dSel.value = it.dealer_id || 'owner_master';
             } else {
                 dWrap.style.display = 'none';
             }
@@ -4417,33 +4451,34 @@ HTML_PAGE = """<!DOCTYPE html>
         // CLIENT ONBOARDING & CONFIG MODALS
         // ======================================================================
         function openOnboardModal() {
-            document.getElementById('onb-name').value = '';
-            const slugEl = document.getElementById('onb-slug') || document.getElementById('onb-id');
-            if (slugEl) slugEl.value = '';
-            document.getElementById('onb-secret').value = generateSecretStr();
-            document.getElementById('onb-knx-ip').value = '192.168.1.100';
-            document.getElementById('onb-knx-port').value = '3671';
-            document.getElementById('onb-ssh-key').value = '';
+            const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+            setVal('onb-name', '');
+            setVal('onb-slug', '');
+            setVal('onb-secret', generateSecretStr());
+            setVal('onb-knx-ip', '192.168.1.100');
+            setVal('onb-knx-port', '3671');
+            setVal('onb-ssh-key', '');
             updateOnboardDomainPreview();
 
             const dGroup = document.getElementById('onb-dealer-group');
             const intGroup = document.getElementById('onb-integrator-group');
 
             if (currentUser.role === 'manufacturer') {
-                dGroup.style.display = 'block';
-                intGroup.style.display = 'block';
+                if (dGroup) dGroup.style.display = 'block';
+                if (intGroup) intGroup.style.display = 'block';
                 updateDealerDropdowns();
                 updateIntegratorDropdowns();
             } else if (currentUser.role === 'dealer') {
-                dGroup.style.display = 'none';
-                intGroup.style.display = 'block';
+                if (dGroup) dGroup.style.display = 'none';
+                if (intGroup) intGroup.style.display = 'block';
                 updateIntegratorDropdowns();
             } else {
-                dGroup.style.display = 'none';
-                intGroup.style.display = 'none';
+                if (dGroup) dGroup.style.display = 'none';
+                if (intGroup) intGroup.style.display = 'none';
             }
 
-            document.getElementById('onboard-modal').classList.add('active');
+            const modal = document.getElementById('onboard-modal');
+            if (modal) modal.classList.add('active');
         }
 
         function closeOnboardModal() {
@@ -4507,39 +4542,67 @@ HTML_PAGE = """<!DOCTYPE html>
             const client = currentFleetData.find(c => c.client_id === clientId);
             if (!client) return;
 
-            document.getElementById('edit-id').value = client.client_id;
-            document.getElementById('edit-name').value = client.name;
-            document.getElementById('edit-knx-ip').value = client.knx_ip || '';
-            document.getElementById('edit-knx-port').value = client.knx_port || 3671;
-            document.getElementById('edit-secret').value = client.auth_secret || '';
+            const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+            setVal('edit-id', client.client_id);
+            setVal('edit-client-id', client.client_id);
+            setVal('edit-name', client.name || '');
+            setVal('edit-knx-ip', client.knx_ip || '');
+            setVal('edit-knx-port', client.knx_port || 3671);
+            setVal('edit-secret', client.auth_secret || '');
+
+            const dGroup = document.getElementById('edit-dealer-group');
+            if (currentUser.role === 'manufacturer') {
+                if (dGroup) dGroup.style.display = 'block';
+                updateDealerDropdowns();
+                const dSel = document.getElementById('edit-dealer-select');
+                if (dSel) dSel.value = client.dealer_id || 'owner_master';
+            } else {
+                if (dGroup) dGroup.style.display = 'none';
+            }
 
             const intGroup = document.getElementById('edit-integrator-group');
             if (currentUser.role !== 'integrator') {
-                intGroup.style.display = 'block';
+                if (intGroup) intGroup.style.display = 'block';
                 updateIntegratorDropdowns();
                 const sel = document.getElementById('edit-integrator-select');
                 if (sel) sel.value = client.integrator_id || '';
             } else {
-                intGroup.style.display = 'none';
+                if (intGroup) intGroup.style.display = 'none';
             }
 
-            document.getElementById('edit-modal').classList.add('active');
+            const modal = document.getElementById('edit-modal');
+            if (modal) modal.classList.add('active');
         }
 
         function closeEditModal() {
-            document.getElementById('edit-modal').classList.remove('active');
+            const modal = document.getElementById('edit-modal');
+            if (modal) modal.classList.remove('active');
+        }
+
+        function onEditDealerChange() {
+            updateIntegratorDropdowns();
         }
 
         async function handleClientEditSubmit(e) {
             e.preventDefault();
-            const clientId = document.getElementById('edit-id').value;
+            const idEl = document.getElementById('edit-id') || document.getElementById('edit-client-id');
+            const clientId = idEl ? idEl.value : '';
             const payload = {
                 client_id: clientId,
-                name: document.getElementById('edit-name').value.trim(),
-                knx_ip: document.getElementById('edit-knx-ip').value.trim(),
-                knx_port: parseInt(document.getElementById('edit-knx-port').value) || 3671,
-                auth_secret: document.getElementById('edit-secret').value.trim()
+                name: (document.getElementById('edit-name') ? document.getElementById('edit-name').value.trim() : ''),
+                knx_ip: (document.getElementById('edit-knx-ip') ? document.getElementById('edit-knx-ip').value.trim() : ''),
+                knx_port: parseInt(document.getElementById('edit-knx-port') ? document.getElementById('edit-knx-port').value : 3671) || 3671,
+                auth_secret: (document.getElementById('edit-secret') ? document.getElementById('edit-secret').value.trim() : '')
             };
+
+            if (currentUser.role === 'manufacturer') {
+                const dSel = document.getElementById('edit-dealer-select');
+                if (dSel) payload.dealer_id = dSel.value;
+            }
+            if (currentUser.role !== 'integrator') {
+                const iSel = document.getElementById('edit-integrator-select');
+                if (iSel) payload.integrator_id = iSel.value;
+            }
 
             try {
                 const res = await fetch('/api/update_client', {
@@ -4726,19 +4789,23 @@ HTML_PAGE = """<!DOCTYPE html>
         // ======================================================================
         async function openLogsModal(clientId) {
             currentLogsClient = clientId;
-            document.getElementById('logs-modal-title').innerText = `Telemetry Audit Logs: ${clientId}`;
-            document.getElementById('logs-modal').classList.add('active');
+            const titleEl = document.getElementById('log-client-title') || document.getElementById('logs-modal-title');
+            if (titleEl) titleEl.innerText = clientId;
+            const modal = document.getElementById('logs-modal');
+            if (modal) modal.classList.add('active');
             refreshCurrentLogs();
         }
 
         function closeLogsModal() {
             currentLogsClient = null;
-            document.getElementById('logs-modal').classList.remove('active');
+            const modal = document.getElementById('logs-modal');
+            if (modal) modal.classList.remove('active');
         }
 
         async function refreshCurrentLogs() {
             if (!currentLogsClient) return;
-            const body = document.getElementById('logs-modal-body');
+            const body = document.getElementById('logs-terminal') || document.getElementById('logs-modal-body');
+            if (!body) return;
             body.innerHTML = '<div style="color: #64748b; font-size: 13px;">Streaming operational telemetry...</div>';
 
             try {
@@ -4772,9 +4839,12 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         function copyCurrentLogs() {
-            const body = document.getElementById('logs-modal-body');
+            const body = document.getElementById('logs-terminal') || document.getElementById('logs-modal-body');
+            if (!body) return;
             navigator.clipboard.writeText(body.innerText).then(() => {
                 showToast('Audit logs copied to clipboard!', 'success');
+            }).catch(() => {
+                showToast('Failed to copy to clipboard', 'error');
             });
         }
 
@@ -5253,14 +5323,19 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                 if user['role'] == 'dealer' and it.get('dealer_id') != user['id']:
                     continue
 
+                d_id = it.get('dealer_id', '') or 'owner_master'
+                d_name = it.get('dealer_name', '')
+                if d_id == 'owner_master' or not d_name:
+                    d_name = 'Master Manufacturer (Direct)'
+
                 supervised_clients = [c for c in c_data.values() if c.get('integrator_id') == iid]
                 online_c = sum(1 for c in supervised_clients if (now - c.get('last_heartbeat', 0)) <= 75)
                 lost_c = len(supervised_clients) - online_c
 
                 res.append({
                     'id': it['id'],
-                    'dealer_id': it.get('dealer_id', ''),
-                    'dealer_name': it.get('dealer_name', ''),
+                    'dealer_id': d_id,
+                    'dealer_name': d_name,
                     'name': it.get('name', ''),
                     'username': it.get('username', ''),
                     'password_plain': it.get('password_plain', ''),  # Revealed to Manufacturer and Dealer
@@ -6017,18 +6092,16 @@ PersistentKeepalive = 25
                 dealer_id = user['id']
                 dealer_name = user['name']
             else:
-                # Manufacturer can assign to any dealer
+                # Manufacturer can assign to any dealer or Master Manufacturer (Direct)
                 dealer_id = body.get('dealer_id', '').strip()
-                if not dealer_id or dealer_id not in auth.get('dealers', {}):
-                    # fallback to first dealer or self
-                    if auth.get('dealers'):
-                        dealer_id = list(auth['dealers'].keys())[0]
-                        dealer_name = auth['dealers'][dealer_id]['name']
-                    else:
-                        dealer_id = 'owner_master'
-                        dealer_name = 'Master Manufacturer (Direct)'
-                else:
+                if dealer_id == 'owner_master' or not dealer_id:
+                    dealer_id = 'owner_master'
+                    dealer_name = 'Master Manufacturer (Direct)'
+                elif dealer_id in auth.get('dealers', {}):
                     dealer_name = auth['dealers'][dealer_id]['name']
+                else:
+                    dealer_id = 'owner_master'
+                    dealer_name = 'Master Manufacturer (Direct)'
 
             with AUTH_LOCK:
                 auth = load_auth_state()
@@ -6123,10 +6196,14 @@ PersistentKeepalive = 25
                     integrator['password_hash'] = pwd_hash
                     integrator['password_plain'] = new_password
 
-                # Manufacturer can transfer integrator to another dealer
-                if user['role'] == 'manufacturer' and new_dealer_id and new_dealer_id in auth.get('dealers', {}):
-                    integrator['dealer_id'] = new_dealer_id
-                    integrator['dealer_name'] = auth['dealers'][new_dealer_id]['name']
+                # Manufacturer can transfer integrator to another dealer or Master Manufacturer
+                if user['role'] == 'manufacturer' and new_dealer_id:
+                    if new_dealer_id == 'owner_master':
+                        integrator['dealer_id'] = 'owner_master'
+                        integrator['dealer_name'] = 'Master Manufacturer (Direct)'
+                    elif new_dealer_id in auth.get('dealers', {}):
+                        integrator['dealer_id'] = new_dealer_id
+                        integrator['dealer_name'] = auth['dealers'][new_dealer_id]['name']
 
                 auth['integrators'][int_id] = integrator
                 save_auth_state(auth)
@@ -6499,6 +6576,25 @@ PersistentKeepalive = 25
                 client['knx_port'] = int(body['knx_port'])
             if body.get('auth_secret'):
                 client['auth_secret'] = body['auth_secret'].strip()
+
+            auth = load_auth_state()
+            if user['role'] == 'manufacturer' and 'dealer_id' in body:
+                d_id = body['dealer_id'].strip()
+                if d_id == 'owner_master':
+                    client['dealer_id'] = 'owner_master'
+                    client['dealer_name'] = 'Master Manufacturer (Direct)'
+                elif d_id in auth.get('dealers', {}):
+                    client['dealer_id'] = d_id
+                    client['dealer_name'] = auth['dealers'][d_id]['name']
+
+            if user['role'] in ['manufacturer', 'dealer'] and 'integrator_id' in body:
+                i_id = body['integrator_id'].strip()
+                if not i_id:
+                    client['integrator_id'] = None
+                    client['integrator_name'] = None
+                elif i_id in auth.get('integrators', {}):
+                    client['integrator_id'] = i_id
+                    client['integrator_name'] = auth['integrators'][i_id]['name']
 
             save_clients_state(c_data)
             append_client_log(client_id, 'INFO', 'CONFIG_UPDATE', f"Configuration updated by {user['name']}.")
