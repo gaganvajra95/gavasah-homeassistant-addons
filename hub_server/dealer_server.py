@@ -1667,7 +1667,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     </div>
                 </div>
 
-                <button type="submit" id="login-submit-btn" class="btn-submit-login">Sign In to Fleet Command ➔</button>
+                <button type="submit" id="login-submit-btn" class="btn-submit-login">Sign In</button>
             </form>
         </div>
     </div>
@@ -2562,7 +2562,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 errBox.style.display = 'block';
             } finally {
                 btn.disabled = false;
-                btn.innerText = 'Sign In to Fleet Command ➔';
+                btn.innerText = 'Sign In';
             }
         }
 
@@ -3942,6 +3942,9 @@ HTML_PAGE = """<!DOCTYPE html>
             updateIntegratorDropdowns();
         }
 
+    </script>
+</body>
+</html>
 """
 
 import os
