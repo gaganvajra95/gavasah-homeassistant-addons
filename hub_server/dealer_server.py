@@ -4158,6 +4158,8 @@ HTML_PAGE = """<!DOCTYPE html>
                 }
                 const data = await res.json();
                 currentFleetData = data;
+                const badgeFleet = document.getElementById('badge-fleet-count');
+                if (badgeFleet) badgeFleet.innerText = data.length;
                 renderTable(data);
             } catch (err) {
                 console.error("Error fetching fleet:", err);
@@ -4214,13 +4216,13 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (selectedDealer !== 'all' && c.dealer_id !== selectedDealer) return false;
 
                 const diff = now - (c.last_heartbeat || 0);
-                if (diff <= 75) onlineCount++;
-                else if (diff <= 180) warningCount++;
+                if (diff <= 135) onlineCount++;
+                else if (diff <= 240) warningCount++;
                 else offlineCount++;
 
-                if (fleetStatusFilter === 'ONLINE' && diff > 75) return false;
-                if (fleetStatusFilter === 'WARNING' && (diff <= 75 || diff > 180)) return false;
-                if ((fleetStatusFilter === 'OFFLINE' || fleetStatusFilter === 'LOST') && diff <= 75) return false;
+                if (fleetStatusFilter === 'ONLINE' && diff > 135) return false;
+                if (fleetStatusFilter === 'WARNING' && (diff <= 135 || diff > 240)) return false;
+                if ((fleetStatusFilter === 'OFFLINE' || fleetStatusFilter === 'LOST') && diff <= 135) return false;
 
                 if (fleetSearchQuery) {
                     const str = `${c.client_id} ${c.name} ${c.dealer_name || ''} ${c.integrator_name || ''} ${c.domain} ${c.knx_ip}`.toLowerCase();
@@ -4253,6 +4255,10 @@ HTML_PAGE = """<!DOCTYPE html>
             if (ovOnline) ovOnline.innerText = onlineCount;
             if (ovLost) ovLost.innerText = offlineCount + warningCount;
 
+            // Update Sidebar Navigation Fleet Badge
+            const badgeFleetEl = document.getElementById('badge-fleet-count');
+            if (badgeFleetEl) badgeFleetEl.innerText = data.length;
+
             // Pagination
             const totalItems = filtered.length;
             const totalPages = Math.ceil(totalItems / fleetPageSize) || 1;
@@ -4278,8 +4284,8 @@ HTML_PAGE = """<!DOCTYPE html>
                 const humanDiff = formatHeartbeatTime(diff);
                 let stClass = 'status-online';
                 let stText = 'ONLINE';
-                if (diff > 180) { stClass = 'status-lost'; stText = 'OFFLINE'; }
-                else if (diff > 75) { stClass = 'status-warning'; stText = 'WARNING'; }
+                if (diff > 240) { stClass = 'status-lost'; stText = 'OFFLINE'; }
+                else if (diff > 135) { stClass = 'status-warning'; stText = 'WARNING'; }
 
                 const sys = c.system || {};
                 const net = c.network || {};
@@ -4625,7 +4631,7 @@ remote_dashboard_port: ${dashPort}
 remote_ssh_port: ${sshPort}
 knx_gateway_ip: "${knxIp}"
 knx_gateway_port: ${knxPort}
-heartbeat_interval: 30`;
+heartbeat_interval: 60`;
 
             const snippetEl = document.getElementById('edit-config-snippet');
             if (snippetEl) snippetEl.innerText = snippet;
@@ -5402,7 +5408,7 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                 dealer_ints = [it for it in integrators_dict.values() if it.get('dealer_id') == did]
                 
                 now = int(time.time())
-                online_c = sum(1 for c in dealer_clients if (now - c.get('last_heartbeat', 0)) <= 75)
+                online_c = sum(1 for c in dealer_clients if (now - c.get('last_heartbeat', 0)) <= 135)
                 lost_c = len(dealer_clients) - online_c
 
                 res.append({
@@ -5448,7 +5454,7 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                     d_name = 'Master Manufacturer (Direct)'
 
                 supervised_clients = [c for c in c_data.values() if c.get('integrator_id') == iid]
-                online_c = sum(1 for c in supervised_clients if (now - c.get('last_heartbeat', 0)) <= 75)
+                online_c = sum(1 for c in supervised_clients if (now - c.get('last_heartbeat', 0)) <= 135)
                 lost_c = len(supervised_clients) - online_c
 
                 res.append({

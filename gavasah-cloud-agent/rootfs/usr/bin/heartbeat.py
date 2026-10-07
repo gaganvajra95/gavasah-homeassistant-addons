@@ -343,7 +343,7 @@ def main():
     log("Starting Gavasah Cloud Agent Telemetry Engine v1.0.1...")
     opts = load_options()
     hub_host = opts.get("hub_host", "122.175.49.35")
-    interval = int(opts.get("heartbeat_interval", 30))
+    interval = int(opts.get("heartbeat_interval", 60))
 
     log(f"Configured Hub: {hub_host} | Client: {opts.get('client_id')} | Interval: {interval}s")
 

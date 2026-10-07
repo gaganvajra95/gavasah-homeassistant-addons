@@ -27,7 +27,7 @@ options:
   remote_ssh_port: 22010
   knx_gateway_ip: ""
   knx_gateway_port: 3671
-  heartbeat_interval: 30
+  heartbeat_interval: 60
 
 schema:
   hub_host: str

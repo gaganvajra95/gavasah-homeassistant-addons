@@ -20,7 +20,7 @@ The **Gavasah Cloud Agent** links this Home Assistant installation to the centra
 | `remote_ssh_port` | integer | Yes | Reverse port forwarding host SSH for dealer remote diagnostics (e.g. `22001`) |
 | `knx_gateway_ip` | string | No | Local IP of Gavasah KNX-IP Gateway (e.g. `192.168.1.111`) |
 | `knx_gateway_port` | integer | No | Port for KNXnet/IP UDP tunneling (default: `3671`) |
-| `heartbeat_interval` | integer | No | Seconds between telemetry reports (default: `30`) |
+| `heartbeat_interval` | integer | No | Seconds between telemetry reports (default: `60`) |
 
 ---
 
