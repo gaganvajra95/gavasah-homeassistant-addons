@@ -4631,7 +4631,8 @@ remote_dashboard_port: ${dashPort}
 remote_ssh_port: ${sshPort}
 knx_gateway_ip: "${knxIp}"
 knx_gateway_port: ${knxPort}
-heartbeat_interval: 60`;
+heartbeat_interval: 60
+auto_update_external_url: true`;
 
             const snippetEl = document.getElementById('edit-config-snippet');
             if (snippetEl) snippetEl.innerText = snippet;

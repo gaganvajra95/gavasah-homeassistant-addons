@@ -21,6 +21,7 @@ The **Gavasah Cloud Agent** links this Home Assistant installation to the centra
 | `knx_gateway_ip` | string | No | Local IP of Gavasah KNX-IP Gateway (e.g. `192.168.1.111`) |
 | `knx_gateway_port` | integer | No | Port for KNXnet/IP UDP tunneling (default: `3671`) |
 | `heartbeat_interval` | integer | No | Seconds between telemetry reports (default: `60`) |
+| `auto_update_external_url` | boolean | No | Automatically provisions Home Assistant Internet URL to `https://<client-id>.gavasah.com` for instant mobile companion app onboarding (default: `true`) |
 
 ---
 

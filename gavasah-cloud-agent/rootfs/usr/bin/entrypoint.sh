@@ -79,6 +79,34 @@ except Exception as e:
     print('[!] Registration note:', e)
 "
 
+# 2c. Auto-provision Home Assistant External URL on storage before launch
+echo "[+] Verifying Home Assistant External Network URL for $CLIENT_ID.gavasah.com..."
+python3 -c "
+import json, os
+try:
+    opts = json.load(open('$OPTIONS_PATH'))
+    if opts.get('auto_update_external_url', True):
+        cid = opts.get('client_id', '$CLIENT_ID').strip()
+        if cid:
+            target = f'https://{cid}.gavasah.com'
+            for spath in ['/homeassistant/.storage/core.config', '/config/.storage/core.config']:
+                if os.path.exists(spath):
+                    try:
+                        with open(spath, 'r', encoding='utf-8') as f:
+                            cfg = json.load(f)
+                        if cfg.get('data', {}).get('external_url') != target:
+                            cfg.setdefault('data', {})['external_url'] = target
+                            tmp = f'{spath}.tmp'
+                            with open(tmp, 'w', encoding='utf-8') as f:
+                                json.dump(cfg, f, indent=4)
+                            os.replace(tmp, spath)
+                            print(f'[✓] Pre-configured Home Assistant External URL to {target} in {spath}')
+                    except Exception as err:
+                        print(f'[!] Note on {spath}:', err)
+except Exception as e:
+    pass
+"
+
 # 3. Start Telemetry Engine in background
 echo "[+] Starting Gavasah Telemetry & Slot Watchdog..."
 python3 /usr/bin/heartbeat.py &

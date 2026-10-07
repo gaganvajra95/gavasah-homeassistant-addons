@@ -25,4 +25,7 @@ configuration:
     description: "KNXnet/IP port (Default: 3671)."
   heartbeat_interval:
     name: "Heartbeat Interval (seconds)"
-    description: "Frequency of telemetry, slot health, and KNX diagnostic updates sent to central hub (Default: 30)."
+    description: "Frequency of telemetry, slot health, and KNX diagnostic updates sent to central hub (Default: 60)."
+  auto_update_external_url:
+    name: "Auto-Provision External URL"
+    description: "Automatically sets Home Assistant's Internet URL to https://<client-id>.gavasah.com on startup for instant mobile companion app onboarding (Default: true)."

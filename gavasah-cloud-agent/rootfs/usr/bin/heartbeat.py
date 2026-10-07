@@ -69,6 +69,114 @@ def update_ha_state(entity_id, state, attributes):
         # Core might still be loading or endpoint busy
         pass
 
+def ensure_external_url(opts):
+    """
+    Ensures Home Assistant's Internet URL (external_url) is automatically set to
+    https://<client_id>.gavasah.com so mobile companion apps connect remotely
+    immediately without manual user input.
+    """
+    if not opts.get("auto_update_external_url", True):
+        return
+
+    client_id = opts.get("client_id", "").strip()
+    if not client_id or client_id in ["unconfigured", "client01"]:
+        return
+
+    target_url = f"https://{client_id}.gavasah.com"
+
+    # 1. Check current configured external_url via Home Assistant Core REST API
+    if SUPERVISOR_TOKEN:
+        try:
+            req = urllib.request.Request(
+                f"{SUPERVISOR_URL}/core/api/config",
+                headers={
+                    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+                    "Content-Type": "application/json"
+                }
+            )
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                data = json.loads(resp.read().decode())
+                current_url = data.get("external_url")
+                if current_url == target_url:
+                    return True
+        except Exception:
+            pass
+
+    # 2. Update via Core WebSocket API (Live in-memory + UI instant update)
+    ws_success = False
+    if SUPERVISOR_TOKEN:
+        try:
+            import websocket
+            ws = websocket.create_connection("ws://supervisor/core/websocket", timeout=5)
+            init_msg = json.loads(ws.recv())
+            if init_msg.get("type") == "auth_required":
+                ws.send(json.dumps({"type": "auth", "access_token": SUPERVISOR_TOKEN}))
+                auth_res = json.loads(ws.recv())
+                if auth_res.get("type") == "auth_ok":
+                    ws.send(json.dumps({
+                        "id": 1,
+                        "type": "config/core/update",
+                        "external_url": target_url
+                    }))
+                    update_res = json.loads(ws.recv())
+                    if update_res.get("success"):
+                        log(f"[✓] [Network Auto-Sync] Successfully set Home Assistant Internet URL to {target_url} via WebSocket API!")
+                        ws_success = True
+                    else:
+                        log(f"[!] WebSocket config/core/update response: {update_res}")
+            ws.close()
+        except Exception:
+            pass
+
+    if ws_success:
+        return True
+
+    # 3. Direct Storage Check & Update (.storage/core.config) + reload_core_config fallback
+    storage_candidates = [
+        "/homeassistant/.storage/core.config",
+        "/config/.storage/core.config"
+    ]
+    for spath in storage_candidates:
+        if os.path.exists(spath):
+            try:
+                with open(spath, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+
+                curr = cfg.get("data", {}).get("external_url")
+                if curr != target_url:
+                    cfg.setdefault("data", {})["external_url"] = target_url
+                    tmp_path = f"{spath}.tmp"
+                    with open(tmp_path, "w", encoding="utf-8") as f:
+                        json.dump(cfg, f, indent=4)
+                    os.replace(tmp_path, spath)
+                    log(f"[✓] [Network Auto-Sync] Updated {spath} external_url to {target_url}")
+
+                    # Trigger Home Assistant Core reload service
+                    if SUPERVISOR_TOKEN:
+                        try:
+                            reload_url = f"{SUPERVISOR_URL}/core/api/services/homeassistant/reload_core_config"
+                            r_req = urllib.request.Request(
+                                reload_url,
+                                data=b"{}",
+                                headers={
+                                    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+                                    "Content-Type": "application/json"
+                                },
+                                method="POST"
+                            )
+                            with urllib.request.urlopen(r_req, timeout=4) as r_resp:
+                                pass
+                            log("[✓] [Network Auto-Sync] Reloaded Home Assistant Core configuration service!")
+                        except Exception:
+                            pass
+                    return True
+                else:
+                    return True
+            except Exception as e:
+                log(f"[!] Error updating {spath}: {e}")
+
+    return False
+
 def ping_knx_gateway(ip, port=3671, timeout=2.0):
     if not ip or str(ip).strip() in ["", "127.0.0.1", "localhost", "none", "null"]:
         return {
@@ -311,6 +419,8 @@ def publish_local_entities(payload):
 
     # 5. Cloud Ingress Tunnel Status
     dash_port = tunnels.get("assigned_dashboard_port", 10001)
+    cid = payload.get("client_id", "")
+    ext_url = f"https://{cid}.gavasah.com" if (cid and cid not in ["unconfigured", "client01"]) else ""
     update_ha_state(
         "binary_sensor.gavasah_cloud_tunnel",
         "on" if tunnels.get("ha_core_local_8123") else "off",
@@ -319,6 +429,7 @@ def publish_local_entities(payload):
             "device_class": "connectivity",
             "ingress_port": dash_port,
             "ssh_port": tunnels.get("assigned_ssh_port", 22001),
+            "external_url": ext_url,
             "icon": "mdi:cloud-check"
         }
     )
@@ -340,13 +451,17 @@ def send_heartbeat(hub_host, payload):
     return False, "Failed to reach hub API endpoints"
 
 def main():
-    log("Starting Gavasah Cloud Agent Telemetry Engine v1.0.1...")
+    log("Starting Gavasah Cloud Agent Telemetry Engine v1.0.3...")
     opts = load_options()
     hub_host = opts.get("hub_host", "122.175.49.35")
     interval = int(opts.get("heartbeat_interval", 60))
 
     log(f"Configured Hub: {hub_host} | Client: {opts.get('client_id')} | Interval: {interval}s")
 
+    # Initial sync of Home Assistant External Network URL
+    ensure_external_url(opts)
+
+    loop_count = 0
     while True:
         try:
             opts = load_options()
@@ -355,7 +470,12 @@ def main():
             # 1. Update native Home Assistant UI entities
             publish_local_entities(payload)
 
-            # 2. Transmit to central dealer hub
+            # 2. Maintain external_url synchronization every 5 cycles
+            loop_count += 1
+            if loop_count % 5 == 0:
+                ensure_external_url(opts)
+
+            # 3. Transmit to central dealer hub
             success, status = send_heartbeat(hub_host, payload)
             slot = payload["system"]["boot_slot"]
             recovery = " [RECOVERY MODE ACTIVE!]" if payload["system"]["is_recovery_mode"] else ""

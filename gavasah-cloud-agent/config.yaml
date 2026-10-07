@@ -1,5 +1,5 @@
 name: "Gavasah Cloud Agent"
-version: "1.0.2"
+version: "1.0.3"
 slug: "gavasah-cloud-agent"
 description: "AutoSSH Reverse Tunnel, Telemetry Heartbeat, RAUC A/B Slot Health, and KNXnet/IP Remote Fleet Relay for Gavasah Cloud Hub."
 url: "https://gavasah.com"
@@ -17,6 +17,9 @@ privileged:
   - NET_ADMIN
 hassio_api: true
 hassio_role: manager
+homeassistant_api: true
+map:
+  - homeassistant_config:rw
 
 options:
   hub_host: "hub.gavasah.com"
@@ -28,6 +31,7 @@ options:
   knx_gateway_ip: ""
   knx_gateway_port: 3671
   heartbeat_interval: 60
+  auto_update_external_url: true
 
 schema:
   hub_host: str
@@ -39,3 +43,4 @@ schema:
   knx_gateway_ip: str?
   knx_gateway_port: int?
   heartbeat_interval: int?
+  auto_update_external_url: bool?
