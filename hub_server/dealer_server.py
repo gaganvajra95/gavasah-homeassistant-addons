@@ -1519,6 +1519,102 @@ HTML_PAGE = """<!DOCTYPE html>
             box-shadow: 0 0 10px rgba(239, 68, 68, 0.25);
         }
 
+        /* High-Visibility Cyberpunk Toggle Switch */
+        .toggle-switch {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            width: 44px;
+            height: 24px;
+            flex-shrink: 0;
+            cursor: pointer;
+            user-select: none;
+            vertical-align: middle;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+            position: absolute;
+            margin: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(255, 255, 255, 0.12);
+            border: 1.5px solid rgba(148, 163, 184, 0.35);
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            border-radius: 24px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 3px;
+            bottom: 2.5px;
+            background-color: #94a3b8;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            border-radius: 50%;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+        }
+
+        .toggle-switch input:checked + .toggle-slider {
+            background-color: rgba(0, 240, 255, 0.25);
+            border-color: #00f0ff;
+            box-shadow: 0 0 12px rgba(0, 240, 255, 0.45);
+        }
+
+        .toggle-switch input:checked + .toggle-slider:before {
+            transform: translateX(20px);
+            background-color: #00f0ff;
+            box-shadow: 0 0 8px #00f0ff;
+        }
+
+        .toggle-switch:hover .toggle-slider {
+            border-color: rgba(0, 240, 255, 0.6);
+        }
+
+        .toggle-pill-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 3px 9px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            transition: all 0.2s;
+            cursor: pointer;
+            border: 1px solid transparent;
+            user-select: none;
+        }
+        .toggle-pill-badge.pill-live {
+            background: rgba(0, 240, 255, 0.12);
+            color: #00f0ff;
+            border-color: rgba(0, 240, 255, 0.3);
+        }
+        .toggle-pill-badge.pill-live:hover {
+            background: rgba(0, 240, 255, 0.22);
+            box-shadow: 0 0 10px rgba(0, 240, 255, 0.3);
+        }
+        .toggle-pill-badge.pill-off {
+            background: rgba(239, 68, 68, 0.12);
+            color: #f87171;
+            border-color: rgba(239, 68, 68, 0.3);
+        }
+        .toggle-pill-badge.pill-off:hover {
+            background: rgba(239, 68, 68, 0.22);
+            box-shadow: 0 0 10px rgba(239, 68, 68, 0.3);
+        }
+
         .pagination-bar {
             display: flex;
             align-items: center;
@@ -1595,6 +1691,134 @@ HTML_PAGE = """<!DOCTYPE html>
         .badge-red { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
         .badge-purple { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); }
         .badge-blue { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); }
+
+        .badge-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 3px 9px;
+            border-radius: 20px;
+            letter-spacing: 0.5px;
+            white-space: nowrap;
+        }
+        .status-online {
+            background: rgba(16, 185, 129, 0.15);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+        .status-warning {
+            background: rgba(245, 158, 11, 0.15);
+            color: #fbbf24;
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+        .status-lost {
+            background: rgba(239, 68, 68, 0.15);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+        .status-pending {
+            background: rgba(168, 85, 247, 0.15);
+            color: #c084fc;
+            border: 1px solid rgba(168, 85, 247, 0.3);
+        }
+
+        /* Graphical Heartbeat Status Badge with Colored Glowing Balls */
+        .heartbeat-status-wrap {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            min-width: 140px;
+        }
+        .heartbeat-pill-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 9px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            width: fit-content;
+            border: 1px solid transparent;
+            user-select: none;
+            transition: all 0.2s ease;
+        }
+        .hb-ball {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            flex-shrink: 0;
+        }
+        .hb-pill-online {
+            background: rgba(16, 185, 129, 0.12);
+            color: #34d399;
+            border-color: rgba(16, 185, 129, 0.35);
+        }
+        .hb-ball-online {
+            background: #10b981;
+            box-shadow: 0 0 8px #10b981, 0 0 14px rgba(16, 185, 129, 0.6);
+            animation: hbPulseGreen 2.2s infinite ease-in-out;
+        }
+        .hb-pill-warning {
+            background: rgba(245, 158, 11, 0.12);
+            color: #fbbf24;
+            border-color: rgba(245, 158, 11, 0.35);
+        }
+        .hb-ball-warning {
+            background: #f59e0b;
+            box-shadow: 0 0 8px #f59e0b, 0 0 14px rgba(245, 158, 11, 0.6);
+            animation: hbPulseAmber 2.2s infinite ease-in-out;
+        }
+        .hb-pill-offline {
+            background: rgba(239, 68, 68, 0.12);
+            color: #f87171;
+            border-color: rgba(239, 68, 68, 0.35);
+        }
+        .hb-ball-offline {
+            background: #ef4444;
+            box-shadow: 0 0 8px #ef4444;
+        }
+        .hb-pill-pending {
+            background: rgba(168, 85, 247, 0.12);
+            color: #c084fc;
+            border-color: rgba(168, 85, 247, 0.35);
+        }
+        .hb-ball-pending {
+            background: #a855f7;
+            box-shadow: 0 0 8px #a855f7;
+            animation: hbPulsePurple 2.2s infinite ease-in-out;
+        }
+        @keyframes hbPulseGreen {
+            0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 6px #10b981; }
+            50% { transform: scale(1.25); opacity: 0.8; box-shadow: 0 0 12px #10b981, 0 0 16px rgba(16, 185, 129, 0.5); }
+        }
+        @keyframes hbPulseAmber {
+            0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 6px #f59e0b; }
+            50% { transform: scale(1.25); opacity: 0.8; box-shadow: 0 0 12px #f59e0b, 0 0 16px rgba(245, 158, 11, 0.5); }
+        }
+        @keyframes hbPulsePurple {
+            0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 6px #a855f7; }
+            50% { transform: scale(1.25); opacity: 0.8; box-shadow: 0 0 12px #a855f7; }
+        }
+        .hb-timing-sub {
+            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            white-space: nowrap;
+            margin-top: 1px;
+        }
+        .hb-timing-online { color: #94a3b8; }
+        .hb-timing-offline { color: #f87171; font-weight: 600; }
+        .hb-timing-warning { color: #fbbf24; font-weight: 600; }
+        .hb-timing-pending { color: #c084fc; }
+        .hb-timestamp-sub {
+            font-size: 10px;
+            color: #64748b;
+            font-family: 'JetBrains Mono', monospace;
+            white-space: nowrap;
+        }
 
         .dot {
             width: 7px;
@@ -3030,6 +3254,25 @@ HTML_PAGE = """<!DOCTYPE html>
                         <label class="form-label">KNX PORT</label>
                         <input type="number" id="onb-knx-port" class="form-input" value="3671">
                     </div>
+                    <div class="form-group" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(0, 240, 255, 0.25); border-radius: 10px; padding: 12px 16px; margin-top: 14px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <label class="form-label" style="margin-bottom: 2px; color: #fff; font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+                                    🌐 CLIENT REMOTE ACCESS (INGRESS)
+                                </label>
+                                <div style="font-size: 11px; color: #94a3b8;">
+                                    Enable remote browser access to Home Assistant Dashboard by default.
+                                </div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <label class="toggle-switch" title="Toggle default remote access">
+                                    <input type="checkbox" id="onb-remote-toggle" checked onchange="onOnboardRemoteToggleChange(this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                                <span id="onb-remote-status-text" class="toggle-pill-badge pill-live" style="min-width: 65px; text-align: center;">🟢 LIVE</span>
+                            </div>
+                        </div>
+                    </div>
                     <input type="hidden" id="onb-ssh-key">
                 </div>
                 <div class="modal-footer">
@@ -3085,6 +3328,26 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="form-group">
                         <label class="form-label">KNX PORT</label>
                         <input type="number" id="edit-knx-port" class="form-input" value="3671">
+                    </div>
+
+                    <div class="form-group" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(0, 240, 255, 0.25); border-radius: 10px; padding: 12px 16px; margin-top: 14px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <label class="form-label" style="margin-bottom: 2px; color: #fff; font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+                                    🌐 CLIENT REMOTE ACCESS (INGRESS)
+                                </label>
+                                <div style="font-size: 11px; color: #94a3b8;" id="edit-remote-help">
+                                    Enable or suspend remote browser dashboard access through Gavasah Cloud Hub.
+                                </div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <label class="toggle-switch" title="Toggle Client Remote Ingress Access">
+                                    <input type="checkbox" id="edit-remote-toggle" onchange="onEditRemoteToggleChange(this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                                <span id="edit-remote-status-text" class="toggle-pill-badge pill-live" style="min-width: 65px; text-align: center;">🟢 LIVE</span>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="form-group" style="margin-top: 14px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 12px;">
@@ -4270,14 +4533,16 @@ HTML_PAGE = """<!DOCTYPE html>
             const filtered = data.filter(c => {
                 if (selectedDealer !== 'all' && c.dealer_id !== selectedDealer) return false;
 
-                const diff = now - (c.last_heartbeat || 0);
-                if (diff <= 135) onlineCount++;
+                const isPending = !c.last_heartbeat || c.last_heartbeat === 0 || c.status === 'pending';
+                const diff = isPending ? -1 : now - (c.last_heartbeat || 0);
+                if (isPending) offlineCount++;
+                else if (diff <= 135) onlineCount++;
                 else if (diff <= 240) warningCount++;
                 else offlineCount++;
 
-                if (fleetStatusFilter === 'ONLINE' && diff > 135) return false;
-                if (fleetStatusFilter === 'WARNING' && (diff <= 135 || diff > 240)) return false;
-                if ((fleetStatusFilter === 'OFFLINE' || fleetStatusFilter === 'LOST') && diff <= 135) return false;
+                if (fleetStatusFilter === 'ONLINE' && (isPending || diff > 135)) return false;
+                if (fleetStatusFilter === 'WARNING' && (isPending || diff <= 135 || diff > 240)) return false;
+                if ((fleetStatusFilter === 'OFFLINE' || fleetStatusFilter === 'LOST') && !isPending && diff <= 135) return false;
 
                 if (fleetSearchQuery) {
                     const str = `${c.client_id} ${c.name} ${c.dealer_name || ''} ${c.integrator_name || ''} ${c.domain} ${c.knx_ip}`.toLowerCase();
@@ -4335,11 +4600,13 @@ HTML_PAGE = """<!DOCTYPE html>
             if (!tbody) return;
 
             tbody.innerHTML = pageData.map(c => {
-                const diff = now - (c.last_heartbeat || 0);
-                const humanDiff = formatHeartbeatTime(diff);
+                const isPending = !c.last_heartbeat || c.last_heartbeat === 0 || c.status === 'pending';
+                const diff = isPending ? -1 : now - (c.last_heartbeat || 0);
+                let humanDiff = isPending ? 'awaiting pulse' : formatHeartbeatTime(diff);
                 let stClass = 'status-online';
                 let stText = 'ONLINE';
-                if (diff > 240) { stClass = 'status-lost'; stText = 'OFFLINE'; }
+                if (isPending) { stClass = 'status-pending'; stText = '⏳ PENDING'; }
+                else if (diff > 240) { stClass = 'status-lost'; stText = 'OFFLINE'; }
                 else if (diff > 135) { stClass = 'status-warning'; stText = 'WARNING'; }
 
                 const sys = c.system || {};
@@ -4384,18 +4651,63 @@ HTML_PAGE = """<!DOCTYPE html>
                         ${dealerCell}
                         ${integratorCell}
                         <td>
-                            <div style="display: flex; align-items: center; gap: 6px;">
-                                <span class="badge-status ${stClass}">${stText}</span>
-                                <span style="font-size: 11px; color: #94a3b8; font-family: monospace; white-space: nowrap;">${humanDiff}</span>
-                            </div>
+                            ${(() => {
+                                if (isPending) {
+                                    return `
+                                        <div class="heartbeat-status-wrap" title="Client site provisioned - awaiting initial connection from physical gateway">
+                                            <span class="heartbeat-pill-badge hb-pill-pending">
+                                                <span class="hb-ball hb-ball-pending"></span>
+                                                <span>PENDING</span>
+                                            </span>
+                                            <div class="hb-timing-sub hb-timing-pending">awaiting first pulse</div>
+                                        </div>
+                                    `;
+                                } else if (diff > 240) {
+                                    const off = formatOfflineDetails(c.last_heartbeat, now);
+                                    return `
+                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)}">
+                                            <span class="heartbeat-pill-badge hb-pill-offline">
+                                                <span class="hb-ball hb-ball-offline"></span>
+                                                <span>OFFLINE</span>
+                                            </span>
+                                            <div class="hb-timing-sub hb-timing-offline" title="${escapeHtml(off.tooltip)}">${escapeHtml(off.durationText)}</div>
+                                            <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
+                                        </div>
+                                    `;
+                                } else if (diff > 135) {
+                                    const off = formatOfflineDetails(c.last_heartbeat, now);
+                                    return `
+                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)}">
+                                            <span class="heartbeat-pill-badge hb-pill-warning">
+                                                <span class="hb-ball hb-ball-warning"></span>
+                                                <span>WARNING</span>
+                                            </span>
+                                            <div class="hb-timing-sub hb-timing-warning">Delayed (${humanDiff})</div>
+                                            <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
+                                        </div>
+                                    `;
+                                } else {
+                                    return `
+                                        <div class="heartbeat-status-wrap" title="Gateway connected and streaming telemetry (Last pulse ${humanDiff})">
+                                            <span class="heartbeat-pill-badge hb-pill-online">
+                                                <span class="hb-ball hb-ball-online"></span>
+                                                <span>ONLINE</span>
+                                            </span>
+                                            <div class="hb-timing-sub hb-timing-online">Pulse ${humanDiff}</div>
+                                        </div>
+                                    `;
+                                }
+                            })()}
                         </td>
                         <td>
                             <div style="display: flex; align-items: center; gap: 8px;">
-                                <label class="toggle-switch">
+                                <label class="toggle-switch" title="Toggle Remote Ingress for ${escapeHtml(c.name)}">
                                     <input type="checkbox" ${remoteEnabled ? 'checked' : ''} onchange="toggleRemoteAccess('${c.client_id}', this.checked)">
                                     <span class="toggle-slider"></span>
                                 </label>
-                                <span style="font-size: 10px; font-weight: 700; color: ${remoteEnabled ? '#00f0ff' : '#64748b'}; letter-spacing: 0.5px;">${remoteEnabled ? 'LIVE' : 'OFF'}</span>
+                                <span class="toggle-pill-badge ${remoteEnabled ? 'pill-live' : 'pill-off'}" onclick="toggleRemoteAccess('${c.client_id}', ${!remoteEnabled})" title="Click to toggle remote ingress">
+                                    ${remoteEnabled ? '🟢 LIVE' : '🔴 DISABLED'}
+                                </span>
                             </div>
                         </td>
                         <td>
@@ -4407,12 +4719,16 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div style="color: #94a3b8; font-size: 11px;">KNX: ${escapeHtml(c.knx_ip || '—')}:${c.knx_port || 3671}</div>
                         </td>
                         <td style="font-size: 12px;">
-                            <div style="color: #cbd5e1;">CPU: ${sys.cpu_percent || 0}% &bull; RAM: ${sys.memory_percent || 0}%</div>
+                            <div style="color: #cbd5e1;">CPU: ${sys.cpu_percent !== undefined && sys.cpu_percent !== null ? sys.cpu_percent : 0}% &bull; RAM: ${sys.memory_percent !== undefined && sys.memory_percent !== null ? sys.memory_percent : 0}%</div>
                             <div style="color: #64748b; font-size: 11px;">HAOS ${escapeHtml(sys.haos_version || '13.2')}</div>
                         </td>
                         <td class="col-actions-sticky">
                             <div class="actions-btn-flex">
-                                <a href="https://${escapeHtml(c.domain)}" target="_blank" class="btn-action-icon btn-action-dashboard" title="Open Client Remote User Interface (Home Assistant Dashboard)">📊 Dashboard ↗</a>
+                                ${remoteEnabled ? `
+                                    <a href="https://${escapeHtml(c.domain)}" target="_blank" class="btn-action-icon btn-action-dashboard" title="Open Client Remote User Interface (Home Assistant Dashboard)">📊 Dashboard ↗</a>
+                                ` : `
+                                    <span class="btn-action-icon btn-action-dashboard" style="opacity: 0.45; cursor: not-allowed; text-decoration: line-through; border-color: rgba(239,68,68,0.3); color: #f87171;" title="Remote Access Disabled - Flip Toggle to Enable">🔒 Disabled</span>
+                                `}
                                 <button class="btn-action-icon btn-action-logs" onclick="openLogsModal('${c.client_id}')" title="Audit Telemetry Logs">📋 Logs</button>
                                 ${currentUser.role !== 'integrator' ? `
                                     <button class="btn-action-icon btn-reassign-sm" onclick="openReassignModal('${c.client_id}')" title="Reassign Supervision">🔄 Transfer</button>
@@ -4423,7 +4739,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </td>
                     </tr>
                 `;
-            }).join('') || `<tr><td colspan="${currentUser.role === 'manufacturer' ? 9 : 8}" style="text-align: center; color: #64748b; padding: 32px;">No gateways match the selected filter.</td></tr>`;
+            }).join('') || `<tr><td colspan="${currentUser.role === 'manufacturer' ? 9 : (currentUser.role === 'dealer' ? 8 : 7)}" style="text-align: center; color: #64748b; padding: 32px;">No gateways match the selected filter.</td></tr>`;
 
             // Initialize / sync top and bottom horizontal scrollbars
             setTimeout(initAllTableScrollbars, 40);
@@ -4444,6 +4760,45 @@ HTML_PAGE = """<!DOCTYPE html>
             const days = Math.floor(hrs / 24);
             const remH = hrs % 24;
             return `${days}d ${remH}h ago`;
+        }
+
+        function formatOfflineDetails(lastHeartbeat, now) {
+            if (!lastHeartbeat || lastHeartbeat === 0) {
+                return {
+                    durationText: 'Awaiting first pulse',
+                    timestampText: 'Not connected yet',
+                    tooltip: 'Client site provisioned - awaiting initial connection from physical gateway'
+                };
+            }
+            const diff = Math.max(0, now - lastHeartbeat);
+            const d = new Date(lastHeartbeat * 1000);
+            
+            const hours = String(d.getHours()).padStart(2, '0');
+            const mins = String(d.getMinutes()).padStart(2, '0');
+            const dateStr = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+            const formattedTime = `${dateStr}, ${hours}:${mins}`;
+
+            let durationStr = '';
+            if (diff < 60) durationStr = `${diff}s`;
+            else if (diff < 3600) {
+                const m = Math.floor(diff / 60);
+                durationStr = `${m}m`;
+            } else if (diff < 86400) {
+                const h = Math.floor(diff / 3600);
+                const m = Math.floor((diff % 3600) / 60);
+                durationStr = `${h}h ${m}m`;
+            } else {
+                const days = Math.floor(diff / 86400);
+                const h = Math.floor((diff % 86400) / 3600);
+                durationStr = `${days}d ${h}h`;
+            }
+
+            return {
+                durationText: `Offline for ${durationStr}`,
+                timestampText: `since ${formattedTime}`,
+                fullText: `Offline for ${durationStr} (since ${formattedTime})`,
+                tooltip: `Gateway went offline on ${d.toLocaleString()} (Offline for ${durationStr})`
+            };
         }
 
         function scrollTableBy(target, delta) {
@@ -4577,8 +4932,24 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (intGroup) intGroup.style.display = 'none';
             }
 
+            const onbRemoteToggle = document.getElementById('onb-remote-toggle');
+            if (onbRemoteToggle) onbRemoteToggle.checked = true;
+            updateOnboardRemoteStatusText(true);
+
             const modal = document.getElementById('onboard-modal');
             if (modal) modal.classList.add('active');
+        }
+
+        function updateOnboardRemoteStatusText(isOn) {
+            const el = document.getElementById('onb-remote-status-text');
+            if (el) {
+                el.className = `toggle-pill-badge ${isOn ? 'pill-live' : 'pill-off'}`;
+                el.innerText = isOn ? '🟢 LIVE' : '🔴 DISABLED';
+            }
+        }
+
+        function onOnboardRemoteToggleChange(isOn) {
+            updateOnboardRemoteStatusText(isOn);
         }
 
         function closeOnboardModal() {
@@ -4631,13 +5002,15 @@ HTML_PAGE = """<!DOCTYPE html>
                 secretVal = generateSecretStr();
             }
 
+            const remoteToggle = document.getElementById('onb-remote-toggle');
             const payload = {
                 name: nameVal,
                 client_id: autoSlug.toLowerCase(),
                 auth_secret: secretVal,
                 knx_ip: (document.getElementById('onb-knx-ip') ? document.getElementById('onb-knx-ip').value.trim() : '192.168.1.100'),
                 knx_port: parseInt(document.getElementById('onb-knx-port') ? document.getElementById('onb-knx-port').value : 3671) || 3671,
-                ssh_public_key: (document.getElementById('onb-ssh-key') ? document.getElementById('onb-ssh-key').value.trim() : '')
+                ssh_public_key: (document.getElementById('onb-ssh-key') ? document.getElementById('onb-ssh-key').value.trim() : ''),
+                remote_enabled: remoteToggle ? remoteToggle.checked : true
             };
 
             if (currentUser.role === 'manufacturer') {
@@ -4739,6 +5112,11 @@ auto_update_external_url: true`;
                 if (intGroup) intGroup.style.display = 'none';
             }
 
+            const remoteToggle = document.getElementById('edit-remote-toggle');
+            const isRemoteOn = client.remote_enabled !== false;
+            if (remoteToggle) remoteToggle.checked = isRemoteOn;
+            updateEditRemoteStatusText(isRemoteOn);
+
             // Real-time update of snippet on input change
             const secEl = document.getElementById('edit-secret');
             if (secEl) secEl.oninput = updateEditConfigSnippet;
@@ -4751,6 +5129,18 @@ auto_update_external_url: true`;
 
             const modal = document.getElementById('edit-modal');
             if (modal) modal.classList.add('active');
+        }
+
+        function updateEditRemoteStatusText(isOn) {
+            const el = document.getElementById('edit-remote-status-text');
+            if (el) {
+                el.className = `toggle-pill-badge ${isOn ? 'pill-live' : 'pill-off'}`;
+                el.innerText = isOn ? '🟢 LIVE' : '🔴 DISABLED';
+            }
+        }
+
+        function onEditRemoteToggleChange(isOn) {
+            updateEditRemoteStatusText(isOn);
         }
 
         function closeEditModal() {
@@ -4766,12 +5156,14 @@ auto_update_external_url: true`;
             e.preventDefault();
             const idEl = document.getElementById('edit-id') || document.getElementById('edit-client-id');
             const clientId = idEl ? idEl.value : '';
+            const remoteToggle = document.getElementById('edit-remote-toggle');
             const payload = {
                 client_id: clientId,
                 name: (document.getElementById('edit-name') ? document.getElementById('edit-name').value.trim() : ''),
                 knx_ip: (document.getElementById('edit-knx-ip') ? document.getElementById('edit-knx-ip').value.trim() : ''),
                 knx_port: parseInt(document.getElementById('edit-knx-port') ? document.getElementById('edit-knx-port').value : 3671) || 3671,
-                auth_secret: (document.getElementById('edit-secret') ? document.getElementById('edit-secret').value.trim() : '')
+                auth_secret: (document.getElementById('edit-secret') ? document.getElementById('edit-secret').value.trim() : ''),
+                remote_enabled: remoteToggle ? remoteToggle.checked : true
             };
 
             if (currentUser.role === 'manufacturer') {
@@ -6701,7 +7093,7 @@ PersistentKeepalive = 25
                 'knx_port': knx_port,
                 'last_heartbeat': int(time.time()),
                 'status': 'online',
-                'remote_enabled': True,
+                'remote_enabled': bool(body.get('remote_enabled', True)),
                 'system': {
                     'haos_version': '13.2',
                     'core_version': '2026.9.3',
@@ -6728,7 +7120,7 @@ PersistentKeepalive = 25
             save_clients_state(c_data)
 
             # Ingress and SSH config
-            sync_caddy_ingress(clean_id, dash_port, 'http', True, wg_ip=wg_ip)
+            sync_caddy_ingress(clean_id, dash_port, 'http', new_client['remote_enabled'], wg_ip=wg_ip)
             if ssh_key:
                 sync_client_ssh_user(clean_id, ssh_key)
 
@@ -6795,6 +7187,10 @@ PersistentKeepalive = 25
                 elif i_id in auth.get('integrators', {}):
                     client['integrator_id'] = i_id
                     client['integrator_name'] = auth['integrators'][i_id]['name']
+
+            if 'remote_enabled' in body:
+                client['remote_enabled'] = bool(body['remote_enabled'])
+                sync_caddy_ingress(client_id, client.get('dashboard_port', 10001), 'http', client['remote_enabled'], force=True, wg_ip=client.get('wg_ip'))
 
             save_clients_state(c_data)
             append_client_log(client_id, 'INFO', 'CONFIG_UPDATE', f"Configuration updated by {user['name']}.")

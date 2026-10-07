@@ -49,7 +49,8 @@ Host *
     Port $HUB_PORT
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
-    ServerAliveInterval 30
+    ConnectTimeout 5
+    ServerAliveInterval 15
     ServerAliveCountMax 3
     IdentityFile ~/.ssh/id_ed25519
 EOF
@@ -133,7 +134,8 @@ export AUTOSSH_GATETIME=0
 export AUTOSSH_POLL=30
 
 exec autossh -M 0 -N \
-    -o "ServerAliveInterval=30" \
+    -o "ConnectTimeout=5" \
+    -o "ServerAliveInterval=15" \
     -o "ServerAliveCountMax=3" \
     -o "ExitOnForwardFailure=yes" \
     -p "$HUB_PORT" \

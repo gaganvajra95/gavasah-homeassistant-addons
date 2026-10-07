@@ -268,6 +268,83 @@ def check_tunnel_local_port(port=8123):
     except Exception:
         return False, "http"
 
+# Previous CPU jiffies cache for real-time CPU % calculation
+_prev_cpu_jiffies = None
+_prev_cpu_time = None
+
+def get_ha_main_cpu_and_memory():
+    """
+    Computes real-time Home Assistant Main CPU and RAM utilization.
+    Reads:
+    1. /proc/meminfo: Exact physical RAM usage of the Home Assistant host machine.
+    2. /proc/stat: Exact CPU percentage of the Home Assistant host machine.
+    3. Supervisor core/stats API: Fallback to Home Assistant Core engine stats.
+    """
+    global _prev_cpu_jiffies, _prev_cpu_time
+    cpu_pct = None
+    mem_pct = None
+
+    # 1. Physical RAM via /proc/meminfo
+    try:
+        mem = {}
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                if ":" in line:
+                    parts = line.split(":")
+                    mem[parts[0].strip()] = int(parts[1].split()[0])
+        tot = mem.get("MemTotal", 0)
+        avail = mem.get("MemAvailable", 0)
+        if tot > 0 and avail > 0:
+            mem_pct = round(((tot - avail) / tot) * 100.0, 1)
+    except Exception:
+        pass
+
+    # 2. Main Host CPU via /proc/stat
+    try:
+        with open("/proc/stat", "r") as f:
+            line = f.readline()
+            fields = [float(x) for x in line.strip().split()[1:]]
+            idle = fields[3] + (fields[4] if len(fields) > 4 else 0)
+            total = sum(fields)
+            now_t = time.time()
+
+            if _prev_cpu_jiffies is not None and _prev_cpu_time is not None:
+                p_idle, p_total = _prev_cpu_jiffies
+                delta_total = total - p_total
+                delta_idle = idle - p_idle
+                if delta_total > 0:
+                    cpu_pct = round(max(0.0, min(100.0, (1.0 - (delta_idle / delta_total)) * 100.0)), 1)
+            else:
+                # Initial sample: quick measurement over 200ms
+                time.sleep(0.2)
+                with open("/proc/stat", "r") as f2:
+                    fields2 = [float(x) for x in f2.readline().strip().split()[1:]]
+                    idle2 = fields2[3] + (fields2[4] if len(fields2) > 4 else 0)
+                    total2 = sum(fields2)
+                    d_tot = total2 - total
+                    d_idle = idle2 - idle
+                    if d_tot > 0:
+                        cpu_pct = round(max(0.0, min(100.0, (1.0 - (d_idle / d_tot)) * 100.0)), 1)
+
+            _prev_cpu_jiffies = (idle, total)
+            _prev_cpu_time = now_t
+    except Exception:
+        pass
+
+    # 3. Fallback / supplement with Home Assistant Core container stats via Supervisor API
+    if cpu_pct is None or mem_pct is None:
+        try:
+            core_stats = supervisor_get("core/stats")
+            if isinstance(core_stats, dict):
+                if cpu_pct is None and "cpu_percent" in core_stats:
+                    cpu_pct = round(float(core_stats["cpu_percent"]), 1)
+                if mem_pct is None and "memory_percent" in core_stats:
+                    mem_pct = round(float(core_stats["memory_percent"]), 1)
+        except Exception:
+            pass
+
+    return cpu_pct if cpu_pct is not None else 0.0, mem_pct if mem_pct is not None else 0.0
+
 def collect_telemetry(opts):
     os_info = supervisor_get("os/info")
     host_info = supervisor_get("host/info")
@@ -337,6 +414,9 @@ def collect_telemetry(opts):
     slot_a_state = "good (active)" if not is_recovery else "bad (failed boot, auto-fell back)"
     slot_b_state = "good (active fallback)" if is_recovery else "standby"
 
+    # Real-time Home Assistant Main CPU & Memory calculation
+    main_cpu_pct, main_mem_pct = get_ha_main_cpu_and_memory()
+
     payload = {
         "client_id": opts.get("client_id", "unconfigured"),
         "auth_key": opts.get("auth_key", ""),
@@ -351,8 +431,8 @@ def collect_telemetry(opts):
             "is_recovery_mode": is_recovery,
             "slot_a_status": slot_a_state,
             "slot_b_status": slot_b_state,
-            "cpu_percent": host_info.get("cpu_percent", 0),
-            "memory_percent": host_info.get("memory_percent", 0),
+            "cpu_percent": main_cpu_pct,
+            "memory_percent": main_mem_pct,
             "disk_free_gb": host_info.get("disk_free", 0),
             "disk_total_gb": host_info.get("disk_total", 0),
             "reboot_required": host_info.get("reboot_required", False)
