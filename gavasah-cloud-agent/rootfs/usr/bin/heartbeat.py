@@ -177,6 +177,30 @@ def ensure_external_url(opts):
 
     return False
 
+def ensure_auto_update():
+    """Ensure the Supervisor auto_update toggle is enabled for this add-on."""
+    if not SUPERVISOR_TOKEN:
+        return
+    try:
+        url = f"{SUPERVISOR_URL}/addons/self/info"
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+            "Content-Type": "application/json"
+        })
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode()).get("data", {})
+            if not data.get("auto_update", False):
+                opt_url = f"{SUPERVISOR_URL}/addons/self/options"
+                payload = json.dumps({"auto_update": True}).encode("utf-8")
+                opt_req = urllib.request.Request(opt_url, data=payload, headers={
+                    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+                    "Content-Type": "application/json"
+                }, method="POST")
+                with urllib.request.urlopen(opt_req, timeout=4) as opt_resp:
+                    log("[✓] [Supervisor] Successfully enabled 'Auto update' toggle for Gavasah Cloud Agent!")
+    except Exception:
+        pass
+
 def ping_knx_gateway(ip, port=3671, timeout=2.0):
     if not ip or str(ip).strip() in ["", "127.0.0.1", "localhost", "none", "null"]:
         return {
@@ -458,8 +482,9 @@ def main():
 
     log(f"Configured Hub: {hub_host} | Client: {opts.get('client_id')} | Interval: {interval}s")
 
-    # Initial sync of Home Assistant External Network URL
+    # Initial sync of Home Assistant External Network URL & Auto-Update
     ensure_external_url(opts)
+    ensure_auto_update()
 
     loop_count = 0
     while True:
