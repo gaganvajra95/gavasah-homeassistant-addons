@@ -1149,6 +1149,13 @@ HTML_PAGE = """<!DOCTYPE html>
         body.is-dealer #th-dealer-col {
             display: none;
         }
+        body.is-dealer #ov-card-dealers {
+            display: none !important;
+        }
+        
+        body.is-integrator #ov-card-dealers {
+            display: none !important;
+        }
         
         body.is-integrator .sidebar {
             display: none !important;
@@ -3626,6 +3633,8 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('th-dealer-col').style.display = '';
                 document.getElementById('th-int-dealership-col').style.display = '';
                 document.getElementById('integrator-dealer-filter-wrap').style.display = 'block';
+                const ovCardDealers = document.getElementById('ov-card-dealers');
+                if (ovCardDealers) ovCardDealers.style.display = '';
 
                 switchTab('overview');
                 fetchDealers();
@@ -3651,6 +3660,10 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('th-dealer-col').style.display = 'none';
                 document.getElementById('th-int-dealership-col').style.display = 'none';
                 document.getElementById('integrator-dealer-filter-wrap').style.display = 'none';
+
+                // Hide Total Authorized Dealers card for Dealer
+                const ovCardDealers = document.getElementById('ov-card-dealers');
+                if (ovCardDealers) ovCardDealers.style.display = 'none';
 
                 // Adjust Overview Header for Dealer
                 const ovHeaderTitle = document.querySelector('#tab-overview .section-title');
