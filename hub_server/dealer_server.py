@@ -501,20 +501,66 @@ def run_caddy_cmd(remote_py, extra_bash=""):
     cmd = f'python3 -c "import base64; exec(base64.b64decode(\'{b64}\'))"'
     if extra_bash:
         cmd += f" && {extra_bash}"
+
+    key_path = "/root/.ssh/id_ed25519" if os.path.exists("/root/.ssh/id_ed25519") else "/root/.ssh/id_rsa"
     ssh_args = [
-        "ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=3",
-        "-i", "/root/.ssh/id_rsa", f"root@{CADDY_HOST}", cmd
+        "ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ConnectTimeout=5"
     ]
+    if os.path.exists(key_path):
+        ssh_args += ["-i", key_path]
+    ssh_args += [f"root@{CADDY_HOST}", cmd]
     try:
-        res = subprocess.run(ssh_args, capture_output=True, text=True, timeout=5)
+        res = subprocess.run(ssh_args, capture_output=True, text=True, timeout=8)
+        if res.returncode != 0:
+            print(f"[!] Caddy command error (code {res.returncode}): {res.stderr.strip()[:200]}")
         return res.returncode == 0
     except Exception as e:
         print(f"[!] Caddy update error: {e}")
         return False
 
 def sync_client_ssh_user(client_id, ssh_public_key):
-    if not ssh_public_key or ssh_public_key in REGISTERED_SSH_KEYS:
+    if not ssh_public_key:
         return True
+    if os.name == 'nt':
+        REGISTERED_SSH_KEYS.add(ssh_public_key)
+        return True
+
+    # 1. Ensure Linux group 'haclients' exists
+    try:
+        subprocess.run(["groupadd", "-f", "haclients"], capture_output=True, timeout=3)
+    except Exception:
+        pass
+
+    # 2. Ensure Linux user exists for client_id
+    try:
+        res = subprocess.run(["id", client_id], capture_output=True, timeout=3)
+        if res.returncode != 0:
+            subprocess.run([
+                "useradd", "-m", "-s", "/bin/bash", "-g", "haclients", client_id
+            ], capture_output=True, timeout=5)
+    except Exception as e:
+        print(f"[!] Error ensuring linux user {client_id}: {e}")
+
+    # 3. Write authorized_keys in /home/{client_id}/.ssh/
+    user_ssh_dir = f"/home/{client_id}/.ssh"
+    user_auth_keys = f"{user_ssh_dir}/authorized_keys"
+    try:
+        os.makedirs(user_ssh_dir, exist_ok=True)
+        existing = ""
+        if os.path.exists(user_auth_keys):
+            with open(user_auth_keys, "r", encoding="utf-8") as f:
+                existing = f.read()
+        if ssh_public_key not in existing:
+            with open(user_auth_keys, "a", encoding="utf-8") as f:
+                f.write(f"\n# Gateway Client: {client_id}\n{ssh_public_key}\n")
+        os.chmod(user_ssh_dir, 0o700)
+        os.chmod(user_auth_keys, 0o600)
+        subprocess.run(["chown", "-R", f"{client_id}:haclients", user_ssh_dir], capture_output=True, timeout=3)
+    except Exception as e:
+        print(f"[!] Error setting client authorized_keys: {e}")
+
+    # 4. Also add to /root/.ssh/authorized_keys
     auth_keys_path = "/root/.ssh/authorized_keys"
     try:
         os.makedirs(os.path.dirname(auth_keys_path), exist_ok=True)
@@ -525,11 +571,107 @@ def sync_client_ssh_user(client_id, ssh_public_key):
         if ssh_public_key not in existing:
             with open(auth_keys_path, "a", encoding="utf-8") as f:
                 f.write(f"\n# Gateway Client: {client_id}\n{ssh_public_key}\n")
-        REGISTERED_SSH_KEYS.add(ssh_public_key)
-        return True
     except Exception as e:
-        print(f"[!] Error syncing SSH key: {e}")
-        return False
+        print(f"[!] Error syncing root SSH key: {e}")
+
+    REGISTERED_SSH_KEYS.add(ssh_public_key)
+    return True
+
+def teardown_client_tunnel(client_id, dashboard_port=None, ssh_port=None, ssh_public_key=None):
+    """
+    Completely and permanently severs active reverse tunnels, kills listening ports,
+    deletes Linux user account, wipes SSH authorized_keys, and cleans Traefik dynamic configs.
+    """
+    if os.name == 'nt':
+        return True
+
+    print(f"[*] Teardown initiated for client '{client_id}' (Ports: {dashboard_port}, {ssh_port})")
+
+    # 1. Kill any active SSH sessions owned by this user
+    try:
+        subprocess.run(["pkill", "-9", "-u", client_id], capture_output=True, timeout=5)
+    except Exception as e:
+        print(f"[!] Error killing client user processes: {e}")
+
+    # 2. Force kill any lingering TCP listeners on the allocated reverse tunnel ports
+    for port in [dashboard_port, ssh_port]:
+        if port:
+            try:
+                p_int = int(port)
+                if p_int > 0:
+                    subprocess.run(["fuser", "-k", "-n", "tcp", str(p_int)], capture_output=True, timeout=5)
+            except Exception as e:
+                print(f"[!] Error killing port {port}: {e}")
+
+    # 3. Permanently remove the Linux user account and home directory
+    try:
+        subprocess.run(["userdel", "-r", "-f", client_id], capture_output=True, timeout=5)
+    except Exception as e:
+        print(f"[!] Error deleting Linux user {client_id}: {e}")
+
+    # 4. Remove SSH key from /root/.ssh/authorized_keys
+    auth_keys_path = "/root/.ssh/authorized_keys"
+    try:
+        if os.path.exists(auth_keys_path):
+            with open(auth_keys_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            new_lines = []
+            skip_next = False
+            for line in lines:
+                if f"Gateway Client: {client_id}" in line:
+                    skip_next = True
+                    continue
+                if skip_next:
+                    skip_next = False
+                    continue
+                if ssh_public_key and ssh_public_key in line:
+                    continue
+                new_lines.append(line)
+            with open(auth_keys_path, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+    except Exception as e:
+        print(f"[!] Error purging root authorized_keys: {e}")
+
+    if ssh_public_key:
+        REGISTERED_SSH_KEYS.discard(ssh_public_key)
+
+    # 5. Clean up Traefik dynamic YAML files if present
+    for tf_path in [
+        f"/srv/gavasah-cloud/dynamic/{client_id}.yaml",
+        f"/srv/gavasah-cloud/dynamic/{client_id}.yml",
+        f"/srv/ha-cloud/traefik/dynamic/{client_id}.yaml",
+        f"/srv/ha-cloud/traefik/dynamic/{client_id}.yml"
+    ]:
+        try:
+            if os.path.exists(tf_path):
+                os.remove(tf_path)
+                print(f"[+] Removed dynamic proxy config: {tf_path}")
+        except Exception:
+            pass
+
+    return True
+
+def purge_caddy_ingress(client_id):
+    """Completely and idempotently removes any reverse proxy block for client_id.gavasah.com and reloads Caddy."""
+    SYNCED_CADDY_ROUTES.pop(client_id, None)
+    domain = f"{client_id}.gavasah.com"
+    py_code = (
+        "import re\n"
+        "try:\n"
+        "    with open('/home/tejoram97/Caddyfile.unified', 'r', encoding='utf-8') as f:\n"
+        "        text = f.read()\n"
+        f"    domain = '{domain}'\n"
+        "    pattern = re.compile(r'(?:[ \\t]*#[^\\n]*\\n)*[ \\t]*' + re.escape(domain) + r'[ \\t]*\\{[\\s\\S]*?\\}\\n?', re.MULTILINE)\n"
+        "    text = pattern.sub('', text)\n"
+        "    text = re.sub(r'\\n{3,}', '\\n\\n', text).strip() + '\\n'\n"
+        "    with open('/home/tejoram97/Caddyfile.unified', 'w', encoding='utf-8') as f:\n"
+        "        f.write(text)\n"
+        "    print('PURGED_CADDY_SUCCESS')\n"
+        "except Exception as e:\n"
+        "    print('PURGE_ERROR:', e)\n"
+    )
+    reload_cmd = "docker exec trezoriq-caddy-1 caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || docker exec caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null"
+    return run_caddy_cmd(py_code, reload_cmd)
 
 def sync_caddy_ingress(client_id, dash_port, proto="http", enabled=True, force=False, wg_ip=None):
     cache_key = client_id
@@ -539,9 +681,8 @@ def sync_caddy_ingress(client_id, dash_port, proto="http", enabled=True, force=F
 
     domain = f"{client_id}.gavasah.com"
     if not enabled:
-        block = f"# Client: {client_id}\n{domain} {{\n    respond \"Remote Access Suspended by Dealer\" 403\n}}"
+        block = f"# Client: {client_id} (Suspended)\n{domain} {{\n    respond \"Remote Access Suspended by Dealer\" 403\n}}"
     elif wg_ip:
-        # High-performance WireGuard direct proxy (0 host TCP ports consumed)
         block = f"# Client: {client_id} (WireGuard Mesh)\n{domain} {{\n    reverse_proxy {wg_ip}:8123\n}}"
     elif proto == "https":
         block = f"# Client: {client_id}\n{domain} {{\n    reverse_proxy https://192.168.6.150:{dash_port} {{\n        transport http {{\n            tls_insecure_skip_verify\n        }}\n    }}\n}}"
@@ -549,21 +690,23 @@ def sync_caddy_ingress(client_id, dash_port, proto="http", enabled=True, force=F
         block = f"# Client: {client_id}\n{domain} {{\n    reverse_proxy 192.168.6.150:{dash_port}\n}}"
 
     py_code = (
-        "import re, subprocess\n"
-        "with open('/home/tejoram97/Caddyfile.unified', 'r') as f:\n"
-        "    text = f.read()\n\n"
-        f"domain = '{domain}'\n"
-        f"new_block = '''{block}'''.strip()\n\n"
-        "pattern = re.compile(r'(?:^[ \\t]*#[^\\n]*\\n)?^[ \\t]*' + re.escape(domain) + r'[ \\t]*\\{{[\\s\\S]*?(?=^(?:[a-zA-Z0-9_#\\(\\)]|\\Z))', re.MULTILINE)\n"
-        "m = pattern.search(text)\n"
-        "if m:\n"
-        "    updated = text[:m.start()] + new_block + '\\n\\n' + text[m.end():]\n"
-        "else:\n"
-        "    updated = text.rstrip() + '\\n\\n' + new_block + '\\n'\n\n"
-        "with open('/home/tejoram97/Caddyfile.unified', 'w') as f:\n"
-        "    f.write(updated)\n"
+        "import re\n"
+        "try:\n"
+        "    with open('/home/tejoram97/Caddyfile.unified', 'r', encoding='utf-8') as f:\n"
+        "        text = f.read()\n"
+        f"    domain = '{domain}'\n"
+        f"    new_block = '''{block}'''.strip()\n"
+        "    pattern = re.compile(r'(?:[ \\t]*#[^\\n]*\\n)*[ \\t]*' + re.escape(domain) + r'[ \\t]*\\{[\\s\\S]*?\\}\\n?', re.MULTILINE)\n"
+        "    text = pattern.sub('', text)\n"
+        "    text = text.rstrip() + '\\n\\n' + new_block + '\\n'\n"
+        "    text = re.sub(r'\\n{3,}', '\\n\\n', text).strip() + '\\n'\n"
+        "    with open('/home/tejoram97/Caddyfile.unified', 'w', encoding='utf-8') as f:\n"
+        "        f.write(text)\n"
+        "except Exception as e:\n"
+        "    print('SYNC_ERROR:', e)\n"
     )
-    ok = run_caddy_cmd(py_code, "docker exec caddy caddy reload --config /etc/caddy/Caddyfile")
+    reload_cmd = "docker exec trezoriq-caddy-1 caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || docker exec caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null"
+    ok = run_caddy_cmd(py_code, reload_cmd)
     if ok:
         SYNCED_CADDY_ROUTES[cache_key] = config_tuple
     return ok
@@ -6428,7 +6571,20 @@ PersistentKeepalive = 25
 
             client['remote_enabled'] = enabled
             save_clients_state(c_data)
-            sync_caddy_ingress(client_id, client.get('dashboard_port', 10001), 'http', enabled)
+
+            if not enabled:
+                # Terminate active reverse tunnel sessions immediately when suspended
+                if os.name != 'nt':
+                    try:
+                        subprocess.run(["pkill", "-9", "-u", client_id], capture_output=True, timeout=3)
+                        d_port = client.get('dashboard_port')
+                        if d_port:
+                            subprocess.run(["fuser", "-k", "-n", "tcp", str(d_port)], capture_output=True, timeout=3)
+                    except Exception:
+                        pass
+                sync_caddy_ingress(client_id, client.get('dashboard_port', 10001), 'http', False, force=True)
+            else:
+                sync_caddy_ingress(client_id, client.get('dashboard_port', 10001), 'http', True, force=True, wg_ip=client.get('wg_ip'))
 
             append_client_log(
                 client_id, 'WARNING' if not enabled else 'INFO', 'INGRESS_TOGGLE',
@@ -6465,15 +6621,23 @@ PersistentKeepalive = 25
                 self.send_json(403, {'error': 'Access denied: You can only delete clients assigned to you'})
                 return
 
-            # Active client teardown: Immediately remove WireGuard tunnel peer from kernel interface
+            # 1. Immediately remove WireGuard tunnel peer from kernel interface
             wg_pub = client.get('wg_pubkey')
             if wg_pub:
                 remove_wireguard_peer(wg_pub)
 
-            # Invalidate ingress routing
-            sync_caddy_ingress(client_id, 0, 'http', False)
+            # 2. Terminate reverse SSH tunnels, kill TCP listening ports, delete Linux user & authorized_keys
+            teardown_client_tunnel(
+                client_id=client_id,
+                dashboard_port=client.get('dashboard_port'),
+                ssh_port=client.get('ssh_port'),
+                ssh_public_key=client.get('ssh_public_key') or client.get('ssh_key')
+            )
 
-            # Purge client record from persistent database
+            # 3. Completely purge reverse-proxy ingress routes from Caddy and reload
+            purge_caddy_ingress(client_id)
+
+            # 4. Purge client record from persistent database
             del c_data[client_id]
             save_clients_state(c_data)
 
@@ -6484,7 +6648,7 @@ PersistentKeepalive = 25
 
             self.send_json(200, {
                 'ok': True,
-                'message': f"Client site '{client.get('name', client_id)}' deleted successfully (active session terminated)"
+                'message': f"Client site '{client.get('name', client_id)}' deleted successfully (all tunnels and ingress permanently severed)"
             })
             return
 
@@ -6542,6 +6706,8 @@ PersistentKeepalive = 25
                 client['network'] = body['network']
             if 'knx_status' in body:
                 client['knx_status'] = body['knx_status']
+            if 'ssh_public_key' in body and body['ssh_public_key']:
+                sync_client_ssh_user(client_id, body['ssh_public_key'])
 
             save_clients_state(c_data)
             self.send_json(200, {'ok': True, 'server_time': now, 'remote_enabled': client.get('remote_enabled', True)})
