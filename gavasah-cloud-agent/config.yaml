@@ -1,5 +1,5 @@
 name: "Gavasah Cloud Agent"
-version: "1.0.4"
+version: "1.0.5"
 slug: "gavasah-cloud-agent"
 description: "AutoSSH Reverse Tunnel, Telemetry Heartbeat, RAUC A/B Slot Health, and KNXnet/IP Remote Fleet Relay for Gavasah Cloud Hub."
 url: "https://gavasah.com"
