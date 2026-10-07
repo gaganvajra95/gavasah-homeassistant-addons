@@ -2837,12 +2837,6 @@ HTML_PAGE = """<!DOCTYPE html>
                 </div>
 
                 <div class="header-actions">
-                    <div class="ssl-badge">
-                        <div class="ssl-pulse"></div>
-                        <span>SSL: Autonomous ACME Active</span>
-                    </div>
-                    <button class="btn-sm" onclick="triggerSslCheck()">🔄 Verify SSL</button>
-
                     <!-- Quick buttons visible for Integrator users -->
                     <div id="integrator-header-actions" style="display: none; align-items: center; gap: 10px;">
                         <button class="btn-sm" onclick="openIntegratorPasswordModal()">🔑 Change Password</button>
@@ -4627,7 +4621,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 const knx = c.knx_status || {};
                 const isRecovery = sys.is_recovery_mode || false;
                 const slot = sys.boot_slot || 'A';
-                const remoteEnabled = c.remote_enabled !== false;
+                const remoteEnabled = Boolean(c.remote_enabled) && c.remote_enabled !== 0 && c.remote_enabled !== '0';
 
                 // Dealer cell (only for manufacturer)
                 const dealerCell = currentUser.role === 'manufacturer' ? `
@@ -5126,7 +5120,7 @@ auto_update_external_url: true`;
             }
 
             const remoteToggle = document.getElementById('edit-remote-toggle');
-            const isRemoteOn = client.remote_enabled !== false;
+            const isRemoteOn = Boolean(client.remote_enabled) && client.remote_enabled !== 0 && client.remote_enabled !== '0';
             if (remoteToggle) remoteToggle.checked = isRemoteOn;
             updateEditRemoteStatusText(isRemoteOn);
 
@@ -5806,6 +5800,43 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             self.send_header('Cache-Control', 'no-cache')
             self.end_headers()
             self.wfile.write(body)
+            return
+
+        # 1b. Caddy On-Demand TLS Verification Endpoint
+        elif parsed.path == '/api/caddy-ask':
+            qs = parse_qs(parsed.query)
+            domain = qs.get('domain', [''])[0].strip().lower()
+            if not domain:
+                self.send_response(400)
+                self.end_headers()
+                return
+
+            if domain in ['dealer.gavasah.com', 'gavasah.com', 'www.gavasah.com']:
+                self.send_response(200)
+                self.end_headers()
+                return
+
+            if domain.endswith('.gavasah.com'):
+                slug = domain[:-len('.gavasah.com')]
+                c_data = load_clients_state()
+                if slug in c_data or any(c.get('domain') == domain for c in c_data.values()):
+                    self.send_response(200)
+                    self.end_headers()
+                    return
+
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        # 1c. Caddy Dynamic Domain List for Host Ingress Sync
+        elif parsed.path == '/api/caddy-domains':
+            c_data = load_clients_state()
+            domains = []
+            for cid, c in c_data.items():
+                dom = c.get('domain')
+                d = dom if dom and '.' in dom else f"{cid}.gavasah.com"
+                domains.append(d)
+            self.send_json(200, domains)
             return
 
         # 2. Authenticated Session Info
@@ -7204,6 +7235,14 @@ PersistentKeepalive = 25
             if 'remote_enabled' in body:
                 client['remote_enabled'] = bool(body['remote_enabled'])
                 sync_caddy_ingress(client_id, client.get('dashboard_port', 10001), 'http', client['remote_enabled'], force=True, wg_ip=client.get('wg_ip'))
+                if not client['remote_enabled'] and os.name != 'nt':
+                    try:
+                        subprocess.run(["pkill", "-9", "-u", client_id], capture_output=True, timeout=3)
+                        d_port = client.get('dashboard_port')
+                        if d_port:
+                            subprocess.run(["fuser", "-k", "-n", "tcp", str(d_port)], capture_output=True, timeout=3)
+                    except Exception:
+                        pass
 
             save_clients_state(c_data)
             append_client_log(client_id, 'INFO', 'CONFIG_UPDATE', f"Configuration updated by {user['name']}.")
