@@ -1,6 +1,7 @@
 [Unit]
 Description=GAVASAH Dealer Fleet Cloud Hub Portal
-After=network.target
+After=network.target network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -8,7 +9,15 @@ User=root
 WorkingDirectory=/srv/gavasah-cloud
 ExecStart=/usr/bin/python3 /srv/gavasah-cloud/dealer_server.py
 Restart=always
-RestartSec=5
+RestartSec=3
+
+# Production Scale Limits (16 GB RAM & 3,000+ Concurrent SSH Tunnels)
+LimitNOFILE=1048576
+LimitNPROC=524288
+TasksMax=infinity
+MemoryMax=14G
+MemoryHigh=12G
+TimeoutStopSec=15
 
 [Install]
 WantedBy=multi-user.target

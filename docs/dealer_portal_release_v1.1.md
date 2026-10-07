@@ -1,45 +1,80 @@
-# GAVASAH Dealer Fleet Portal & Cloud Hub v1.1.0 Release Notes
+# GAVASAH Cloud Multi-Tenant Architecture & Dealer Portal v1.1.0
 
-**Deployment Target:** CT 150 (`192.168.6.150:3000`) & CT 305 (`192.168.6.170:443`)  
-**Public Access:** [`https://dealer.gavasah.com`](https://dealer.gavasah.com)  
-**Edge Proxy:** Caddy ACME ARI (RFC 9444 / RFC 8555)  
-**Date:** October 2026
+## 1. Executive Summary & Capabilities
 
----
-
-## 1. Autonomous SSL / TLS Lifecycle & Zero-Touch Renewal
-- **Caddy ACME ARI Engine:** Certificates for `gavasah.com`, `dealer.gavasah.com`, and dynamic subdomains (`*.gavasah.com`) are managed directly by Caddy on CT 305 with Let's Encrypt CA.
-- **Permanent Autonomous Renewal:** Certificates automatically renew 30 days prior to expiration without manual interaction via RFC 9444 Automated Renewal Information (ARI).
-- **Automated Site Provisioning:** Onboarding a new client site dynamically inserts reverse proxy ingress routing into `Caddyfile.unified` and triggers instant certificate provisioning.
-- **Complete SSL Purge Engine (`POST /api/delete_site`):** Deleting a client site permanently removes its ingress rule, purges all cryptographic certificates and private keys from `/data/caddy/certificates/*/{domain}`, cleans the OCSP cache, and reloads the Caddy engine.
+`dealer.gavasah.com` has been transformed from an open dashboard into a high-scale, secure, multi-tenant portal serving two distinct roles:
+1. **Manufacturer (Master Owner)**: Complete centralized command and control over all partner dealers, enterprise fleet distribution, SSL certificates, and system security credentials.
+2. **Authorized Dealers**: Scoped, isolated tenant dashboards with identical operational control over their assigned client gateways (onboarding, telemetry, remote access toggling, editing, diagnostics, and decommissioning).
 
 ---
 
-## 2. Client Editing & Authentication Secret (`auth_key`)
-- **Dual-Placement Edit Buttons:**
-  - **Column 1 (`Client Site / Slug`):** `✏️ Edit` button positioned directly next to the client name, ensuring instant access across mobile and narrow screens.
-  - **Actions Column:** Dedicated `✏️ Edit` button alongside Dashboard, SSH, and Delete.
-- **Client Authentication Secret Management:**
-  - Full in-place editing of the `auth_key`.
-  - Password masking with an unmask toggle (`👁️` / `🙈`).
-  - Cryptographically secure random secret generator (`🎲`, format: `gav_sec_<hex16>`).
-  - One-click secret clipboard copy (`📋`).
-- **Live Add-on Configuration Preview:** Generates the exact YAML options snippet for Home Assistant OS `gavasah-cloud-agent/config.yaml` with a single-click copy button (`📋 Copy Config`).
-- **Sticky Footer & Scrollable Body:** Pinned sticky footer locks `Cancel` and `💾 Save Changes` so the action button is always visible on all viewport heights (no scrolling required to save).
+## 2. Default Initial Credentials
+
+| Role | Username | Initial Password | Scope / Permissions |
+| :--- | :--- | :--- | :--- |
+| **Manufacturer (Owner)** | `admin` | `gavasah2026!` | Full global control, dealer directory CRUD, fleet overview, account credential settings |
+| **Sample Dealer 1** | `apex_dealer` | `apex123!` | Scoped to Apex Smart Automation client devices |
+| **Sample Dealer 2** | `vajra_knx` | `vajra123!` | Scoped to Vajra KNX Solutions client devices |
+
+> [!IMPORTANT]
+> The manufacturer should log in upon first deployment and update their master credentials in the **Account Settings** tab. State is securely persisted to `/srv/gavasah-cloud/auth_state.json`.
 
 ---
 
-## 3. High-Precision Heartbeat Telemetry & Outage Diagnostics
-- **Active Gateways:** Displays `🟢 ONLINE` pulse badge, relative age (e.g. `⚡ Pulse: 14s ago`), and last signal timestamp.
-- **Lost Heartbeat Gateways (>75s silence):** Displays `🔴 LOST HEARTBEAT` badge with:
-  - **Lost Time:** Exact time of signal loss (`HH:MM:SS AM/PM`).
-  - **Lost Date:** Exact calendar date (`DD Mon YYYY`).
-  - **Elapsed Duration:** Relative downtime age (`e.g., 8h 52m ago`).
-- **Edit Modal Outage Banner:** Top status banner dynamically displays real-time connection state or exact lost date and time.
-- **Metric Cards:** Real-time counters for **Online Gateways** (`X / Total`) and **Lost Heartbeats**.
+## 3. UI Navigation & Interface Architecture
+
+### Manufacturer (Owner) Console
+Features a sleek left-hand navigation sidebar with five dedicated views:
+- **📊 Overview & Summary**: High-level telemetry KPI cards displaying Total Registered Dealers, Total Active Clients, Online Gateways, and Lost Heartbeats, alongside a breakdown list detailing each dealer's client count and uptime percentage.
+- **👥 Dealer Directory**: Complete management of partner dealers. Add new dealers (with company name, contact info, username, password), edit existing dealer credentials, or delete dealers (safely reassigning clients directly to the manufacturer).
+- **🌐 Client Fleet**: Unified table showing all client gateways across all dealers with a dedicated **Dealer / Partner** badge column, real-time pulse indicator, RAUC slot status, remote ingress toggles, client edit modal, and diagnostic logs modal.
+- **🔒 Edge SSL Certificates**: Live ACME RFC 9444 / RFC 8555 zero-touch Let's Encrypt status monitor.
+- **⚙️ Account Settings**: Self-service change form for manufacturer username and master password.
+
+### Dealer Portal
+When a dealer logs in, the left sidebar is automatically hidden and the interface dynamically adapts into a focused dealer workstation:
+- Displays only the clients assigned to that dealer.
+- Includes client onboarding modal with automatic dealer ID association.
+- Toggle switch for remote client ingress (instantly updates Caddy reverse proxy on CT 305).
+- Full client editing, deletion, and terminal diagnostics.
+- Top-right dealer account menu with option to change their own password or log out.
 
 ---
 
-## 4. Responsive Viewport Architecture
-- **Table Container (`.table-wrap`):** Configured with `overflow-x: auto` and custom sleek scrollbars, preventing horizontal clipping on standard laptop screens (~1042px width).
-- **Sticky Actions Column:** Rightmost actions column (`🌐 Dash`, `💻 SSH`, `✏️ Edit`, `🗑️ Delete`) is pinned with `position: sticky; right: 0;` and a drop shadow, staying locked in place while scrolling through hardware telemetry.
+## 4. API Endpoints Specification
+
+### Authentication & Self-Management
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/me` | Public | Returns current session status and user profile |
+| `POST` | `/api/login` | Public | Authenticates credentials, issues 7-day session token, sets `gavasah_session` cookie |
+| `POST` | `/api/logout` | Authenticated | Clears current session token |
+| `POST` | `/api/change_owner_credentials` | Manufacturer | Updates master manufacturer username and password |
+| `POST` | `/api/change_dealer_password` | Dealer | Allows dealer to update their own account password |
+
+### Dealer Management (Manufacturer Only)
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/dealers` | Returns directory of all dealers with client counts and uptime metrics |
+| `POST` | `/api/create_dealer` | Registers a new dealer account with name, username, password, contact details |
+| `POST` | `/api/update_dealer` | Modifies dealer details or resets dealer password |
+| `POST` | `/api/delete_dealer` | Removes dealer and reassigns clients to manufacturer direct |
+
+### Client Fleet & Diagnostics
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/fleet` | Authenticated | Returns clients (scoped to dealer if dealer; all clients if manufacturer) |
+| `POST` | `/api/onboard` | Authenticated | Provisions a new client gateway with ports and AutoSSH Linux user |
+| `POST` | `/api/update_client` | Authenticated | Updates client name, auth secret, KNX IP/port (or dealer assignment) |
+| `POST` | `/api/toggle_remote` | Authenticated | Activates or suspends remote ingress in Caddy |
+| `POST` | `/api/delete_site` | Authenticated | Decommissions site, purges Caddy blocks and SSL certificates |
+| `GET` | `/api/logs` | Authenticated | Fetches diagnostic event log stream for a client site |
+| `POST` | `/api/heartbeat` | Gateway Client | Uninterrupted hardware telemetry sync authenticated via `auth_key` |
+
+---
+
+## 5. Security & High-Scale Reliability Hardening
+- **Cryptographic Protection**: SHA-256 salted password hashing (`secrets.token_hex(16)`) and constant-time string comparison (`secrets.compare_digest`).
+- **Telemetry Separation**: Hardware gateway heartbeats (`POST /api/heartbeat`) use `auth_secret` and do not require browser cookies or session state.
+- **Atomic Persistence**: Atomic write via temporary files (`.tmp.<pid>`) with `threading.RLock()` protects `clients_state.json` and `auth_state.json` against write corruption under concurrent multi-tenant loads.
+- **Cross-Platform Resilience**: Linux subprocesses (`useradd`, `userdel`, `groupadd`) and Caddy SSH reloads gracefully detect OS environment, allowing seamless testing on Windows and native high-speed execution on Proxmox LXC.

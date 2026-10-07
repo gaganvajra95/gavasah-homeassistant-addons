@@ -68,9 +68,16 @@ We deploy a dedicated, high-performance, isolated **Debian 12 LXC Container** on
 | :--- | :--- | :--- |
 | **Container ID / Hostname** | `CT 150` / `gavasah-cloud-hub` | Dedicated multi-tenant ingress & tunnel controller |
 | **Host Node** | `primordial-1` (or `primordial-3`) | Dell / Gigabyte hardware on LAN |
-| **Resources** | 2 vCPU, 2048 MB RAM, 32 GB ZFS Disk | Ultra-lightweight, handles 200+ concurrent client tunnels |
+| **Resources** | **8 vCPU, 16384 MB (16 GB) RAM, 64 GB NVMe/ZFS** | Enterprise tier: handles 3,000+ concurrent active client tunnels without OOM risk |
 | **Static IP** | `192.168.1.150/24` (or `192.168.6.150`) | Dedicated IP behind Omada ER605 |
-| **Installed Daemons** | Traefik v3, OpenSSH (hardened), WireGuard, Docker (optional) | Core services |
+| **Installed Daemons** | Caddy / Traefik v3, OpenSSH (hardened), WireGuard, Dealer Hub Python Engine | Core services |
+
+> [!TIP]
+> **Proxmox Command to Apply 16 GB RAM Instantly:**
+> ```bash
+> pct set 150 -cores 8 -memory 16384 -swap 4096
+> pct reboot 150
+> ```
 
 ---
 
