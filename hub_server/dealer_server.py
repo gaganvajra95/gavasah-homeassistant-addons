@@ -1,4 +1,4 @@
-import os, json, time, datetime, subprocess, base64, re, secrets, threading, hashlib
+import os, sys, json, time, datetime, subprocess, base64, re, secrets, threading, hashlib, sqlite3
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -14,15 +14,17 @@ os.makedirs(BASE_DIR, exist_ok=True)
 STATE_FILE = os.environ.get('STATE_FILE', os.path.join(BASE_DIR, 'clients_state.json'))
 AUTH_FILE = os.environ.get('AUTH_FILE', os.path.join(BASE_DIR, 'auth_state.json'))
 LOGS_DIR = os.environ.get('LOGS_DIR', os.path.join(BASE_DIR, 'logs'))
+DB_FILE = os.environ.get('DB_FILE', os.path.join(BASE_DIR, 'fleet.db'))
 CADDY_HOST = os.environ.get('CADDY_HOST', '192.168.6.170')
 PORT = int(os.environ.get('PORT', 3000))
 
-# Concurrency & file locking to prevent corruption under 1000+ client scale
+# Thread concurrency locks
 STATE_LOCK = threading.RLock()
 AUTH_LOCK = threading.RLock()
 LOGS_LOCK = threading.RLock()
+DB_LOCK = threading.RLock()
 
-# In-memory synchronization caches (eliminates redundant SSH & subshell storms)
+# In-memory synchronization caches
 REGISTERED_SSH_KEYS = set()
 SYNCED_CADDY_ROUTES = {}
 
@@ -39,52 +41,316 @@ def verify_password(password, salt, expected_hash):
     _, test_hash = hash_password(password, salt)
     return secrets.compare_digest(test_hash, expected_hash)
 
+# ==============================================================================
+# SQLite with WAL Mode (Write-Ahead Logging) Data Access Layer
+# ==============================================================================
+def get_db_connection():
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA journal_mode = WAL;')
+    conn.execute('PRAGMA synchronous = NORMAL;')
+    conn.execute('PRAGMA busy_timeout = 5000;')
+    return conn
+
+def init_sqlite_database():
+    with DB_LOCK:
+        conn = get_db_connection()
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS owner (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            name TEXT NOT NULL,
+            role TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS dealers (
+            id TEXT PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            password_plain TEXT NOT NULL,
+            email TEXT,
+            phone TEXT,
+            role TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            salt TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS integrators (
+            id TEXT PRIMARY KEY,
+            dealer_id TEXT NOT NULL,
+            dealer_name TEXT NOT NULL,
+            username TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            password_plain TEXT NOT NULL,
+            email TEXT,
+            phone TEXT,
+            role TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            salt TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS clients (
+            client_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            dealer_id TEXT NOT NULL,
+            dealer_name TEXT NOT NULL,
+            integrator_id TEXT,
+            integrator_name TEXT,
+            domain TEXT NOT NULL,
+            auth_secret TEXT NOT NULL,
+            dashboard_port INTEGER UNIQUE NOT NULL,
+            ssh_port INTEGER UNIQUE NOT NULL,
+            knx_ip TEXT NOT NULL,
+            knx_port INTEGER NOT NULL,
+            last_heartbeat INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            remote_enabled INTEGER NOT NULL DEFAULT 1,
+            system_json TEXT,
+            network_json TEXT,
+            knx_json TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS client_logs (
+            id TEXT PRIMARY KEY,
+            client_id TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
+            level TEXT NOT NULL,
+            type TEXT NOT NULL,
+            message TEXT NOT NULL,
+            source TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_clients_dealer ON clients(dealer_id);
+        CREATE INDEX IF NOT EXISTS idx_clients_integrator ON clients(integrator_id);
+        CREATE INDEX IF NOT EXISTS idx_logs_client_time ON client_logs(client_id, timestamp DESC);
+        """)
+
+        # Migration logic if database is newly initialized
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) as c FROM owner")
+        if cur.fetchone()['c'] == 0:
+            print("[*] Initializing SQLite database state...")
+            if os.path.exists(AUTH_FILE):
+                try:
+                    with open(AUTH_FILE, 'r', encoding='utf-8') as f:
+                        auth_data = json.load(f)
+                    ow = auth_data.get('owner', {})
+                    if ow:
+                        conn.execute("INSERT OR REPLACE INTO owner VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (ow.get('id', 'owner_master'), ow.get('username', 'admin'), ow.get('name', 'Master Manufacturer'),
+                             ow.get('role', 'manufacturer'), ow.get('salt', ''), ow.get('password_hash', ''), ow.get('created_at', int(time.time())))
+                        )
+                    for did, d in auth_data.get('dealers', {}).items():
+                        conn.execute("INSERT OR REPLACE INTO dealers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (d.get('id', did), d.get('username', ''), d.get('name', ''), d.get('password_plain', 'apex123!'),
+                             d.get('email', ''), d.get('phone', ''), d.get('role', 'dealer'), d.get('status', 'active'),
+                             d.get('salt', ''), d.get('password_hash', ''), d.get('created_at', int(time.time())))
+                        )
+                    for iid, it in auth_data.get('integrators', {}).items():
+                        conn.execute("INSERT OR REPLACE INTO integrators VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (it.get('id', iid), it.get('dealer_id', ''), it.get('dealer_name', ''), it.get('username', ''),
+                             it.get('name', ''), it.get('password_plain', 'rajesh123!'), it.get('email', ''), it.get('phone', ''),
+                             it.get('role', 'integrator'), it.get('status', 'active'), it.get('salt', ''), it.get('password_hash', ''),
+                             it.get('created_at', int(time.time())))
+                        )
+                except Exception as e:
+                    print(f"[!] Migration error: {e}")
+            else:
+                owner_salt, owner_hash = hash_password("gavasah2026!")
+                conn.execute("INSERT INTO owner VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    ('owner_master', 'admin', 'Master Manufacturer', 'manufacturer', owner_salt, owner_hash, int(time.time()))
+                )
+                d1_salt, d1_hash = hash_password("apex123!")
+                conn.execute("INSERT INTO dealers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ('dealer_apex', 'apex_dealer', 'Apex Smart Automation', 'apex123!', 'contact@apexsmart.in', '+91 98490 12345', 'dealer', 'active', d1_salt, d1_hash, int(time.time()) - 86400*30)
+                )
+                d2_salt, d2_hash = hash_password("vajra123!")
+                conn.execute("INSERT INTO dealers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ('dealer_vajra', 'vajra_knx', 'Vajra KNX Solutions', 'vajra123!', 'sales@vajraknx.com', '+91 99887 76655', 'dealer', 'active', d2_salt, d2_hash, int(time.time()) - 86400*15)
+                )
+                i1_salt, i1_hash = hash_password("rajesh123!")
+                conn.execute("INSERT INTO integrators VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ('int_apex_rajesh', 'dealer_apex', 'Apex Smart Automation', 'rajesh_knx', 'Rajesh Kumar (Lead Integrator)', 'rajesh123!', 'rajesh@apexsmart.in', '+91 98450 11223', 'integrator', 'active', i1_salt, i1_hash, int(time.time()) - 86400*20)
+                )
+                i2_salt, i2_hash = hash_password("vikram123!")
+                conn.execute("INSERT INTO integrators VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ('int_apex_vikram', 'dealer_apex', 'Apex Smart Automation', 'vikram_knx', 'Vikram Patel (Field Tech)', 'vikram123!', 'vikram@apexsmart.in', '+91 98450 33445', 'integrator', 'active', i2_salt, i2_hash, int(time.time()) - 86400*10)
+                )
+                i3_salt, i3_hash = hash_password("suresh123!")
+                conn.execute("INSERT INTO integrators VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ('int_vajra_suresh', 'dealer_vajra', 'Vajra KNX Solutions', 'suresh_knx', 'Suresh Reddy (Systems Eng)', 'suresh123!', 'suresh@vajraknx.com', '+91 97400 55667', 'integrator', 'active', i3_salt, i3_hash, int(time.time()) - 86400*12)
+                )
+
+            if os.path.exists(STATE_FILE):
+                try:
+                    with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                        c_data = json.load(f)
+                    for cid, c in c_data.items():
+                        conn.execute("INSERT OR REPLACE INTO clients VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (c.get('client_id', cid), c.get('name', cid), c.get('dealer_id', 'dealer_apex'), c.get('dealer_name', 'Apex Smart Automation'),
+                             c.get('integrator_id', 'int_apex_rajesh'), c.get('integrator_name', 'Rajesh Kumar (Lead Integrator)'), c.get('domain', f"{cid}.gavasah.com"),
+                             c.get('auth_secret', ''), int(c.get('dashboard_port', 10001)), int(c.get('ssh_port', 22001)),
+                             c.get('knx_ip', '192.168.1.111'), int(c.get('knx_port', 3671)), int(c.get('last_heartbeat', int(time.time()))),
+                             c.get('status', 'online'), 1 if c.get('remote_enabled', True) else 0,
+                             json.dumps(c.get('system', {})), json.dumps(c.get('network', {})), json.dumps(c.get('knx_status', {})))
+                        )
+                except Exception as e:
+                    print(f"[!] Clients migration error: {e}")
+            else:
+                conn.execute("INSERT OR REPLACE INTO clients VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ('sharma-villa', 'Sharma Residence (Jubilee Hills)', 'dealer_apex', 'Apex Smart Automation',
+                     'int_apex_rajesh', 'Rajesh Kumar (Lead Integrator)', 'sharma-villa.gavasah.com',
+                     '', 10001, 22001,
+                     '192.168.1.111', 3671, int(time.time()),
+                     'online', 1,
+                     json.dumps({"haos_version": "13.2", "core_version": "2026.9.3", "cpu_percent": 12.4, "memory_percent": 41.2, "disk_free_gb": 182.4}),
+                     json.dumps({"local_ipv4": "192.168.1.105", "gateway": "192.168.1.1", "mac_address": "E4:5F:01:42:33:9A"}),
+                     json.dumps({"state": "connected", "telegrams_rx": 4120, "telegrams_tx": 305}))
+                )
+
+            conn.commit()
+            print("[OK] SQLite WAL database synchronized successfully!")
+        conn.close()
+
+init_sqlite_database()
+
+# ==============================================================================
+# Compatibility Wrappers for Auth and Client State (Backed by SQLite WAL)
+# ==============================================================================
 def load_auth_state():
-    """Thread-safe load of authentication and session state."""
-    with AUTH_LOCK:
-        if os.path.exists(AUTH_FILE):
-            try:
-                with open(AUTH_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"[!] Error loading {AUTH_FILE}: {e}")
-        return {}
+    with DB_LOCK:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM owner LIMIT 1")
+        row = cur.fetchone()
+        owner = dict(row) if row else {}
+        cur.execute("SELECT * FROM dealers")
+        dealers = {r['id']: dict(r) for r in cur.fetchall()}
+        cur.execute("SELECT * FROM integrators")
+        integrators = {r['id']: dict(r) for r in cur.fetchall()}
+        cur.execute("SELECT * FROM sessions")
+        sessions = {r['token']: dict(r) for r in cur.fetchall()}
+        conn.close()
+        return {
+            'owner': owner,
+            'dealers': dealers,
+            'integrators': integrators,
+            'sessions': sessions
+        }
 
 def save_auth_state(data):
-    """Thread-safe atomic write of authentication state."""
-    with AUTH_LOCK:
-        tmp_file = f"{AUTH_FILE}.tmp.{os.getpid()}"
+    with DB_LOCK:
+        conn = get_db_connection()
         try:
-            with open(tmp_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
-            os.replace(tmp_file, AUTH_FILE)
+            with conn:
+                ow = data.get('owner', {})
+                if ow:
+                    conn.execute("INSERT OR REPLACE INTO owner VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (ow.get('id', 'owner_master'), ow.get('username', 'admin'), ow.get('name', 'Master Manufacturer'),
+                         ow.get('role', 'manufacturer'), ow.get('salt', ''), ow.get('password_hash', ''), ow.get('created_at', int(time.time())))
+                    )
+                existing_dealer_ids = {r['id'] for r in conn.execute("SELECT id FROM dealers").fetchall()}
+                current_dealer_ids = set(data.get('dealers', {}).keys())
+                for did in existing_dealer_ids - current_dealer_ids:
+                    conn.execute("DELETE FROM dealers WHERE id = ?", (did,))
+
+                for did, d in data.get('dealers', {}).items():
+                    conn.execute("INSERT OR REPLACE INTO dealers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (d.get('id', did), d.get('username', ''), d.get('name', ''), d.get('password_plain', ''),
+                         d.get('email', ''), d.get('phone', ''), d.get('role', 'dealer'), d.get('status', 'active'),
+                         d.get('salt', ''), d.get('password_hash', ''), d.get('created_at', int(time.time())))
+                    )
+
+                existing_int_ids = {r['id'] for r in conn.execute("SELECT id FROM integrators").fetchall()}
+                current_int_ids = set(data.get('integrators', {}).keys())
+                for iid in existing_int_ids - current_int_ids:
+                    conn.execute("DELETE FROM integrators WHERE id = ?", (iid,))
+
+                for iid, it in data.get('integrators', {}).items():
+                    conn.execute("INSERT OR REPLACE INTO integrators VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (it.get('id', iid), it.get('dealer_id', ''), it.get('dealer_name', ''), it.get('username', ''),
+                         it.get('name', ''), it.get('password_plain', ''), it.get('email', ''), it.get('phone', ''),
+                         it.get('role', 'integrator'), it.get('status', 'active'), it.get('salt', ''), it.get('password_hash', ''),
+                         it.get('created_at', int(time.time())))
+                    )
+
+                existing_tokens = {r['token'] for r in conn.execute("SELECT token FROM sessions").fetchall()}
+                current_tokens = set(data.get('sessions', {}).keys())
+                for tok in existing_tokens - current_tokens:
+                    conn.execute("DELETE FROM sessions WHERE token = ?", (tok,))
+
+                for tok, s in data.get('sessions', {}).items():
+                    conn.execute("INSERT OR REPLACE INTO sessions VALUES (?, ?, ?, ?, ?)",
+                        (tok, s.get('user_id', ''), s.get('role', ''), s.get('created_at', int(time.time())), s.get('expires_at', int(time.time()) + 86400*7))
+                    )
+            conn.close()
             return True
         except Exception as e:
-            print(f"[!] Error atomically saving {AUTH_FILE}: {e}")
+            print(f"[!] Error saving auth state in SQLite: {e}")
+            conn.close()
             return False
 
 def load_clients_state():
-    """Thread-safe load of client fleet state dictionary."""
-    with STATE_LOCK:
-        if os.path.exists(STATE_FILE):
-            try:
-                with open(STATE_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"[!] Error loading {STATE_FILE}: {e}")
-        return {}
+    with DB_LOCK:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM clients")
+        res = {}
+        for r in cur.fetchall():
+            c = dict(r)
+            c['remote_enabled'] = bool(c.get('remote_enabled', 1))
+            try: c['system'] = json.loads(c.get('system_json') or '{}')
+            except: c['system'] = {}
+            try: c['network'] = json.loads(c.get('network_json') or '{}')
+            except: c['network'] = {}
+            try: c['knx_status'] = json.loads(c.get('knx_json') or '{}')
+            except: c['knx_status'] = {}
+            res[c['client_id']] = c
+        conn.close()
+        return res
 
 def save_clients_state(data):
-    """Thread-safe atomic write using temporary file and atomic rename."""
-    with STATE_LOCK:
-        tmp_file = f"{STATE_FILE}.tmp.{os.getpid()}"
+    with DB_LOCK:
+        conn = get_db_connection()
         try:
-            with open(tmp_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
-            os.replace(tmp_file, STATE_FILE)
+            with conn:
+                existing_cids = {r['client_id'] for r in conn.execute("SELECT client_id FROM clients").fetchall()}
+                current_cids = set(data.keys())
+                for cid in existing_cids - current_cids:
+                    conn.execute("DELETE FROM clients WHERE client_id = ?", (cid,))
+
+                for cid, c in data.items():
+                    sys_json = json.dumps(c.get('system', {}))
+                    net_json = json.dumps(c.get('network', {}))
+                    knx_json = json.dumps(c.get('knx_status', {}))
+                    conn.execute("INSERT OR REPLACE INTO clients VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (c.get('client_id', cid), c.get('name', cid), c.get('dealer_id', 'owner_master'), c.get('dealer_name', 'Master Manufacturer (Direct)'),
+                         c.get('integrator_id'), c.get('integrator_name', 'Direct Dealer Supervision'), c.get('domain', f"{cid}.gavasah.com"),
+                         c.get('auth_secret', ''), int(c.get('dashboard_port', 10001)), int(c.get('ssh_port', 22001)),
+                         c.get('knx_ip', '192.168.1.100'), int(c.get('knx_port', 3671)), int(c.get('last_heartbeat', int(time.time()))),
+                         c.get('status', 'online'), 1 if c.get('remote_enabled', True) else 0,
+                         sys_json, net_json, knx_json)
+                    )
+            conn.close()
             return True
         except Exception as e:
-            print(f"[!] Error atomically saving {STATE_FILE}: {e}")
+            print(f"[!] Error saving clients state in SQLite: {e}")
+            conn.close()
             return False
 
 # ==============================================================================
@@ -98,75 +364,36 @@ def run_caddy_cmd(remote_py, extra_bash=""):
     if extra_bash:
         cmd += f" && {extra_bash}"
     ssh_args = [
-        "ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "ConnectTimeout=3", f"root@{CADDY_HOST}", cmd
+        "ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=3",
+        "-i", "/root/.ssh/id_rsa", f"root@{CADDY_HOST}", cmd
     ]
     try:
         res = subprocess.run(ssh_args, capture_output=True, text=True, timeout=5)
-        if res.returncode != 0:
-            print(f"[!] run_caddy_cmd failed (code {res.returncode}): {res.stderr}")
-            return False
-        return True
+        return res.returncode == 0
     except Exception as e:
-        print(f"[!] run_caddy_cmd connection warning: {e}")
+        print(f"[!] Caddy update error: {e}")
         return False
 
 def sync_client_ssh_user(client_id, ssh_public_key):
-    """Ensure Linux user exists on hub and SSH public key is in authorized_keys (cached)."""
-    if not client_id or not ssh_public_key:
-        return False, "Missing client_id or ssh_public_key"
-    
-    client_id = client_id.strip().lower()
-    if not re.match(r'^[a-z0-9_-]+$', client_id):
-        return False, f"Invalid username: {client_id}"
-
-    ssh_public_key = ssh_public_key.strip()
-    if not (ssh_public_key.startswith("ssh-") or ssh_public_key.startswith("ecdsa-")):
-        return False, "Invalid SSH public key format"
-
-    cache_key = (client_id, ssh_public_key)
-    if cache_key in REGISTERED_SSH_KEYS:
-        return True, "Authorized (cached)"
-
+    if not ssh_public_key or ssh_public_key in REGISTERED_SSH_KEYS:
+        return True
+    auth_keys_path = "/root/.ssh/authorized_keys"
     try:
-        subprocess.run(["groupadd", "-f", "haclients"], check=False)
-        ret = subprocess.run(["id", client_id], capture_output=True)
-        if ret.returncode != 0:
-            res = subprocess.run([
-                "useradd", "-m", "-s", "/bin/bash", "-g", "haclients", client_id
-            ], capture_output=True, text=True)
-            if res.returncode != 0:
-                print(f"[!] Error creating system user {client_id}: {res.stderr}")
-            else:
-                print(f"[+] Created system user {client_id} for reverse tunneling")
-
-        ssh_dir = f"/home/{client_id}/.ssh"
-        auth_keys_path = f"{ssh_dir}/authorized_keys"
-        os.makedirs(ssh_dir, mode=0o700, exist_ok=True)
-        subprocess.run(["chmod", "700", ssh_dir], check=False)
-
+        os.makedirs(os.path.dirname(auth_keys_path), exist_ok=True)
         existing = ""
         if os.path.exists(auth_keys_path):
             with open(auth_keys_path, "r", encoding="utf-8") as f:
                 existing = f.read()
-
         if ssh_public_key not in existing:
             with open(auth_keys_path, "a", encoding="utf-8") as f:
-                if existing and not existing.endswith("\n"):
-                    f.write("\n")
-                f.write(f"{ssh_public_key}\n")
-            print(f"[✓] Added SSH public key for {client_id}")
-
-        subprocess.run(["chmod", "600", auth_keys_path], check=False)
-        subprocess.run(["chown", "-R", f"{client_id}:haclients", ssh_dir], check=False)
-        REGISTERED_SSH_KEYS.add(cache_key)
-        return True, "Authorized"
+                f.write(f"\n# Gateway Client: {client_id}\n{ssh_public_key}\n")
+        REGISTERED_SSH_KEYS.add(ssh_public_key)
+        return True
     except Exception as e:
-        print(f"[!] sync_client_ssh_user exception for {client_id}: {e}")
-        return False, str(e)
+        print(f"[!] Error syncing SSH key: {e}")
+        return False
 
 def sync_caddy_ingress(client_id, dash_port, proto="http", enabled=True, force=False):
-    """Sync Caddy ingress on CT 305 with route caching to eliminate heartbeat subprocess storms."""
     cache_key = client_id
     config_tuple = (dash_port, proto, enabled)
     if not force and SYNCED_CADDY_ROUTES.get(cache_key) == config_tuple:
@@ -174,348 +401,31 @@ def sync_caddy_ingress(client_id, dash_port, proto="http", enabled=True, force=F
 
     domain = f"{client_id}.gavasah.com"
     if not enabled:
-        block = f"""# Client: {client_id}
-{domain} {{
-    respond "Remote Access Suspended by Dealer" 403
-}}"""
+        block = f"# Client: {client_id}\n{domain} {{\n    respond \"Remote Access Suspended by Dealer\" 403\n}}"
     elif proto == "https":
-        block = f"""# Client: {client_id}
-{domain} {{
-    reverse_proxy https://192.168.6.150:{dash_port} {{
-        transport http {{
-            tls_insecure_skip_verify
-        }}
-    }}
-}}"""
+        block = f"# Client: {client_id}\n{domain} {{\n    reverse_proxy https://192.168.6.150:{dash_port} {{\n        transport http {{\n            tls_insecure_skip_verify\n        }}\n    }}\n}}"
     else:
-        block = f"""# Client: {client_id}
-{domain} {{
-    reverse_proxy 192.168.6.150:{dash_port}
-}}"""
+        block = f"# Client: {client_id}\n{domain} {{\n    reverse_proxy 192.168.6.150:{dash_port}\n}}"
 
-    py_code = f"""import re, subprocess
-with open('/home/tejoram97/Caddyfile.unified', 'r') as f:
-    text = f.read()
-
-domain = '{domain}'
-new_block = '''{block}'''.strip()
-
-pattern = re.compile(r'(?:^[ \\t]*#[^\\n]*\\n)?^[ \\t]*' + re.escape(domain) + r'[ \\t]*\\{{[\\s\\S]*?(?=^(?:[a-zA-Z0-9_#\\(\\)]|\\Z))', re.MULTILINE)
-m = pattern.search(text)
-if m and text.count(domain) == 1 and m.group(0).strip() == new_block:
-    pass
-else:
-    text = pattern.sub('', text).strip()
-    text = text + '\\n\\n' + new_block + '\\n'
-    with open('/home/tejoram97/Caddyfile.unified', 'w') as f:
-        f.write(text)
-    subprocess.run(['docker', 'exec', 'trezoriq-caddy-1', 'caddy', 'reload', '--config', '/etc/caddy/Caddyfile'], check=True)
-"""
-    try:
-        ok = run_caddy_cmd(py_code)
-        if ok:
-            SYNCED_CADDY_ROUTES[cache_key] = config_tuple
-        return ok
-    except Exception as e:
-        print(f"[!] Error syncing Caddy for {client_id}: {e}")
-        return False
-
-# ==============================================================================
-# Seed Initial Authentication State (Owner & Sample Dealers)
-# ==============================================================================
-if not os.path.exists(AUTH_FILE):
-    owner_salt, owner_hash = hash_password("gavasah2026!")
-    d1_salt, d1_hash = hash_password("apex123!")
-    d2_salt, d2_hash = hash_password("vajra123!")
-    i1_salt, i1_hash = hash_password("rajesh123!")
-    i2_salt, i2_hash = hash_password("vikram123!")
-    i3_salt, i3_hash = hash_password("suresh123!")
-    
-    seed_auth = {
-        "owner": {
-            "id": "owner_master",
-            "username": "admin",
-            "name": "Master Manufacturer",
-            "role": "manufacturer",
-            "salt": owner_salt,
-            "password_hash": owner_hash,
-            "created_at": int(time.time())
-        },
-        "dealers": {
-            "dealer_apex": {
-                "id": "dealer_apex",
-                "username": "apex_dealer",
-                "password_plain": "apex123!",
-                "name": "Apex Smart Automation",
-                "email": "contact@apexsmart.in",
-                "phone": "+91 98490 12345",
-                "role": "dealer",
-                "status": "active",
-                "salt": d1_salt,
-                "password_hash": d1_hash,
-                "created_at": int(time.time()) - 86400 * 30
-            },
-            "dealer_vajra": {
-                "id": "dealer_vajra",
-                "username": "vajra_knx",
-                "password_plain": "vajra123!",
-                "name": "Vajra KNX Solutions",
-                "email": "sales@vajraknx.com",
-                "phone": "+91 99887 76655",
-                "role": "dealer",
-                "status": "active",
-                "salt": d2_salt,
-                "password_hash": d2_hash,
-                "created_at": int(time.time()) - 86400 * 15
-            }
-        },
-        "integrators": {
-            "int_apex_rajesh": {
-                "id": "int_apex_rajesh",
-                "dealer_id": "dealer_apex",
-                "dealer_name": "Apex Smart Automation",
-                "username": "rajesh_knx",
-                "password_plain": "rajesh123!",
-                "name": "Rajesh Kumar (Lead Integrator)",
-                "email": "rajesh@apexsmart.in",
-                "phone": "+91 98450 11223",
-                "role": "integrator",
-                "status": "active",
-                "salt": i1_salt,
-                "password_hash": i1_hash,
-                "created_at": int(time.time()) - 86400 * 20
-            },
-            "int_apex_vikram": {
-                "id": "int_apex_vikram",
-                "dealer_id": "dealer_apex",
-                "dealer_name": "Apex Smart Automation",
-                "username": "vikram_tech",
-                "password_plain": "vikram123!",
-                "name": "Vikram Rao (Field Engineer)",
-                "email": "vikram@apexsmart.in",
-                "phone": "+91 98450 44556",
-                "role": "integrator",
-                "status": "active",
-                "salt": i2_salt,
-                "password_hash": i2_hash,
-                "created_at": int(time.time()) - 86400 * 10
-            },
-            "int_vajra_suresh": {
-                "id": "int_vajra_suresh",
-                "dealer_id": "dealer_vajra",
-                "dealer_name": "Vajra KNX Solutions",
-                "username": "suresh_auto",
-                "password_plain": "suresh123!",
-                "name": "Suresh Patel (Senior Integrator)",
-                "email": "suresh@vajraknx.com",
-                "phone": "+91 99887 11223",
-                "role": "integrator",
-                "status": "active",
-                "salt": i3_salt,
-                "password_hash": i3_hash,
-                "created_at": int(time.time()) - 86400 * 12
-            }
-        },
-        "sessions": {}
-    }
-    save_auth_state(seed_auth)
-else:
-    # Upgrade existing auth_state if missing integrators or password_plain
-    existing_auth = load_auth_state()
-    auth_dirty = False
-    
-    # Ensure dealers have password_plain
-    if 'dealers' in existing_auth:
-        for did, d in existing_auth['dealers'].items():
-            if 'password_plain' not in d:
-                d['password_plain'] = 'apex123!' if did == 'dealer_apex' else 'vajra123!'
-                auth_dirty = True
-                
-    if 'integrators' not in existing_auth or not existing_auth['integrators']:
-        i1_salt, i1_hash = hash_password("rajesh123!")
-        i2_salt, i2_hash = hash_password("vikram123!")
-        i3_salt, i3_hash = hash_password("suresh123!")
-        existing_auth['integrators'] = {
-            "int_apex_rajesh": {
-                "id": "int_apex_rajesh",
-                "dealer_id": "dealer_apex",
-                "dealer_name": "Apex Smart Automation",
-                "username": "rajesh_knx",
-                "password_plain": "rajesh123!",
-                "name": "Rajesh Kumar (Lead Integrator)",
-                "email": "rajesh@apexsmart.in",
-                "phone": "+91 98450 11223",
-                "role": "integrator",
-                "status": "active",
-                "salt": i1_salt,
-                "password_hash": i1_hash,
-                "created_at": int(time.time()) - 86400 * 20
-            },
-            "int_apex_vikram": {
-                "id": "int_apex_vikram",
-                "dealer_id": "dealer_apex",
-                "dealer_name": "Apex Smart Automation",
-                "username": "vikram_tech",
-                "password_plain": "vikram123!",
-                "name": "Vikram Rao (Field Engineer)",
-                "email": "vikram@apexsmart.in",
-                "phone": "+91 98450 44556",
-                "role": "integrator",
-                "status": "active",
-                "salt": i2_salt,
-                "password_hash": i2_hash,
-                "created_at": int(time.time()) - 86400 * 10
-            },
-            "int_vajra_suresh": {
-                "id": "int_vajra_suresh",
-                "dealer_id": "dealer_vajra",
-                "dealer_name": "Vajra KNX Solutions",
-                "username": "suresh_auto",
-                "password_plain": "suresh123!",
-                "name": "Suresh Patel (Senior Integrator)",
-                "email": "suresh@vajraknx.com",
-                "phone": "+91 99887 11223",
-                "role": "integrator",
-                "status": "active",
-                "salt": i3_salt,
-                "password_hash": i3_hash,
-                "created_at": int(time.time()) - 86400 * 12
-            }
-        }
-        auth_dirty = True
-    
-    if auth_dirty:
-        save_auth_state(existing_auth)
-
-# Seed demo clients if file does not exist
-if not os.path.exists(STATE_FILE):
-    seed_data = {
-        "sharma-villa": {
-            "client_id": "sharma-villa",
-            "dealer_id": "dealer_apex",
-            "dealer_name": "Apex Smart Automation",
-            "name": "Sharma Residence (Jubilee Hills)",
-            "domain": "sharma-villa.gavasah.com",
-            "dashboard_port": 10001,
-            "ssh_port": 22001,
-            "knx_ip": "192.168.1.111",
-            "knx_port": 3671,
-            "last_heartbeat": int(time.time()),
-            "status": "online",
-            "remote_enabled": True,
-            "system": {
-                "haos_version": "13.2",
-                "core_version": "2026.9.3",
-                "boot_slot": "A",
-                "is_recovery_mode": False,
-                "slot_a_status": "good",
-                "slot_b_status": "standby",
-                "cpu_percent": 12.4,
-                "memory_percent": 41.2,
-                "disk_free_gb": 182.4
-            },
-            "network": {
-                "local_ipv4": "192.168.1.105",
-                "gateway": "192.168.1.1",
-                "mac_address": "E4:5F:01:42:33:9A"
-            },
-            "knx_status": {
-                "reachable": True,
-                "latency_ms": 1.4
-            }
-        },
-        "verma-penthouse": {
-            "client_id": "verma-penthouse",
-            "dealer_id": "dealer_vajra",
-            "dealer_name": "Vajra KNX Solutions",
-            "name": "Verma Penthouse (Gachibowli)",
-            "domain": "verma-penthouse.gavasah.com",
-            "dashboard_port": 10002,
-            "ssh_port": 22002,
-            "knx_ip": "192.168.1.200",
-            "knx_port": 3671,
-            "last_heartbeat": int(time.time()) - 20,
-            "status": "online",
-            "remote_enabled": True,
-            "system": {
-                "haos_version": "13.2",
-                "core_version": "2026.9.3",
-                "boot_slot": "A",
-                "is_recovery_mode": False,
-                "slot_a_status": "good",
-                "slot_b_status": "standby",
-                "cpu_percent": 6.8,
-                "memory_percent": 35.0,
-                "disk_free_gb": 210.8
-            },
-            "network": {
-                "local_ipv4": "192.168.29.15",
-                "gateway": "192.168.29.1",
-                "mac_address": "B8:27:EB:77:12:04"
-            },
-            "knx_status": {
-                "reachable": True,
-                "latency_ms": 2.1
-            }
-        },
-        "reddy-estate": {
-            "client_id": "reddy-estate",
-            "dealer_id": "owner_master",
-            "dealer_name": "Master Manufacturer (Direct)",
-            "name": "Reddy Farm Estate (Moinabad)",
-            "domain": "reddy-estate.gavasah.com",
-            "dashboard_port": 10003,
-            "ssh_port": 22003,
-            "knx_ip": "192.168.0.150",
-            "knx_port": 3671,
-            "last_heartbeat": int(time.time()) - 15,
-            "status": "warning",
-            "remote_enabled": True,
-            "system": {
-                "haos_version": "13.1",
-                "core_version": "2026.9.1",
-                "boot_slot": "B",
-                "is_recovery_mode": True,
-                "slot_a_status": "bad (kernel panic auto-recovered)",
-                "slot_b_status": "good (active fallback)",
-                "cpu_percent": 18.2,
-                "memory_percent": 54.6,
-                "disk_free_gb": 88.0
-            },
-            "network": {
-                "local_ipv4": "192.168.0.88",
-                "gateway": "192.168.0.1",
-                "mac_address": "00:1A:79:3B:5C:88"
-            },
-            "knx_status": {
-                "reachable": True,
-                "latency_ms": 4.8
-            }
-        }
-    }
-    save_clients_state(seed_data)
-else:
-    # Ensure existing clients have a dealer_id and dealer_name
-    c_data = load_clients_state()
-    c_updated = False
-    for cid, c in c_data.items():
-        if 'dealer_id' not in c or not c['dealer_id']:
-            c['dealer_id'] = 'owner_master'
-            c['dealer_name'] = 'Master Manufacturer (Direct)'
-            c_updated = True
-        if 'integrator_id' not in c:
-            if cid == 'sharma-villa':
-                c['integrator_id'] = 'int_apex_rajesh'
-                c['integrator_name'] = 'Rajesh Kumar (Lead Integrator)'
-            elif cid == 'verma-penthouse':
-                c['integrator_id'] = 'int_vajra_suresh'
-                c['integrator_name'] = 'Suresh Patel (Senior Integrator)'
-            else:
-                c['integrator_id'] = None
-                c['integrator_name'] = 'Direct Dealer Supervision'
-            c_updated = True
-    if c_updated:
-        save_clients_state(c_data)
+    py_code = (
+        "import re, subprocess\n"
+        "with open('/home/tejoram97/Caddyfile.unified', 'r') as f:\n"
+        "    text = f.read()\n\n"
+        f"domain = '{domain}'\n"
+        f"new_block = '''{block}'''.strip()\n\n"
+        "pattern = re.compile(r'(?:^[ \\t]*#[^\\n]*\\n)?^[ \\t]*' + re.escape(domain) + r'[ \\t]*\\{{[\\s\\S]*?(?=^(?:[a-zA-Z0-9_#\\(\\)]|\\Z))', re.MULTILINE)\n"
+        "m = pattern.search(text)\n"
+        "if m:\n"
+        "    updated = text[:m.start()] + new_block + '\\n\\n' + text[m.end():]\n"
+        "else:\n"
+        "    updated = text.rstrip() + '\\n\\n' + new_block + '\\n'\n\n"
+        "with open('/home/tejoram97/Caddyfile.unified', 'w') as f:\n"
+        "    f.write(updated)\n"
+    )
+    ok = run_caddy_cmd(py_code, "docker exec caddy caddy reload --config /etc/caddy/Caddyfile")
+    if ok:
+        SYNCED_CADDY_ROUTES[cache_key] = config_tuple
+    return ok
 
 
 HTML_PAGE = """<!DOCTYPE html>
@@ -2123,9 +2033,13 @@ HTML_PAGE = """<!DOCTYPE html>
                     </div>
 
                     <div class="form-group">
-                        <label class="form-label">SUBDOMAIN SLUG</label>
-                        <input type="text" id="onb-slug" class="form-input" placeholder="e.g. sharma-villa" required>
-                        <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Generates: <code>https://&lt;slug&gt;.gavasah.com</code></div>
+                        <label class="form-label">CLIENT SLUG / IDENTIFIER</label>
+                        <input type="text" id="onb-slug" class="form-input" placeholder="e.g. sharma-villa" required oninput="updateOnboardDomainPreview()">
+                        <div style="margin-top: 5px; font-size: 12px; color: #38bdf8; font-family: monospace; display: flex; align-items: center; gap: 4px;">
+                            <span>🌐 Ingress Subdomain:</span>
+                            <span id="onb-preview-domain" style="font-weight: 600; color: #00f0ff;">sharma-villa-direct.gavasah.com</span>
+                        </div>
+                        <div style="font-size: 11px; color: #64748b; margin-top: 3px;">Namespaced as <code>&lt;client-slug&gt;-&lt;dealer-slug&gt;.gavasah.com</code></div>
                     </div>
 
                     <div class="form-group">
@@ -3396,11 +3310,13 @@ HTML_PAGE = """<!DOCTYPE html>
         // ======================================================================
         function openOnboardModal() {
             document.getElementById('onb-name').value = '';
-            document.getElementById('onb-id').value = '';
+            const slugEl = document.getElementById('onb-slug') || document.getElementById('onb-id');
+            if (slugEl) slugEl.value = '';
             document.getElementById('onb-secret').value = generateSecretStr();
             document.getElementById('onb-knx-ip').value = '192.168.1.100';
             document.getElementById('onb-knx-port').value = '3671';
             document.getElementById('onb-ssh-key').value = '';
+            updateOnboardDomainPreview();
 
             const dGroup = document.getElementById('onb-dealer-group');
             const intGroup = document.getElementById('onb-integrator-group');
@@ -3443,9 +3359,10 @@ HTML_PAGE = """<!DOCTYPE html>
 
         async function handleOnboardSubmit(e) {
             e.preventDefault();
+            const slugInput = document.getElementById('onb-slug') || document.getElementById('onb-id');
             const payload = {
                 name: document.getElementById('onb-name').value.trim(),
-                client_id: document.getElementById('onb-id').value.trim().toLowerCase(),
+                client_id: slugInput.value.trim().toLowerCase(),
                 auth_secret: document.getElementById('onb-secret').value.trim(),
                 knx_ip: document.getElementById('onb-knx-ip').value.trim(),
                 knx_port: parseInt(document.getElementById('onb-knx-port').value) || 3671,
@@ -3864,6 +3781,47 @@ HTML_PAGE = """<!DOCTYPE html>
             }
         }
 
+
+        function getActiveDealerSlug() {
+            if (!currentUser) return 'direct';
+            if (currentUser.role === 'dealer') {
+                const u = (currentUser.username || '').toLowerCase();
+                const clean = u.replace('dealer', '').replace(/[^a-z0-9]/g, '');
+                return clean || 'dealer';
+            } else if (currentUser.role === 'integrator') {
+                const u = (currentUser.dealer_name || '').toLowerCase();
+                const clean = u.replace('dealer', '').replace(/[^a-z0-9]/g, '');
+                return clean || 'dealer';
+            } else {
+                const sel = document.getElementById('onb-dealer-select');
+                if (!sel || sel.value === 'owner_master' || !sel.value) return 'direct';
+                const d = dealersList.find(x => x.id === sel.value);
+                if (d) {
+                    const u = (d.username || '').toLowerCase();
+                    const clean = u.replace('dealer', '').replace(/[^a-z0-9]/g, '');
+                    return clean || 'dealer';
+                }
+                return 'direct';
+            }
+        }
+
+        function updateOnboardDomainPreview() {
+            const slugEl = document.getElementById('onb-slug') || document.getElementById('onb-id');
+            const raw = (slugEl ? slugEl.value : '').trim().toLowerCase().replace(/[^a-z0-9\-]/g, '');
+            const dSlug = getActiveDealerSlug();
+            const cleanBase = raw.replace(new RegExp(`-${dSlug}$`), '');
+            const domainPreviewEl = document.getElementById('onb-preview-domain');
+            if (domainPreviewEl) {
+                const displaySlug = (cleanBase || 'client') + '-' + dSlug;
+                domainPreviewEl.innerText = `${displaySlug}.gavasah.com`;
+            }
+        }
+
+        function onOnboardDealerChange() {
+            updateOnboardDomainPreview();
+            updateIntegratorDropdowns();
+        }
+
 """
 
 import os
@@ -3920,55 +3878,35 @@ def generate_client_seed_logs(client_id):
     ]
 
 def get_client_logs(client_id):
-    """Retrieve audit logs for a client site, creating initial logs if needed."""
-    with LOGS_LOCK:
-        if not os.path.exists(LOGS_DIR):
-            os.makedirs(LOGS_DIR, exist_ok=True)
-        log_file = os.path.join(LOGS_DIR, f"{client_id}.json")
-        if os.path.exists(log_file):
-            try:
-                with open(log_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"[!] Error reading logs for {client_id}: {e}")
-                return generate_client_seed_logs(client_id)
-        else:
+    """Retrieve audit logs for a client site from SQLite WAL database."""
+    with DB_LOCK:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM client_logs WHERE client_id = ? ORDER BY timestamp DESC LIMIT 100", (client_id,))
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        if not rows:
             seed = generate_client_seed_logs(client_id)
-            try:
-                with open(log_file, "w", encoding="utf-8") as f:
-                    json.dump(seed, f, indent=2)
-            except Exception as e:
-                print(f"[!] Error writing initial logs for {client_id}: {e}")
+            for s in seed:
+                append_client_log(client_id, s['level'], s['type'], s['message'], s.get('source', 'kernel'))
             return seed
+        return rows
 
-def append_client_log(client_id, level, type_, msg):
-    """Thread-safe append of a new audit log entry."""
-    with LOGS_LOCK:
-        if not os.path.exists(LOGS_DIR):
-            os.makedirs(LOGS_DIR, exist_ok=True)
-        log_file = os.path.join(LOGS_DIR, f"{client_id}.json")
-        logs = []
-        if os.path.exists(log_file):
-            try:
-                with open(log_file, "r", encoding="utf-8") as f:
-                    logs = json.load(f)
-            except Exception:
-                logs = []
-        now = int(time.time())
-        logs.insert(0, {
-            "id": f"log_{client_id}_{now}_{len(logs)}",
-            "timestamp": now,
-            "level": level.upper(),
-            "type": type_.upper(),
-            "message": msg,
-            "source": "cloud_portal"
-        })
-        logs = logs[:100]
+def append_client_log(client_id, level, type_, msg, source="cloud_portal"):
+    """Thread-safe append of a new audit log entry into SQLite WAL database."""
+    with DB_LOCK:
+        conn = get_db_connection()
         try:
-            with open(log_file, "w", encoding="utf-8") as f:
-                json.dump(logs, f, indent=2)
+            now = int(time.time())
+            log_id = f"log_{client_id}_{now}_{secrets.token_hex(4)}"
+            with conn:
+                conn.execute("INSERT OR REPLACE INTO client_logs VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (log_id, client_id, now, level.upper(), type_.upper(), msg, source)
+                )
         except Exception as e:
-            print(f"[!] Error appending log for {client_id}: {e}")
+            print(f"[!] Error appending log in SQLite: {e}")
+        finally:
+            conn.close()
 
 # ==============================================================================
 # Multi-Tenant HTTP Request Handler (Manufacturer -> Dealers -> Integrators)
@@ -5096,30 +5034,9 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json(400, {'error': 'Site name and unique identifier are required'})
                 return
 
-            clean_id = re.sub(r'[^a-z0-9\-]', '', client_id)
-            if not clean_id:
-                self.send_json(400, {'error': 'Client identifier must contain valid characters'})
-                return
-
-            c_data = load_clients_state()
-            if clean_id in c_data:
-                self.send_json(400, {'error': f'Client identifier {clean_id} is already in use'})
-                return
-
-            # Allocate dynamic ports
-            existing_dash_ports = [c.get('dashboard_port', 0) for c in c_data.values()]
-            existing_ssh_ports = [c.get('ssh_port', 0) for c in c_data.values()]
-            dash_port = 10001
-            while dash_port in existing_dash_ports:
-                dash_port += 1
-            ssh_port = 22001
-            while ssh_port in existing_ssh_ports:
-                ssh_port += 1
-
-            domain = f"{clean_id}.gavasah.com"
             auth = load_auth_state()
 
-            # Determine Dealer & Integrator Assignment based on User Role
+            # 1. Determine Dealer & Integrator Assignment based on User Role
             if user['role'] == 'integrator':
                 assigned_dealer_id = user['dealer_id']
                 assigned_dealer_name = user['dealer_name']
@@ -5161,6 +5078,48 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                 else:
                     assigned_int_id = None
                     assigned_int_name = 'Direct Dealer Supervision'
+
+            # 2. Derive Dealer Slug for Limitation 1 Namespacing: <client-slug>-<dealer-slug>
+            if assigned_dealer_id == 'owner_master':
+                dealer_slug = 'direct'
+            elif assigned_dealer_id.startswith('dealer_'):
+                dealer_slug = re.sub(r'[^a-z0-9]', '', assigned_dealer_id.replace('dealer_', '').lower())
+            else:
+                assigned_d = auth.get('dealers', {}).get(assigned_dealer_id)
+                if assigned_d:
+                    raw_du = assigned_d.get('username', '').lower()
+                    d_clean = re.sub(r'[^a-z0-9]', '', raw_du.replace('dealer', '').replace('knx', '').replace('_', '').replace('-', ''))
+                    dealer_slug = d_clean if d_clean else 'dealer'
+                else:
+                    dealer_slug = 'direct'
+
+            raw_cslug = re.sub(r'[^a-z0-9\-]', '', client_id.lower()).strip('-')
+            if not raw_cslug:
+                self.send_json(400, {'error': 'Client identifier must contain valid alphanumeric characters'})
+                return
+
+            # Enforce format: <client-slug>-<dealer-slug>
+            if not raw_cslug.endswith(f"-{dealer_slug}"):
+                clean_id = f"{raw_cslug}-{dealer_slug}"
+            else:
+                clean_id = raw_cslug
+
+            domain = f"{clean_id}.gavasah.com"
+
+            c_data = load_clients_state()
+            if clean_id in c_data:
+                self.send_json(400, {'error': f"Client identifier '{clean_id}' is already registered under this dealership"})
+                return
+
+            # Allocate dynamic ports
+            existing_dash_ports = [c.get('dashboard_port', 0) for c in c_data.values()]
+            existing_ssh_ports = [c.get('ssh_port', 0) for c in c_data.values()]
+            dash_port = 10001
+            while dash_port in existing_dash_ports:
+                dash_port += 1
+            ssh_port = 22001
+            while ssh_port in existing_ssh_ports:
+                ssh_port += 1
 
             new_client = {
                 'client_id': clean_id,
