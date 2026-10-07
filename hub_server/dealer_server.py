@@ -6150,6 +6150,7 @@ PersistentKeepalive = 25
             client_id = body.get('client_id', '').strip().lower()
             ssh_key = body.get('ssh_public_key', '').strip()
             auth_secret = body.get('auth_secret', '').strip()
+            print(f"[HEARTBEAT_INCOMING] client_id='{client_id}', incoming_secret='{secret}', expected_secret='{client.get('auth_secret') if client else 'NO_CLIENT'}'", flush=True)
             knx_ip = body.get('knx_ip', '192.168.1.100').strip()
             knx_port = int(body.get('knx_port', 3671))
 
