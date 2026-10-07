@@ -6467,7 +6467,12 @@ PersistentKeepalive = 25
                 return
 
             expected_secret = (client.get('auth_secret') or '').strip()
-            print(f"[HB_PROBE] client_id='{client_id}', incoming_secret='{secret}', db_expected='{expected_secret}'", flush=True)
+            try:
+                with open('/tmp/hb_payloads.log', 'a') as _f:
+                    _f.write(f"TIME={int(time.time())} CID={client_id} INC_SEC={secret} DB_SEC={expected_secret} BODY={raw_body}\n")
+                    _f.flush()
+            except Exception as _e:
+                pass
 
             # Validate auth_secret if set on client
             if expected_secret and secret != expected_secret:
