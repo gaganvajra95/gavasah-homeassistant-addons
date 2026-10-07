@@ -748,6 +748,7 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         /* Left-Hand Sidebar (Manufacturer View) */
+/* Collapsible Sidebar Styles */
         .sidebar {
             width: var(--sidebar-width);
             background: rgba(9, 13, 22, 0.95);
@@ -760,7 +761,76 @@ HTML_PAGE = """<!DOCTYPE html>
             left: 0;
             bottom: 0;
             z-index: 100;
-            transition: all 0.3s;
+            transform: translateX(0);
+            transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .main-wrapper {
+            flex: 1;
+            margin-left: var(--sidebar-width);
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+            transition: margin-left 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        body.sidebar-collapsed .sidebar {
+            transform: translateX(-100%);
+        }
+
+        body.sidebar-collapsed .main-wrapper {
+            margin-left: 0;
+        }
+
+        .sidebar-toggle-btn {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            width: 38px;
+            height: 38px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #94a3b8;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            padding: 0;
+            flex-shrink: 0;
+        }
+
+        .sidebar-toggle-btn:hover {
+            background: rgba(0, 240, 255, 0.12);
+            border-color: var(--accent);
+            color: var(--accent);
+            box-shadow: 0 0 10px var(--accent-glow);
+        }
+
+        .sidebar-brand-toggle {
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #94a3b8;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            padding: 0;
+            flex-shrink: 0;
+            margin-left: auto;
+        }
+
+        .sidebar-brand-toggle:hover {
+            background: rgba(0, 240, 255, 0.12);
+            border-color: var(--accent);
+            color: var(--accent);
+            box-shadow: 0 0 8px var(--accent-glow);
+        }
+
+        body.is-integrator #sidebar-toggle-btn {
+            display: none !important;
         }
 
         .sidebar-brand {
@@ -1627,6 +1697,182 @@ HTML_PAGE = """<!DOCTYPE html>
             border-color: rgba(16, 185, 129, 0.4);
         }
 
+    
+        /* ==============================================================
+           MOBILE & TABLET RESPONSIVE SYSTEM
+           ============================================================== */
+        .sidebar-backdrop {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(4, 7, 14, 0.75);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+            z-index: 999;
+            opacity: 0;
+            transition: opacity 0.25s ease;
+            pointer-events: none;
+        }
+
+        @media (max-width: 900px) {
+            .sidebar {
+                position: fixed;
+                top: 0;
+                bottom: 0;
+                left: 0;
+                z-index: 1000;
+                transform: translateX(-100%);
+                transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+            }
+            body.sidebar-open-mobile .sidebar {
+                transform: translateX(0);
+                box-shadow: 12px 0 36px rgba(0, 0, 0, 0.85);
+            }
+            .sidebar-backdrop {
+                display: block;
+            }
+            body.sidebar-open-mobile .sidebar-backdrop {
+                opacity: 1;
+                pointer-events: auto;
+            }
+            .main-wrapper {
+                margin-left: 0 !important;
+                width: 100% !important;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .header {
+                height: 62px;
+                padding: 0 16px;
+            }
+            .header-left {
+                gap: 10px;
+            }
+            #page-heading-title {
+                font-size: 14px !important;
+                max-width: 140px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .portal-role-tag {
+                font-size: 9px;
+                padding: 2px 7px;
+            }
+            .content-container {
+                padding: 16px 14px;
+            }
+            .grid-metrics {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 12px;
+                margin-bottom: 20px;
+            }
+            .metric-card {
+                padding: 14px;
+                border-radius: 12px;
+            }
+            .metric-value {
+                font-size: 26px;
+            }
+            .metric-label {
+                font-size: 11px;
+            }
+            .metric-sub {
+                font-size: 10px;
+            }
+            .fleet-controls-bar {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 10px;
+                padding: 12px 14px;
+            }
+            .search-box {
+                min-width: 100%;
+                max-width: 100%;
+            }
+            .filter-pills {
+                flex-wrap: wrap;
+                gap: 6px;
+            }
+            .pill-btn {
+                padding: 6px 10px;
+                font-size: 11px;
+            }
+            .pagination-bar {
+                justify-content: space-between;
+                width: 100%;
+            }
+            .section-header {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 10px;
+            }
+            .section-title {
+                font-size: 15px;
+            }
+            .section-header .btn-action {
+                width: 100%;
+                justify-content: center;
+                text-align: center;
+            }
+            .table-wrap {
+                border-radius: 10px;
+                margin-bottom: 18px;
+            }
+            th, td {
+                padding: 10px 12px;
+                font-size: 12px;
+            }
+            .ssl-badge span {
+                display: none;
+            }
+            .ssl-badge {
+                padding: 6px 8px;
+            }
+        }
+
+        @media (max-width: 520px) {
+            .grid-metrics {
+                grid-template-columns: 1fr;
+            }
+            .header-actions .btn-sm {
+                padding: 6px 8px;
+                font-size: 11px;
+            }
+            .modal-content {
+                max-width: 96%;
+                margin: 10px auto;
+                border-radius: 12px;
+            }
+            .modal-header {
+                padding: 12px 16px;
+                font-size: 14px;
+            }
+            .modal-body {
+                padding: 14px 16px;
+            }
+            .modal-footer {
+                padding: 10px 16px;
+                flex-direction: column;
+            }
+            .modal-footer .btn-action,
+            .modal-footer .btn-sm {
+                width: 100%;
+                justify-content: center;
+            }
+            .login-card {
+                padding: 24px 18px;
+                width: 92%;
+            }
+            input, select, textarea {
+                font-size: 16px !important;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -1689,6 +1935,13 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div style="font-size: 14px; font-weight: 800; color: #fff;">GAVASAH HUB</div>
                     <div style="font-size: 10px; color: var(--accent); font-weight: 700; text-transform: uppercase;">Master Console</div>
                 </div>
+        <button class="sidebar-brand-toggle" onclick="toggleSidebar()" title="Collapse Sidebar">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="3" y1="6" x2="21" y2="6"></line>
+                        <line x1="3" y1="12" x2="21" y2="12"></line>
+                        <line x1="3" y1="18" x2="21" y2="18"></line>
+                    </svg>
+                </button>
             </div>
 
             <div class="sidebar-nav">
@@ -1748,6 +2001,13 @@ HTML_PAGE = """<!DOCTYPE html>
             <!-- Top Header -->
             <div class="header">
                 <div class="header-left">
+                    <button class="sidebar-toggle-btn" id="sidebar-toggle-btn" onclick="toggleSidebar()" title="Toggle Sidebar">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="3" y1="6" x2="21" y2="6"></line>
+                            <line x1="3" y1="12" x2="21" y2="12"></line>
+                            <line x1="3" y1="18" x2="21" y2="18"></line>
+                        </svg>
+                    </button>
                     <div class="brand-container" style="display: flex; align-items: center; gap: 12px;">
                         <div class="portal-role-tag role-tag-manufacturer" id="portal-role-badge">MANUFACTURER</div>
                         <div style="font-size: 16px; font-weight: 800; color: #fff;" id="page-heading-title">System Overview</div>
@@ -2393,6 +2653,34 @@ HTML_PAGE = """<!DOCTYPE html>
 
     <script>
 
+        // ==========================================
+        // SIDEBAR COLLAPSE & EXPAND CONTROLLER (3-LINE ICON)
+        // ==========================================
+        function toggleSidebar() {
+            if (window.innerWidth <= 900) {
+                document.body.classList.toggle('sidebar-open-mobile');
+            } else {
+                const isCollapsed = document.body.classList.toggle('sidebar-collapsed');
+                try {
+                    localStorage.setItem('gavasah_sidebar_collapsed', isCollapsed ? 'true' : 'false');
+                } catch (e) {}
+            }
+        }
+
+        function closeSidebarMobile() {
+            document.body.classList.remove('sidebar-open-mobile');
+        }
+
+        function initSidebarState() {
+            try {
+                if (localStorage.getItem('gavasah_sidebar_collapsed') === 'true') {
+                    document.body.classList.add('sidebar-collapsed');
+                }
+            } catch (e) {}
+        }
+        initSidebarState();
+
+
         // ======================================================================
         // STATE MANAGEMENT
         // ======================================================================
@@ -2623,6 +2911,7 @@ HTML_PAGE = """<!DOCTYPE html>
         // TABS NAVIGATION
         // ======================================================================
         function switchTab(tabId) {
+            if (window.innerWidth <= 900) closeSidebarMobile();
             activeTab = tabId;
 
             // Update nav styling
