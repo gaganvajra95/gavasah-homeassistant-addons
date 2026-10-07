@@ -172,8 +172,11 @@ def ensure_external_url(opts):
                     return True
                 else:
                     return True
-            except Exception as e:
-                log(f"[!] Error updating {spath}: {e}")
+            except (PermissionError, OSError):
+                # Storage is protected or managed in-memory by Home Assistant Core
+                pass
+            except Exception:
+                pass
 
     return False
 

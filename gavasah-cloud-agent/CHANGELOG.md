@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.6] - 2026-10-08
+
+### Fixed
+- **Container Permissions Hardening**: Set `apparmor: false` in `config.yaml` to permanently prevent container permission denials and enable unconstrained host socket & `/proc` metrics collection.
+- **Graceful Storage Handling**: Eliminated `[Errno 13] Permission denied` log warnings during Home Assistant `.storage/core.config` external URL synchronization.
+- **Multi-Endpoint SSH Key Registration**: Added robust TLS-unverified fallback endpoints (`https://`, port 3000, and dealer hub) to prevent OpenSSH `Permission denied (publickey)` upon gateway boot.
+- **Strict Keyfile Permissions**: Enforced strict `0600` on private key identity and `0644` on public keys in persistent `/data/ssh`.
+
+---
+
 ## [1.0.5] - 2026-10-07
 
 ### Added

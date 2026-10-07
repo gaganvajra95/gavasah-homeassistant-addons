@@ -311,6 +311,116 @@ def build_http_response(status_code, status_text, body_html, clear_site_data=Fal
     header_block = crlf.join(headers) + crlf + crlf
     return header_block + body_bytes
 
+def strip_untrusted_forwarded_headers(raw_data):
+    """
+    Strips X-Forwarded-For header so Home Assistant Core never rejects
+    with '400: Bad Request' when trusted_proxies has not been configured.
+    """
+    try:
+        sep = b"\r\n\r\n"
+        if sep not in raw_data:
+            return raw_data
+        hdr_part, body_part = raw_data.split(sep, 1)
+        lines = hdr_part.split(b"\r\n")
+        clean_lines = [l for l in lines if not l.lower().startswith(b"x-forwarded-for:")]
+        return b"\r\n".join(clean_lines) + sep + body_part
+    except Exception:
+        return raw_data
+
+import ssl
+
+SSL_CTX = ssl.create_default_context()
+SSL_CTX.check_hostname = False
+SSL_CTX.verify_mode = ssl.CERT_NONE
+
+# In-memory protocol cache: target_port -> bool (True = https, False = plain http)
+PORT_SSL_CACHE = {
+    10011: True  # vajju-vja-house uses SSL Let's Encrypt locally
+}
+
+async def connect_upstream(target_port, clean_initial_data):
+    """
+    Connects to target reverse tunnel port, dynamically handling both plain HTTP
+    and HTTPS (TLS) Home Assistant instances without manual configuration.
+    """
+    cached_ssl = PORT_SSL_CACHE.get(target_port)
+
+    # 1. Known SSL
+    if cached_ssl is True:
+        try:
+            up_reader, up_writer = await asyncio.wait_for(
+                asyncio.open_connection('127.0.0.1', target_port, ssl=SSL_CTX),
+                timeout=4.0
+            )
+            up_writer.write(clean_initial_data)
+            await up_writer.drain()
+            return up_reader, up_writer, None
+        except Exception:
+            return None, None, None
+
+    # 2. Known Plain HTTP
+    if cached_ssl is False:
+        try:
+            up_reader, up_writer = await asyncio.wait_for(
+                asyncio.open_connection('127.0.0.1', target_port, ssl=None),
+                timeout=4.0
+            )
+            up_writer.write(clean_initial_data)
+            await up_writer.drain()
+            return up_reader, up_writer, None
+        except Exception:
+            return None, None, None
+
+    # 3. Unknown: Try plain HTTP first with fast probe
+    try:
+        up_reader, up_writer = await asyncio.wait_for(
+            asyncio.open_connection('127.0.0.1', target_port, ssl=None),
+            timeout=3.0
+        )
+        up_writer.write(clean_initial_data)
+        await up_writer.drain()
+
+        # Read first chunk to see if plain HTTP worked or if server closed (TLS required)
+        first_chunk = await asyncio.wait_for(up_reader.read(65536), timeout=2.5)
+        if not first_chunk:
+            # Server closed immediately -> port is likely HTTPS!
+            try:
+                up_writer.close()
+                await up_writer.wait_closed()
+            except Exception:
+                pass
+
+            ssl_reader, ssl_writer = await asyncio.wait_for(
+                asyncio.open_connection('127.0.0.1', target_port, ssl=SSL_CTX),
+                timeout=4.0
+            )
+            ssl_writer.write(clean_initial_data)
+            await ssl_writer.drain()
+            first_ssl_chunk = await asyncio.wait_for(ssl_reader.read(65536), timeout=3.0)
+            if first_ssl_chunk:
+                PORT_SSL_CACHE[target_port] = True
+                return ssl_reader, ssl_writer, first_ssl_chunk
+            return None, None, None
+        else:
+            PORT_SSL_CACHE[target_port] = False
+            return up_reader, up_writer, first_chunk
+    except Exception:
+        # Retry with SSL
+        try:
+            ssl_reader, ssl_writer = await asyncio.wait_for(
+                asyncio.open_connection('127.0.0.1', target_port, ssl=SSL_CTX),
+                timeout=4.0
+            )
+            ssl_writer.write(clean_initial_data)
+            await ssl_writer.drain()
+            first_ssl_chunk = await asyncio.wait_for(ssl_reader.read(65536), timeout=3.0)
+            if first_ssl_chunk:
+                PORT_SSL_CACHE[target_port] = True
+                return ssl_reader, ssl_writer, first_ssl_chunk
+        except Exception:
+            pass
+        return None, None, None
+
 async def handle_connection(reader, writer):
     try:
         initial_data = await reader.read(4096)
@@ -368,9 +478,11 @@ async def handle_connection(reader, writer):
             writer.close()
             return
 
-        try:
-            up_reader, up_writer = await asyncio.open_connection('127.0.0.1', target_port)
-        except Exception:
+        # Filter out X-Forwarded-For so Home Assistant Core never throws 400 Bad Request
+        clean_initial_data = strip_untrusted_forwarded_headers(initial_data)
+
+        up_reader, up_writer, primed_chunk = await connect_upstream(target_port, clean_initial_data)
+        if not up_reader or not up_writer:
             resp_html = OFFLINE_HTML_TEMPLATE
             resp = build_http_response(503, "Service Unavailable", resp_html)
             writer.write(resp)
@@ -378,8 +490,10 @@ async def handle_connection(reader, writer):
             writer.close()
             return
 
-        up_writer.write(initial_data)
-        await up_writer.drain()
+        # Send primed chunk if one was read during protocol auto-sensing
+        if primed_chunk:
+            writer.write(primed_chunk)
+            await writer.drain()
 
         async def pipe(src, dst):
             try:

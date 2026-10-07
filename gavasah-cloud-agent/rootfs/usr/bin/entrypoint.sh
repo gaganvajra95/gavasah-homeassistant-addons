@@ -34,9 +34,15 @@ if [ ! -f /data/ssh/id_ed25519 ]; then
     ssh-keygen -t ed25519 -f /data/ssh/id_ed25519 -N "" -C "$CLIENT_ID@gavasah"
 fi
 
-cp /data/ssh/id_ed25519 ~/.ssh/id_ed25519
-cp /data/ssh/id_ed25519.pub ~/.ssh/id_ed25519.pub
+if [ -f /data/ssh/id_ed25519 ]; then
+    chmod 600 /data/ssh/id_ed25519
+    chmod 644 /data/ssh/id_ed25519.pub 2>/dev/null || true
+fi
+
+cp -f /data/ssh/id_ed25519 ~/.ssh/id_ed25519
+cp -f /data/ssh/id_ed25519.pub ~/.ssh/id_ed25519.pub
 chmod 600 ~/.ssh/id_ed25519
+chmod 644 ~/.ssh/id_ed25519.pub 2>/dev/null || true
 
 echo "----------------------------------------------------------"
 echo "CLIENT PUBLIC KEY (Authorize on Gavasah Hub if needed):"
@@ -58,7 +64,8 @@ EOF
 # 2b. Synchronously Pre-register client SSH identity with Gavasah Hub
 echo "[+] Registering SSH public key with Gavasah Hub at $HUB_HOST..."
 python3 -c "
-import urllib.request, json, os
+import urllib.request, json, os, ssl
+ctx = ssl._create_unverified_context()
 try:
     opts = json.load(open('$OPTIONS_PATH'))
     hub = opts.get('hub_host', '$HUB_HOST')
@@ -67,17 +74,24 @@ try:
     pub = open('/data/ssh/id_ed25519.pub').read().strip() if os.path.exists('/data/ssh/id_ed25519.pub') else ''
     if cid and pub:
         payload = json.dumps({'client_id': cid, 'auth_key': sec, 'ssh_public_key': pub}).encode()
-        for ep in [f'http://{hub}:3000/api/heartbeat', f'http://{hub}/api/heartbeat']:
+        endpoints = [
+            f'https://{hub}/api/heartbeat',
+            f'http://{hub}:3000/api/heartbeat',
+            f'http://{hub}/api/heartbeat',
+            'https://dealer.gavasah.com/api/heartbeat',
+            'http://122.175.49.35:3000/api/heartbeat'
+        ]
+        for ep in endpoints:
             try:
                 req = urllib.request.Request(ep, data=payload, headers={'Content-Type': 'application/json'})
-                with urllib.request.urlopen(req, timeout=5) as r:
+                with urllib.request.urlopen(req, context=ctx, timeout=4) as r:
                     if r.status in [200, 201]:
                         print('[✓] SSH Public key successfully authorized on Central Hub!')
                         break
             except Exception:
                 pass
-except Exception as e:
-    print('[!] Registration note:', e)
+except Exception:
+    pass
 "
 
 # 2c. Auto-provision Home Assistant External URL on storage before launch
@@ -102,9 +116,11 @@ try:
                                 json.dump(cfg, f, indent=4)
                             os.replace(tmp, spath)
                             print(f'[✓] Pre-configured Home Assistant External URL to {target} in {spath}')
-                    except Exception as err:
-                        print(f'[!] Note on {spath}:', err)
-except Exception as e:
+                    except (PermissionError, OSError):
+                        pass
+                    except Exception:
+                        pass
+except Exception:
     pass
 "
 

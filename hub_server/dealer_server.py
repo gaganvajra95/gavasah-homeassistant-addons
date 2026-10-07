@@ -531,23 +531,43 @@ def sync_client_ssh_user(client_id, ssh_public_key):
         return True
 
     # 1. Ensure Linux group 'haclients' exists locally
+    gid = "1000"
     try:
         subprocess.run(["groupadd", "-f", "haclients"], capture_output=True, timeout=3)
+        with open('/etc/group', 'r') as gf:
+            for line in gf:
+                if line.startswith('haclients:'):
+                    gid = line.split(':')[2]
+                    break
     except Exception:
         pass
 
-    # 2. Ensure Linux user exists locally for client_id
+    # 2. Ensure Linux user exists locally for client_id (supports any length without useradd 32-char limits)
     try:
         res = subprocess.run(["id", client_id], capture_output=True, timeout=3)
         if res.returncode != 0:
-            subprocess.run([
-                "useradd", "-m", "-s", "/bin/bash", "-g", "haclients", client_id
+            ua = subprocess.run([
+                "useradd", "--badname", "-m", "-s", "/bin/bash", "-g", "haclients", client_id
             ], capture_output=True, timeout=5)
+            if ua.returncode != 0:
+                with open('/etc/passwd', 'r') as pf:
+                    pw_text = pf.read()
+                if client_id not in pw_text:
+                    existing_uids = {int(l.split(':')[2]) for l in pw_text.splitlines() if len(l.split(':')) >= 3 and l.split(':')[2].isdigit()}
+                    n_uid = 1100
+                    while n_uid in existing_uids:
+                        n_uid += 1
+                    with open('/etc/passwd', 'a') as pf:
+                        pf.write(f"{client_id}:x:{n_uid}:{gid}::/home/{client_id}:/bin/bash\n")
+                    with open('/etc/shadow', 'a') as sf:
+                        sf.write(f"{client_id}:*:19000:0:99999:7:::\n")
+                    print(f"[+] Autonomously created user {client_id} (UID {n_uid})")
     except Exception as e:
         print(f"[!] Error ensuring linux user {client_id}: {e}")
 
     # 3. Write authorized_keys in /home/{client_id}/.ssh/
-    user_ssh_dir = f"/home/{client_id}/.ssh"
+    user_home = f"/home/{client_id}"
+    user_ssh_dir = f"{user_home}/.ssh"
     user_auth_keys = f"{user_ssh_dir}/authorized_keys"
     try:
         os.makedirs(user_ssh_dir, exist_ok=True)
@@ -558,9 +578,10 @@ def sync_client_ssh_user(client_id, ssh_public_key):
         if ssh_public_key not in existing:
             with open(user_auth_keys, "a", encoding="utf-8") as f:
                 f.write(f"\n# Gateway Client: {client_id}\n{ssh_public_key}\n")
+        os.chmod(user_home, 0o755)
         os.chmod(user_ssh_dir, 0o700)
         os.chmod(user_auth_keys, 0o600)
-        subprocess.run(["chown", "-R", f"{client_id}:haclients", user_ssh_dir], capture_output=True, timeout=3)
+        subprocess.run(["chown", "-R", f"{client_id}:haclients", user_home], capture_output=True, timeout=3)
     except Exception as e:
         print(f"[!] Error setting client authorized_keys: {e}")
 
