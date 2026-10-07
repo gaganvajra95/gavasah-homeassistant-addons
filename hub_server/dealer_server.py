@@ -3853,7 +3853,8 @@ HTML_PAGE = """<!DOCTYPE html>
 
         async function toggleDealerStatus(dealerId, newStatus) {
             const actionLabel = newStatus === 'suspended' ? 'suspend' : 'activate';
-            const warningExtra = newStatus === 'suspended' ? '\nAll active sessions for this dealer and their integrators will be terminated immediately.' : '';
+            const warningExtra = newStatus === 'suspended' ? `
+All active sessions for this dealer and their integrators will be terminated immediately.` : '';
             if (!confirm(`Are you sure you want to ${actionLabel} this dealer?${warningExtra}`)) {
                 return;
             }
@@ -3878,7 +3879,8 @@ HTML_PAGE = """<!DOCTYPE html>
 
         async function toggleIntegratorStatus(intId, newStatus) {
             const actionLabel = newStatus === 'suspended' ? 'suspend' : 'activate';
-            const warningExtra = newStatus === 'suspended' ? '\nAll active sessions for this integrator will be terminated immediately.' : '';
+            const warningExtra = newStatus === 'suspended' ? `
+All active sessions for this integrator will be terminated immediately.` : '';
             if (!confirm(`Are you sure you want to ${actionLabel} this integrator?${warningExtra}`)) {
                 return;
             }
