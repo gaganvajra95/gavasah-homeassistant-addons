@@ -2072,17 +2072,20 @@ HTML_PAGE = """<!DOCTYPE html>
             width: 100%;
             max-width: 100%;
             min-width: 0 !important;
-            overflow-x: auto !important;
+            max-height: min(68vh, calc(100vh - 260px));
+            overflow: auto !important;
             -webkit-overflow-scrolling: touch;
             backdrop-filter: blur(12px);
             margin-bottom: 24px;
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+            position: relative;
         }
 
         .table-wrap table {
             width: 100%;
-            min-width: 960px;
-            border-collapse: collapse;
+            min-width: 1080px;
+            border-collapse: separate;
+            border-spacing: 0;
         }
 
         .table-wrap th,
@@ -2090,20 +2093,179 @@ HTML_PAGE = """<!DOCTYPE html>
             white-space: nowrap;
         }
 
-        /* Sleek Cyberpunk Horizontal Scrollbar */
+        /* Sticky thead: Header stays locked at top when scrolling rows */
+        .table-wrap thead th {
+            position: sticky;
+            top: 0;
+            z-index: 18;
+            background: #0d1424;
+            border-bottom: 1px solid var(--border);
+        }
+
+        /* Sticky Left Column: Client Site Name stays anchored */
+        .table-wrap th:first-child,
+        .table-wrap td:first-child {
+            position: sticky;
+            left: 0;
+            z-index: 14;
+            background: #0b101d;
+            box-shadow: 4px 0 14px rgba(0, 0, 0, 0.65);
+        }
+        .table-wrap thead th:first-child {
+            z-index: 28;
+            background: #0d1424;
+        }
+
+        /* Sticky Right Column: Actions stay pinned */
+        .table-wrap th:last-child,
+        .table-wrap td:last-child {
+            position: sticky;
+            right: 0;
+            z-index: 14;
+            background: #0b101d;
+            box-shadow: -6px 0 16px rgba(0, 0, 0, 0.7);
+        }
+        .table-wrap thead th:last-child {
+            z-index: 28;
+            background: #0d1424;
+        }
+
+        .table-wrap tbody tr:hover td {
+            background: rgba(255, 255, 255, 0.03);
+        }
+        .table-wrap tbody tr:hover td:first-child,
+        .table-wrap tbody tr:hover td:last-child {
+            background: #141c2e !important;
+        }
+
+        /* Sleek Cyberpunk Scrollbars (Both Horizontal & Vertical) */
         .table-wrap::-webkit-scrollbar {
-            height: 8px;
+            width: 7px;
+            height: 9px;
         }
         .table-wrap::-webkit-scrollbar-track {
-            background: rgba(15, 23, 42, 0.7);
+            background: rgba(11, 16, 28, 0.85);
             border-radius: 4px;
         }
         .table-wrap::-webkit-scrollbar-thumb {
-            background: rgba(0, 240, 255, 0.35);
+            background: rgba(0, 240, 255, 0.4);
             border-radius: 4px;
+            border: 1px solid rgba(0, 240, 255, 0.15);
         }
         .table-wrap::-webkit-scrollbar-thumb:hover {
             background: var(--accent);
+            box-shadow: 0 0 10px rgba(0, 240, 255, 0.6);
+        }
+
+        /* Top Synchronized Scrollbar */
+        .table-top-scroll {
+            width: 100%;
+            overflow-x: auto;
+            overflow-y: hidden;
+            height: 12px;
+            margin-bottom: 6px;
+            border-radius: 6px;
+            background: rgba(11, 16, 28, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            display: none;
+        }
+        .table-top-scroll::-webkit-scrollbar {
+            height: 8px;
+        }
+        .table-top-scroll::-webkit-scrollbar-track {
+            background: rgba(11, 16, 28, 0.85);
+            border-radius: 4px;
+        }
+        .table-top-scroll::-webkit-scrollbar-thumb {
+            background: rgba(0, 240, 255, 0.4);
+            border-radius: 4px;
+        }
+        .table-top-scroll::-webkit-scrollbar-thumb:hover {
+            background: var(--accent);
+        }
+        .table-top-scroll-track {
+            height: 1px;
+        }
+
+        /* Quick Column Scroll Buttons */
+        .table-scroll-controls {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(0, 240, 255, 0.2);
+            border-radius: 8px;
+            padding: 3px 8px;
+        }
+        .btn-scroll-arrow {
+            background: rgba(0, 240, 255, 0.1);
+            color: #00f0ff;
+            border: 1px solid rgba(0, 240, 255, 0.3);
+            border-radius: 6px;
+            padding: 3px 8px;
+            font-size: 11px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.18s ease;
+            line-height: 1;
+        }
+        .btn-scroll-arrow:hover {
+            background: rgba(0, 240, 255, 0.25);
+            border-color: #00f0ff;
+            box-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
+            transform: translateY(-1px);
+        }
+        .scroll-label {
+            font-size: 10px;
+            color: #94a3b8;
+            font-family: 'JetBrains Mono', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            user-select: none;
+        }
+
+        .actions-btn-flex {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+        .btn-action-ingress {
+            color: #00f0ff !important;
+            border-color: rgba(0, 240, 255, 0.35) !important;
+            background: rgba(0, 240, 255, 0.08) !important;
+        }
+        .btn-action-ingress:hover {
+            background: rgba(0, 240, 255, 0.22) !important;
+            box-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
+        }
+        .btn-action-logs {
+            color: #94a3b8 !important;
+            border-color: rgba(148, 163, 184, 0.3) !important;
+            background: rgba(148, 163, 184, 0.08) !important;
+        }
+        .btn-action-logs:hover {
+            color: #e2e8f0 !important;
+            border-color: rgba(148, 163, 184, 0.6) !important;
+            background: rgba(148, 163, 184, 0.2) !important;
+        }
+        .btn-action-edit {
+            color: #38bdf8 !important;
+            border-color: rgba(56, 189, 248, 0.35) !important;
+            background: rgba(56, 189, 248, 0.08) !important;
+        }
+        .btn-action-edit:hover {
+            background: rgba(56, 189, 248, 0.22) !important;
+            box-shadow: 0 0 10px rgba(56, 189, 248, 0.4);
+        }
+        .btn-action-del {
+            color: #ef4444 !important;
+            border-color: rgba(239, 68, 68, 0.35) !important;
+            background: rgba(239, 68, 68, 0.08) !important;
+        }
+        .btn-action-del:hover {
+            background: rgba(239, 68, 68, 0.22) !important;
+            box-shadow: 0 0 10px rgba(239, 68, 68, 0.4);
         }
 
     </style>
@@ -2434,6 +2596,11 @@ HTML_PAGE = """<!DOCTYPE html>
                             <button class="pill-btn pill-green" id="filter-pill-online" onclick="setFleetFilter('ONLINE')">🟢 Online (<span id="pill-count-online">0</span>)</button>
                             <button class="pill-btn pill-red" id="filter-pill-lost" onclick="setFleetFilter('LOST')">🔴 Lost (<span id="pill-count-lost">0</span>)</button>
                         </div>
+                        <div class="table-scroll-controls" title="Scroll columns left or right without scrolling to bottom">
+                            <button type="button" class="btn-scroll-arrow" onclick="scrollTableBy('#tab-fleet .table-wrap', -320)" title="Scroll Left">◀</button>
+                            <span class="scroll-label">Scroll Columns</span>
+                            <button type="button" class="btn-scroll-arrow" onclick="scrollTableBy('#tab-fleet .table-wrap', 320)" title="Scroll Right">▶</button>
+                        </div>
                         <div class="pagination-bar">
                             <span>Rows:</span>
                             <select id="fleet-page-size" onchange="handlePageSizeChange(this.value)">
@@ -2446,6 +2613,11 @@ HTML_PAGE = """<!DOCTYPE html>
                             <button class="btn-sm" id="btn-fleet-prev" onclick="changeFleetPage(-1)" disabled style="padding: 4px 10px;">◀</button>
                             <button class="btn-sm" id="btn-fleet-next" onclick="changeFleetPage(1)" disabled style="padding: 4px 10px;">▶</button>
                         </div>
+                    </div>
+
+                    <!-- Top Synced Scrollbar for Instant Left/Right Navigation -->
+                    <div class="table-top-scroll" id="fleet-top-scroll">
+                        <div class="table-top-scroll-track" id="fleet-top-scroll-track"></div>
                     </div>
 
                     <div class="table-wrap">
@@ -3158,6 +3330,7 @@ HTML_PAGE = """<!DOCTYPE html>
             if (paneEl) paneEl.classList.add('active');
 
             // Refresh specific tab data
+            setTimeout(initAllTableScrollbars, 60);
             if (tabId === 'overview') {
                 if (currentUser.role === 'manufacturer') {
                     fetchDealers();
@@ -3865,8 +4038,8 @@ HTML_PAGE = """<!DOCTYPE html>
             const pageInfo = document.getElementById('fleet-page-info');
             if (pageInfo) pageInfo.innerText = `Showing ${totalItems ? startIdx + 1 : 0}-${Math.min(startIdx + fleetPageSize, totalItems)} of ${totalItems}`;
 
-            const prevBtn = document.getElementById('fleet-prev-btn');
-            const nextBtn = document.getElementById('fleet-next-btn');
+            const prevBtn = document.getElementById('btn-fleet-prev') || document.getElementById('fleet-prev-btn');
+            const nextBtn = document.getElementById('btn-fleet-next') || document.getElementById('fleet-next-btn');
             if (prevBtn) prevBtn.disabled = fleetCurrentPage <= 1;
             if (nextBtn) nextBtn.disabled = fleetCurrentPage >= totalPages;
 
@@ -3875,6 +4048,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
             tbody.innerHTML = pageData.map(c => {
                 const diff = now - (c.last_heartbeat || 0);
+                const humanDiff = formatHeartbeatTime(diff);
                 let stClass = 'status-online';
                 let stText = 'ONLINE';
                 if (diff > 180) { stClass = 'status-lost'; stText = 'OFFLINE'; }
@@ -3890,7 +4064,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 // Dealer cell (only for manufacturer)
                 const dealerCell = currentUser.role === 'manufacturer' ? `
                     <td>
-                        <span class="badge-role" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3);">
+                        <span class="badge-role" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); white-space: nowrap;">
                             ${escapeHtml(c.dealer_name || 'Master Direct')}
                         </span>
                     </td>
@@ -3900,11 +4074,11 @@ HTML_PAGE = """<!DOCTYPE html>
                 const integratorCell = currentUser.role !== 'integrator' ? `
                     <td>
                         ${c.integrator_name && c.integrator_name !== 'Direct Dealer Supervision' ? `
-                            <span class="badge-role" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3);">
+                            <span class="badge-role" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); white-space: nowrap;">
                                 🔧 ${escapeHtml(c.integrator_name)}
                             </span>
                         ` : `
-                            <span class="badge-role" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3);">
+                            <span class="badge-role" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); white-space: nowrap;">
                                 🛡️ Direct Dealer Supervision
                             </span>
                         `}
@@ -3924,14 +4098,17 @@ HTML_PAGE = """<!DOCTYPE html>
                         <td>
                             <div style="display: flex; align-items: center; gap: 6px;">
                                 <span class="badge-status ${stClass}">${stText}</span>
-                                <span style="font-size: 11px; color: #64748b;">${diff}s ago</span>
+                                <span style="font-size: 11px; color: #94a3b8; font-family: monospace; white-space: nowrap;">${humanDiff}</span>
                             </div>
                         </td>
                         <td>
-                            <label class="toggle-switch">
-                                <input type="checkbox" ${remoteEnabled ? 'checked' : ''} onchange="toggleRemoteAccess('${c.client_id}', this.checked)">
-                                <span class="toggle-slider"></span>
-                            </label>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <label class="toggle-switch">
+                                    <input type="checkbox" ${remoteEnabled ? 'checked' : ''} onchange="toggleRemoteAccess('${c.client_id}', this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                                <span style="font-size: 10px; font-weight: 700; color: ${remoteEnabled ? '#00f0ff' : '#64748b'}; letter-spacing: 0.5px;">${remoteEnabled ? 'LIVE' : 'OFF'}</span>
+                            </div>
                         </td>
                         <td>
                             <span class="badge-slot slot-${slot.toLowerCase()}">SLOT ${slot}</span>
@@ -3945,20 +4122,139 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div style="color: #cbd5e1;">CPU: ${sys.cpu_percent || 0}% &bull; RAM: ${sys.memory_percent || 0}%</div>
                             <div style="color: #64748b; font-size: 11px;">HAOS ${escapeHtml(sys.haos_version || '13.2')}</div>
                         </td>
-                        <td>
-                            <div style="display: flex; gap: 4px; flex-wrap: wrap;">
-                                <a href="https://${escapeHtml(c.domain)}" target="_blank" class="btn-action-icon" style="color: #00f0ff; border-color: rgba(0, 240, 255, 0.3);" title="Open Client Home Assistant Web GUI">🌐 Ingress</a>
-                                <button class="btn-action-icon" onclick="openLogsModal('${c.client_id}')" title="Audit Telemetry Logs">📋 Logs</button>
+                        <td class="col-actions-sticky">
+                            <div class="actions-btn-flex">
+                                <a href="https://${escapeHtml(c.domain)}" target="_blank" class="btn-action-icon btn-action-ingress" title="Open Client Home Assistant Web GUI">🌐 Ingress</a>
+                                <button class="btn-action-icon btn-action-logs" onclick="openLogsModal('${c.client_id}')" title="Audit Telemetry Logs">📋 Logs</button>
                                 ${currentUser.role !== 'integrator' ? `
                                     <button class="btn-action-icon btn-reassign-sm" onclick="openReassignModal('${c.client_id}')" title="Reassign Supervision">🔄 Transfer</button>
                                 ` : ''}
-                                <button class="btn-action-icon" onclick="openEditModal('${c.client_id}')" title="Edit Site Config">✏️</button>
-                                <button class="btn-action-icon" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.3);" onclick="promptDelete('${c.client_id}', '${escapeHtml(c.name)}')" title="Delete Site">🗑️</button>
+                                <button class="btn-action-icon btn-action-edit" onclick="openEditModal('${c.client_id}')" title="Edit Site Config">✏️ Edit</button>
+                                <button class="btn-action-icon btn-action-del" onclick="promptDelete('${c.client_id}', '${escapeHtml(c.name)}')" title="Delete Site">🗑️</button>
                             </div>
                         </td>
                     </tr>
                 `;
             }).join('') || `<tr><td colspan="${currentUser.role === 'manufacturer' ? 9 : 8}" style="text-align: center; color: #64748b; padding: 32px;">No gateways match the selected filter.</td></tr>`;
+
+            // Initialize / sync top and bottom horizontal scrollbars
+            setTimeout(initAllTableScrollbars, 40);
+        }
+
+        // ======================================================================
+        // HORIZONTAL SCROLL & RESPONSIVE TABLE UTILITIES
+        // ======================================================================
+        function formatHeartbeatTime(diff) {
+            if (diff === null || diff === undefined || diff < 0) return 'never';
+            if (diff < 5) return 'just now';
+            if (diff < 60) return `${diff}s ago`;
+            const mins = Math.floor(diff / 60);
+            if (mins < 60) return `${mins}m ago`;
+            const hrs = Math.floor(mins / 60);
+            const remM = mins % 60;
+            if (hrs < 24) return `${hrs}h ${remM}m ago`;
+            const days = Math.floor(hrs / 24);
+            const remH = hrs % 24;
+            return `${days}d ${remH}h ago`;
+        }
+
+        function scrollTableBy(target, delta) {
+            const wrap = (typeof target === 'string') ? document.querySelector(target) : target;
+            if (wrap) {
+                wrap.scrollBy({ left: delta, behavior: 'smooth' });
+            }
+        }
+
+        function enableDragToScroll(wrap) {
+            if (!wrap || wrap._hasDragScroll) return;
+            wrap._hasDragScroll = true;
+            let isDown = false;
+            let startX = 0;
+            let scrollLeft = 0;
+
+            wrap.addEventListener('mousedown', (e) => {
+                if (e.target.closest('button, a, input, select, label, textarea, .toggle-switch')) return;
+                isDown = true;
+                wrap.classList.add('is-dragging');
+                wrap.style.cursor = 'grabbing';
+                startX = e.pageX - wrap.offsetLeft;
+                scrollLeft = wrap.scrollLeft;
+            });
+
+            window.addEventListener('mouseup', () => {
+                if (isDown) {
+                    isDown = false;
+                    wrap.classList.remove('is-dragging');
+                    wrap.style.cursor = '';
+                }
+            });
+
+            wrap.addEventListener('mousemove', (e) => {
+                if (!isDown) return;
+                e.preventDefault();
+                const x = e.pageX - wrap.offsetLeft;
+                const walk = (x - startX) * 1.5;
+                wrap.scrollLeft = scrollLeft - walk;
+            });
+        }
+
+        function initAllTableScrollbars() {
+            document.querySelectorAll('.table-wrap').forEach(wrap => {
+                let topScroll = wrap.previousElementSibling;
+                if (!topScroll || !topScroll.classList.contains('table-top-scroll')) {
+                    topScroll = document.createElement('div');
+                    topScroll.className = 'table-top-scroll';
+                    const track = document.createElement('div');
+                    track.className = 'table-top-scroll-track';
+                    topScroll.appendChild(track);
+                    wrap.parentNode.insertBefore(topScroll, wrap);
+                }
+                const track = topScroll.querySelector('.table-top-scroll-track');
+
+                const updateSync = () => {
+                    if (!wrap || !track) return;
+                    const scrollW = wrap.scrollWidth;
+                    const clientW = wrap.clientWidth;
+                    track.style.width = scrollW + 'px';
+                    if (scrollW > clientW + 8) {
+                        topScroll.style.display = 'block';
+                    } else {
+                        topScroll.style.display = 'none';
+                    }
+                };
+
+                if (!wrap._scrollListenersBound) {
+                    wrap._scrollListenersBound = true;
+                    let isSyncing = false;
+
+                    wrap.addEventListener('scroll', () => {
+                        if (!isSyncing) {
+                            isSyncing = true;
+                            topScroll.scrollLeft = wrap.scrollLeft;
+                            isSyncing = false;
+                        }
+                    }, { passive: true });
+
+                    topScroll.addEventListener('scroll', () => {
+                        if (!isSyncing) {
+                            isSyncing = true;
+                            wrap.scrollLeft = topScroll.scrollLeft;
+                            isSyncing = false;
+                        }
+                    }, { passive: true });
+
+                    enableDragToScroll(wrap);
+
+                    if (window.ResizeObserver) {
+                        const ro = new ResizeObserver(() => updateSync());
+                        ro.observe(wrap);
+                        const tbl = wrap.querySelector('table');
+                        if (tbl) ro.observe(tbl);
+                    }
+                }
+
+                updateSync();
+            });
         }
 
         // ======================================================================
