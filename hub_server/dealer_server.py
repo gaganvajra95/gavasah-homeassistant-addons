@@ -17,6 +17,9 @@ LOGS_DIR = os.environ.get('LOGS_DIR', os.path.join(BASE_DIR, 'logs'))
 DB_FILE = os.environ.get('DB_FILE', os.path.join(BASE_DIR, 'fleet.db'))
 CADDY_HOST = os.environ.get('CADDY_HOST', '192.168.6.170')
 PORT = int(os.environ.get('PORT', 3000))
+WG_SERVER_PUBKEY = os.environ.get('WG_SERVER_PUBKEY', 'SpiDqVVfDrzrIlfmuDbffXVwQcWC2bb4J5TopI1q6Wk=')
+WG_ENDPOINT = os.environ.get('WG_ENDPOINT', 'dealer.gavasah.com:51820')
+WG_INTERFACE = os.environ.get('WG_INTERFACE', 'wg0')
 
 # Thread concurrency locks
 STATE_LOCK = threading.RLock()
@@ -40,6 +43,54 @@ def hash_password(password, salt=None):
 def verify_password(password, salt, expected_hash):
     _, test_hash = hash_password(password, salt)
     return secrets.compare_digest(test_hash, expected_hash)
+
+# ==============================================================================
+# WireGuard Overlay Mesh Data Access & Peer Management
+# ==============================================================================
+def generate_wg_keypair():
+    try:
+        priv = subprocess.check_output(['wg', 'genkey'], text=True).strip()
+        pub = subprocess.check_output(['wg', 'pubkey'], input=priv, text=True).strip()
+        return priv, pub
+    except Exception:
+        priv = base64.b64encode(secrets.token_bytes(32)).decode()
+        pub = base64.b64encode(hashlib.sha256(priv.encode()).digest()).decode()
+        return priv, pub
+
+def sync_wireguard_peer(pubkey, ip):
+    if not pubkey or not ip or os.name == 'nt' or os.environ.get('MOCK_WG') == '1':
+        return True
+    try:
+        cmd = ['wg', 'set', WG_INTERFACE, 'peer', pubkey, 'allowed-ips', f"{ip}/32", 'persistent-keepalive', '25']
+        subprocess.run(cmd, check=True, timeout=5)
+        return True
+    except Exception as e:
+        print(f"[!] Warning syncing WireGuard peer {pubkey} ({ip}): {e}")
+        return False
+
+def remove_wireguard_peer(pubkey):
+    if not pubkey or os.name == 'nt' or os.environ.get('MOCK_WG') == '1':
+        return True
+    try:
+        cmd = ['wg', 'set', WG_INTERFACE, 'peer', pubkey, 'remove']
+        subprocess.run(cmd, check=True, timeout=5)
+        return True
+    except Exception as e:
+        print(f"[!] Warning removing WireGuard peer {pubkey}: {e}")
+        return False
+
+def allocate_next_wg_ip():
+    with DB_LOCK:
+        conn = get_db_connection()
+        rows = conn.execute("SELECT wg_ip FROM clients WHERE wg_ip IS NOT NULL").fetchall()
+        conn.close()
+        used_ips = {r['wg_ip'] for r in rows}
+        for b in range(0, 256):
+            for c in range(2 if b == 0 else 1, 255):
+                candidate = f"10.42.{b}.{c}"
+                if candidate not in used_ips:
+                    return candidate
+        raise Exception("WireGuard /16 subnet address space exhausted (65,534 nodes allocated)!")
 
 # ==============================================================================
 # SQLite with WAL Mode (Write-Ahead Logging) Data Access Layer
@@ -113,8 +164,13 @@ def init_sqlite_database():
             integrator_name TEXT,
             domain TEXT NOT NULL,
             auth_secret TEXT NOT NULL,
-            dashboard_port INTEGER UNIQUE NOT NULL,
-            ssh_port INTEGER UNIQUE NOT NULL,
+            dashboard_port INTEGER,
+            ssh_port INTEGER,
+            wg_ip TEXT,
+            wg_pubkey TEXT,
+            wg_privkey TEXT,
+            tunnel_mode TEXT DEFAULT 'wireguard',
+            
             knx_ip TEXT NOT NULL,
             knx_port INTEGER NOT NULL,
             last_heartbeat INTEGER NOT NULL,
@@ -139,6 +195,48 @@ def init_sqlite_database():
         CREATE INDEX IF NOT EXISTS idx_clients_integrator ON clients(integrator_id);
         CREATE INDEX IF NOT EXISTS idx_logs_client_time ON client_logs(client_id, timestamp DESC);
         """)
+
+        # Ensure WireGuard columns exist for upgrade
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(clients)")
+        cols = {r['name'] for r in cur.fetchall()}
+        if 'wg_ip' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN wg_ip TEXT")
+        if 'wg_pubkey' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN wg_pubkey TEXT")
+        if 'wg_privkey' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN wg_privkey TEXT")
+        if 'tunnel_mode' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN tunnel_mode TEXT DEFAULT 'wireguard'")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_wg_ip ON clients(wg_ip);")
+
+        # Auto-migrate all existing clients to WireGuard
+        cur.execute("SELECT client_id, name FROM clients WHERE wg_ip IS NULL OR wg_ip = ''")
+        unmigrated = cur.fetchall()
+        if unmigrated:
+            print(f"[*] Auto-migrating {len(unmigrated)} existing client(s) to WireGuard...")
+            cur.execute("SELECT wg_ip FROM clients WHERE wg_ip IS NOT NULL")
+            used_ips = {r['wg_ip'] for r in cur.fetchall()}
+            for row in unmigrated:
+                cid = row['client_id']
+                assigned_ip = None
+                for b in range(0, 256):
+                    for c in range(2 if b == 0 else 1, 255):
+                        candidate = f"10.42.{b}.{c}"
+                        if candidate not in used_ips:
+                            assigned_ip = candidate
+                            used_ips.add(candidate)
+                            break
+                    if assigned_ip:
+                        break
+                priv, pub = generate_wg_keypair()
+                conn.execute(
+                    "UPDATE clients SET wg_ip = ?, wg_pubkey = ?, wg_privkey = ?, tunnel_mode = 'wireguard' WHERE client_id = ?",
+                    (assigned_ip, pub, priv, cid)
+                )
+                sync_wireguard_peer(pub, assigned_ip)
+                print(f"[OK] Migrated '{cid}' -> IP: {assigned_ip}, PubKey: {pub[:14]}...")
+
 
         # Migration logic if database is newly initialized
         cur = conn.cursor()
@@ -201,18 +299,29 @@ def init_sqlite_database():
                     with open(STATE_FILE, 'r', encoding='utf-8') as f:
                         c_data = json.load(f)
                     for cid, c in c_data.items():
-                        conn.execute("INSERT OR REPLACE INTO clients VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        conn.execute("""INSERT OR REPLACE INTO clients (
+                            client_id, name, dealer_id, dealer_name, integrator_id, integrator_name,
+                            domain, auth_secret, dashboard_port, ssh_port, knx_ip, knx_port,
+                            last_heartbeat, status, remote_enabled, system_json, network_json, knx_json,
+                            wg_ip, wg_pubkey, wg_privkey, tunnel_mode
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                             (c.get('client_id', cid), c.get('name', cid), c.get('dealer_id', 'dealer_apex'), c.get('dealer_name', 'Apex Smart Automation'),
                              c.get('integrator_id', 'int_apex_rajesh'), c.get('integrator_name', 'Rajesh Kumar (Lead Integrator)'), c.get('domain', f"{cid}.gavasah.com"),
                              c.get('auth_secret', ''), int(c.get('dashboard_port', 10001)), int(c.get('ssh_port', 22001)),
                              c.get('knx_ip', '192.168.1.111'), int(c.get('knx_port', 3671)), int(c.get('last_heartbeat', int(time.time()))),
                              c.get('status', 'online'), 1 if c.get('remote_enabled', True) else 0,
-                             json.dumps(c.get('system', {})), json.dumps(c.get('network', {})), json.dumps(c.get('knx_status', {})))
+                             json.dumps(c.get('system', {})), json.dumps(c.get('network', {})), json.dumps(c.get('knx_status', {})),
+                             c.get('wg_ip'), c.get('wg_pubkey'), c.get('wg_privkey'), c.get('tunnel_mode', 'wireguard'))
                         )
                 except Exception as e:
                     print(f"[!] Clients migration error: {e}")
             else:
-                conn.execute("INSERT OR REPLACE INTO clients VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                conn.execute("""INSERT OR REPLACE INTO clients (
+                    client_id, name, dealer_id, dealer_name, integrator_id, integrator_name,
+                    domain, auth_secret, dashboard_port, ssh_port, knx_ip, knx_port,
+                    last_heartbeat, status, remote_enabled, system_json, network_json, knx_json,
+                    wg_ip, wg_pubkey, wg_privkey, tunnel_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     ('sharma-villa', 'Sharma Residence (Jubilee Hills)', 'dealer_apex', 'Apex Smart Automation',
                      'int_apex_rajesh', 'Rajesh Kumar (Lead Integrator)', 'sharma-villa.gavasah.com',
                      '', 10001, 22001,
@@ -220,7 +329,8 @@ def init_sqlite_database():
                      'online', 1,
                      json.dumps({"haos_version": "13.2", "core_version": "2026.9.3", "cpu_percent": 12.4, "memory_percent": 41.2, "disk_free_gb": 182.4}),
                      json.dumps({"local_ipv4": "192.168.1.105", "gateway": "192.168.1.1", "mac_address": "E4:5F:01:42:33:9A"}),
-                     json.dumps({"state": "connected", "telegrams_rx": 4120, "telegrams_tx": 305}))
+                     json.dumps({"state": "connected", "telegrams_rx": 4120, "telegrams_tx": 305}),
+                     '10.42.0.2', 'WGPUB_SHARMA_TEST_KEY_44CHARS_BASE64_OK===', 'WGPRIV_SHARMA_TEST_KEY_44CHARS_BASE64_OK==', 'wireguard')
                 )
 
             conn.commit()
@@ -338,13 +448,19 @@ def save_clients_state(data):
                     sys_json = json.dumps(c.get('system', {}))
                     net_json = json.dumps(c.get('network', {}))
                     knx_json = json.dumps(c.get('knx_status', {}))
-                    conn.execute("INSERT OR REPLACE INTO clients VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    conn.execute("""INSERT OR REPLACE INTO clients (
+                        client_id, name, dealer_id, dealer_name, integrator_id, integrator_name,
+                        domain, auth_secret, dashboard_port, ssh_port, knx_ip, knx_port,
+                        last_heartbeat, status, remote_enabled, system_json, network_json, knx_json,
+                        wg_ip, wg_pubkey, wg_privkey, tunnel_mode
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (c.get('client_id', cid), c.get('name', cid), c.get('dealer_id', 'owner_master'), c.get('dealer_name', 'Master Manufacturer (Direct)'),
                          c.get('integrator_id'), c.get('integrator_name', 'Direct Dealer Supervision'), c.get('domain', f"{cid}.gavasah.com"),
                          c.get('auth_secret', ''), int(c.get('dashboard_port', 10001)), int(c.get('ssh_port', 22001)),
                          c.get('knx_ip', '192.168.1.100'), int(c.get('knx_port', 3671)), int(c.get('last_heartbeat', int(time.time()))),
                          c.get('status', 'online'), 1 if c.get('remote_enabled', True) else 0,
-                         sys_json, net_json, knx_json)
+                         sys_json, net_json, knx_json,
+                         c.get('wg_ip'), c.get('wg_pubkey'), c.get('wg_privkey'), c.get('tunnel_mode', 'wireguard'))
                     )
             conn.close()
             return True
@@ -393,15 +509,18 @@ def sync_client_ssh_user(client_id, ssh_public_key):
         print(f"[!] Error syncing SSH key: {e}")
         return False
 
-def sync_caddy_ingress(client_id, dash_port, proto="http", enabled=True, force=False):
+def sync_caddy_ingress(client_id, dash_port, proto="http", enabled=True, force=False, wg_ip=None):
     cache_key = client_id
-    config_tuple = (dash_port, proto, enabled)
+    config_tuple = (dash_port, proto, enabled, wg_ip)
     if not force and SYNCED_CADDY_ROUTES.get(cache_key) == config_tuple:
         return True
 
     domain = f"{client_id}.gavasah.com"
     if not enabled:
         block = f"# Client: {client_id}\n{domain} {{\n    respond \"Remote Access Suspended by Dealer\" 403\n}}"
+    elif wg_ip:
+        # High-performance WireGuard direct proxy (0 host TCP ports consumed)
+        block = f"# Client: {client_id} (WireGuard Mesh)\n{domain} {{\n    reverse_proxy {wg_ip}:8123\n}}"
     elif proto == "https":
         block = f"# Client: {client_id}\n{domain} {{\n    reverse_proxy https://192.168.6.150:{dash_port} {{\n        transport http {{\n            tls_insecure_skip_verify\n        }}\n    }}\n}}"
     else:
@@ -4228,6 +4347,165 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(200, certs)
             return
 
+        # 12a. Zero-Touch Client Provisioning API (JSON payload)
+        elif parsed.path == '/api/provision':
+            query = parse_qs(parsed.query)
+            client_id = (query.get('client_id', [''])[0]).strip()
+            secret = (query.get('auth_secret', [''])[0]).strip()
+
+            c_data = load_clients_state()
+            client = c_data.get(client_id)
+            if not client:
+                self.send_json(404, {'error': 'Client site not found'})
+                return
+
+            user = self.get_authenticated_user()
+            if not user and client.get('auth_secret') and client['auth_secret'] != secret:
+                self.send_json(403, {'error': 'Unauthorized: Valid auth_secret required'})
+                return
+
+            self.send_json(200, {
+                'ok': True,
+                'client_id': client_id,
+                'name': client.get('name'),
+                'domain': client.get('domain'),
+                'wg_ip': client.get('wg_ip'),
+                'wg_netmask': '16',
+                'wg_private_key': client.get('wg_privkey'),
+                'wg_public_key': client.get('wg_pubkey'),
+                'server_public_key': WG_SERVER_PUBKEY,
+                'endpoint': WG_ENDPOINT,
+                'allowed_ips': '10.42.0.0/16',
+                'persistent_keepalive': 25,
+                'tunnel_mode': client.get('tunnel_mode', 'wireguard')
+            })
+            return
+
+        # 12b. Automated Zero-Touch Bootstrap Shell Script
+        elif parsed.path == '/api/bootstrap':
+            query = parse_qs(parsed.query)
+            client_id = (query.get('client_id', [''])[0]).strip()
+            secret = (query.get('auth_secret', [''])[0]).strip()
+
+            c_data = load_clients_state()
+            client = c_data.get(client_id)
+            if not client:
+                self.send_response(404)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b"echo error\nexit 1\n")
+                return
+
+            user = self.get_authenticated_user()
+            if not user and client.get('auth_secret') and client['auth_secret'] != secret:
+                self.send_response(403)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b"echo error\nexit 1\n")
+                return
+
+            wg_ip = client.get('wg_ip', '10.42.0.2')
+            wg_priv = client.get('wg_privkey', '')
+            auth_sec = client.get('auth_secret', '')
+
+            script = f'''#!/bin/bash
+# ==============================================================================
+# GAVASAH Zero-Touch Automated Gateway Provisioner
+# Site: {client.get('name', client_id)} ({client_id})
+# Virtual Mesh IP: {wg_ip}
+# ==============================================================================
+set -e
+echo "[*] Initializing GAVASAH Zero-Touch WireGuard Mesh Provisioner..."
+echo "[*] Target Site: {client_id}"
+
+# 1. Install wireguard-tools if missing
+if ! command -v wg &> /dev/null; then
+    echo "[*] Installing wireguard-tools..."
+    if command -v apt-get &> /dev/null; then
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -y && apt-get install -y wireguard wireguard-tools resolvconf curl
+    elif command -v apk &> /dev/null; then
+        apk add wireguard-tools curl
+    fi
+fi
+
+# 2. Write /etc/wireguard/wg0.conf
+mkdir -p /etc/wireguard
+chmod 700 /etc/wireguard
+cat << 'WGEOF' > /etc/wireguard/wg0.conf
+[Interface]
+Address = {wg_ip}/16
+PrivateKey = {wg_priv}
+
+[Peer]
+PublicKey = {WG_SERVER_PUBKEY}
+Endpoint = {WG_ENDPOINT}
+AllowedIPs = 10.42.0.0/16
+PersistentKeepalive = 25
+WGEOF
+chmod 600 /etc/wireguard/wg0.conf
+
+# 3. Enable and Start WireGuard
+if command -v systemctl &> /dev/null; then
+    systemctl enable --now wg-quick@wg0 || wg-quick up wg0 || true
+else
+    wg-quick up wg0 || true
+fi
+
+# 4. Notify Cloud Hub of Successful Automated Provisioning
+curl -s -X POST https://dealer.gavasah.com/api/heartbeat \
+    -H "Content-Type: application/json" \
+    -d '{{"client_id": "{client_id}", "auth_secret": "{auth_sec}", "system": {{"provisioned_at": {int(time.time())}, "tunnel_mode": "wireguard", "status": "active"}}}}' > /dev/null || true
+
+echo "[OK] Zero-Touch Provisioning Complete! WireGuard Virtual Mesh IP: {wg_ip}"
+'''
+            encoded = script.encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/x-shellscript')
+            self.send_header('Content-Length', str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+            return
+
+        # 12c. Raw WireGuard INI Config Download (wg0.conf)
+        elif parsed.path == '/api/wireguard_config':
+            query = parse_qs(parsed.query)
+            client_id = (query.get('client_id', [''])[0]).strip()
+            secret = (query.get('auth_secret', [''])[0]).strip()
+
+            c_data = load_clients_state()
+            client = c_data.get(client_id)
+            if not client:
+                self.send_json(404, {'error': 'Client site not found'})
+                return
+
+            user = self.get_authenticated_user()
+            if not user and client.get('auth_secret') and client['auth_secret'] != secret:
+                self.send_json(403, {'error': 'Unauthorized: Valid auth_secret required'})
+                return
+
+            wg_ip = client.get('wg_ip', '10.42.0.2')
+            wg_priv = client.get('wg_privkey', '')
+
+            conf = f'''[Interface]
+Address = {wg_ip}/16
+PrivateKey = {wg_priv}
+
+[Peer]
+PublicKey = {WG_SERVER_PUBKEY}
+Endpoint = {WG_ENDPOINT}
+AllowedIPs = 10.42.0.0/16
+PersistentKeepalive = 25
+'''
+            encoded = conf.encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.send_header('Content-Disposition', f'attachment; filename="{client_id}-wg0.conf"')
+            self.send_header('Content-Length', str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+            return
+
         else:
             self.send_response(404)
             self.end_headers()
@@ -5008,6 +5286,8 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             })
             return
 
+        
+
         # 12. Onboard New Client Site (Manufacturer, Dealers & Integrators)
         elif parsed.path == '/api/onboard':
             user = self.get_authenticated_user()
@@ -5111,7 +5391,12 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json(400, {'error': f"Client identifier '{clean_id}' is already registered under this dealership"})
                 return
 
-            # Allocate dynamic ports
+            # Zero-Touch WireGuard Mesh IP Allocation (Option A)
+            wg_ip = allocate_next_wg_ip()
+            wg_priv, wg_pub = generate_wg_keypair()
+            sync_wireguard_peer(wg_pub, wg_ip)
+
+            # Fallback legacy ports
             existing_dash_ports = [c.get('dashboard_port', 0) for c in c_data.values()]
             existing_ssh_ports = [c.get('ssh_port', 0) for c in c_data.values()]
             dash_port = 10001
@@ -5132,6 +5417,10 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                 'auth_secret': auth_secret or secrets.token_hex(16),
                 'dashboard_port': dash_port,
                 'ssh_port': ssh_port,
+                'wg_ip': wg_ip,
+                'wg_pubkey': wg_pub,
+                'wg_privkey': wg_priv,
+                'tunnel_mode': 'wireguard',
                 'knx_ip': knx_ip,
                 'knx_port': knx_port,
                 'last_heartbeat': int(time.time()),
@@ -5163,12 +5452,19 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             save_clients_state(c_data)
 
             # Ingress and SSH config
-            sync_caddy_ingress(clean_id, dash_port, 'http', True)
+            sync_caddy_ingress(clean_id, dash_port, 'http', True, wg_ip=wg_ip)
             if ssh_key:
                 sync_client_ssh_user(clean_id, ssh_key)
 
             append_client_log(clean_id, 'INFO', 'ONBOARD_COMPLETE', f"Site '{client_name}' onboarded successfully by {user['name']}.")
-            self.send_json(200, {'ok': True, 'client': new_client})
+            bootstrap_cmd = f"curl -sSL https://dealer.gavasah.com/api/bootstrap?client_id={clean_id}&auth_secret={new_client['auth_secret']} | bash"
+            self.send_json(200, {
+                'ok': True,
+                'client': new_client,
+                'wg_ip': wg_ip,
+                'wg_pubkey': wg_pub,
+                'bootstrap_cmd': bootstrap_cmd
+            })
             return
 
         # 13. Update Client Site Details
@@ -5248,7 +5544,7 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             return
 
         # 15. Delete Client Site
-        elif parsed.path == '/api/delete_site':
+        elif parsed.path in ['/api/delete_site', '/api/delete_client']:
             user = self.get_authenticated_user()
             if not user:
                 self.send_json(401, {'error': 'Authentication required'})
@@ -5271,6 +5567,10 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             elif user['role'] == 'integrator' and client.get('integrator_id') != user['id']:
                 self.send_json(403, {'error': 'Access denied'})
                 return
+
+            wg_pub = client.get('wg_pubkey')
+            if wg_pub:
+                remove_wireguard_peer(wg_pub)
 
             del c_data[client_id]
             save_clients_state(c_data)
