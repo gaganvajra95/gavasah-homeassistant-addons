@@ -476,6 +476,186 @@ def auto_detect_knx_gateway(opts):
 _prev_cpu_jiffies = None
 _prev_cpu_time = None
 
+
+def detect_all_technologies(opts):
+    """
+    Detects all active automation technologies and subsystems on this Home Assistant gateway:
+    1. KNX: Native integration / IP Gateway / Routing / Tunneling
+    2. Zigbee: Detects ALL installed Zigbee2MQTT add-on instances (supports multiple Z2M add-ons) and ZHA
+    3. Lutron: Caséta, RadioRA 2/3, Homeworks QSX integrations
+    4. Matter: Matter Server add-on / Native Matter integration
+    """
+    addons_resp = supervisor_get("addons")
+    addons_list = addons_resp.get("addons", []) if isinstance(addons_resp, dict) else []
+
+    # 1. KNX Auto-Detection
+    knx_info = auto_detect_knx_gateway(opts)
+
+    # 2. Zigbee: Detect ALL Zigbee2MQTT Add-on instances
+    z2m_instances = []
+    for a in addons_list:
+        slug = str(a.get("slug", "")).lower()
+        name = str(a.get("name", "")).lower()
+        if "zigbee2mqtt" in slug or "zigbee2mqtt" in name or "zigbee 2 mqtt" in name:
+            z2m_instances.append({
+                "name": a.get("name", "Zigbee2MQTT"),
+                "slug": a.get("slug", ""),
+                "version": a.get("version", ""),
+                "state": a.get("state", "unknown"),
+                "running": a.get("state") == "started"
+            })
+
+    # Check native ZHA (Zigbee Home Automation)
+    zha_detected = False
+    for spath in ['/homeassistant/.storage/core.config_entries', '/config/.storage/core.config_entries']:
+        if os.path.exists(spath):
+            try:
+                with open(spath, 'r', encoding='utf-8') as f:
+                    entries = json.load(f).get('data', {}).get('entries', [])
+                    if any(e.get('domain') == 'zha' for e in entries):
+                        zha_detected = True
+                        break
+            except Exception:
+                pass
+
+    zigbee_info = {
+        "detected": len(z2m_instances) > 0 or zha_detected,
+        "type": "Zigbee2MQTT" if z2m_instances else ("ZHA" if zha_detected else "None"),
+        "count": len(z2m_instances),
+        "instances": z2m_instances,
+        "zha_detected": zha_detected
+    }
+
+    # 3. Lutron Subsystem Detection
+    lutron_entries = []
+    for spath in ['/homeassistant/.storage/core.config_entries', '/config/.storage/core.config_entries']:
+        if os.path.exists(spath):
+            try:
+                with open(spath, 'r', encoding='utf-8') as f:
+                    entries = json.load(f).get('data', {}).get('entries', [])
+                    for e in entries:
+                        domain = e.get('domain', '')
+                        if domain in ['lutron', 'lutron_caseta', 'lutron_homeworks']:
+                            lutron_entries.append({
+                                "domain": domain,
+                                "title": e.get('title', 'Lutron System')
+                            })
+            except Exception:
+                pass
+
+    lutron_info = {
+        "detected": len(lutron_entries) > 0,
+        "type": lutron_entries[0]["domain"].replace("_", " ").title() if lutron_entries else "None",
+        "entries": lutron_entries
+    }
+
+    # 4. Matter Subsystem Detection
+    matter_detected = False
+    matter_state = "not_installed"
+    for a in addons_list:
+        slug = str(a.get("slug", "")).lower()
+        name = str(a.get("name", "")).lower()
+        if "matter" in slug or "matter" in name:
+            matter_detected = True
+            matter_state = a.get("state", "unknown")
+            break
+
+    if not matter_detected:
+        for spath in ['/homeassistant/.storage/core.config_entries', '/config/.storage/core.config_entries']:
+            if os.path.exists(spath):
+                try:
+                    with open(spath, 'r', encoding='utf-8') as f:
+                        entries = json.load(f).get('data', {}).get('entries', [])
+                        if any(e.get('domain') == 'matter' for e in entries):
+                            matter_detected = True
+                            matter_state = "configured"
+                            break
+                except Exception:
+                    pass
+
+    matter_info = {
+        "detected": matter_detected,
+        "state": matter_state
+    }
+
+    return {
+        "knx": knx_info,
+        "zigbee": zigbee_info,
+        "lutron": lutron_info,
+        "matter": matter_info
+    }
+
+def handle_backup_trigger_async(hub_host, opts, trigger_info):
+    """Runs supervisor backup snapshot creation and uploads .tar archive to central hub."""
+    import threading
+    def _worker():
+        client_id = opts.get("client_id", "unconfigured")
+        b_name = trigger_info.get("name") or f"Gavasah Snapshot - {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
+        log(f"[SNAPSHOT] Creating full Home Assistant backup: '{b_name}'...")
+        if not SUPERVISOR_TOKEN:
+            log("[SNAPSHOT] Error: Supervisor token unavailable")
+            return
+
+        slug = None
+        try:
+            req = urllib.request.Request(
+                f"{SUPERVISOR_URL}/backups/new/full",
+                data=json.dumps({"name": b_name}).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+                    "Content-Type": "application/json"
+                },
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                data = json.loads(resp.read().decode())
+                slug = data.get("data", {}).get("slug")
+                log(f"[SNAPSHOT] Backup created successfully with slug: {slug}")
+        except Exception as e:
+            log(f"[SNAPSHOT] Error creating backup: {e}")
+            return
+
+        if not slug:
+            return
+
+        # Stream / upload newly generated backup to GAVASAH Hub for one-click dealer downloading
+        try:
+            download_url = f"{SUPERVISOR_URL}/backups/{slug}/download"
+            req_dl = urllib.request.Request(download_url, headers={"Authorization": f"Bearer {SUPERVISOR_TOKEN}"})
+            import ssl
+            ctx = ssl._create_unverified_context()
+            
+            upload_url = f"https://{hub_host}/api/client_backup_upload?client_id={urllib.parse.quote(client_id)}&slug={slug}&name={urllib.parse.quote(b_name)}"
+            fallback_upload = f"https://dealer.gavasah.com/api/client_backup_upload?client_id={urllib.parse.quote(client_id)}&slug={slug}&name={urllib.parse.quote(b_name)}"
+            
+            with urllib.request.urlopen(req_dl, timeout=300) as b_stream:
+                archive_data = b_stream.read()
+                log(f"[SNAPSHOT] Downloaded {len(archive_data)} bytes from Supervisor. Uploading to Hub...")
+                
+                for target_url in [upload_url, fallback_upload]:
+                    try:
+                        up_req = urllib.request.Request(
+                            target_url,
+                            data=archive_data,
+                            headers={
+                                "Content-Type": "application/x-tar",
+                                "X-Client-Id": client_id,
+                                "X-Backup-Slug": slug
+                            },
+                            method="POST"
+                        )
+                        with urllib.request.urlopen(up_req, context=ctx, timeout=120) as up_res:
+                            if up_res.status in [200, 201]:
+                                log(f"[SNAPSHOT] Successfully uploaded backup '{slug}' to Hub for direct dealer download!")
+                                break
+                    except Exception as up_err:
+                        log(f"[SNAPSHOT] Upload notice for {target_url}: {up_err}")
+        except Exception as dl_err:
+            log(f"[SNAPSHOT] Stream upload error: {dl_err}")
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
 def get_ha_main_cpu_and_memory():
     """
     Computes real-time Home Assistant Main CPU and RAM utilization.
@@ -606,8 +786,22 @@ def collect_telemetry(opts):
         except Exception:
             pass
 
-    # Autonomous KNX vs Non-KNX (Zigbee / Lutron) Discovery & Watchdog
-    knx_res = auto_detect_knx_gateway(opts)
+    # Multi-Technology Subsystems Discovery (KNX, Multi-Zigbee2MQTT, Lutron, Matter)
+    tech_data = detect_all_technologies(opts)
+    knx_res = tech_data["knx"]
+
+    # Retrieve existing snapshots/backups from Supervisor API
+    backups_list = []
+    backups_resp = supervisor_get("backups")
+    if isinstance(backups_resp, dict) and "backups" in backups_resp:
+        for b in backups_resp.get("backups", [])[:10]:
+            backups_list.append({
+                "slug": b.get("slug", ""),
+                "name": b.get("name", "Home Assistant Backup"),
+                "date": b.get("date", ""),
+                "size_mb": round((b.get("size") or 0) / (1024 * 1024), 1),
+                "type": b.get("type", "full")
+            })
 
     ha_alive, ha_proto = check_tunnel_local_port(8123)
     pubkey = get_public_key()
@@ -663,6 +857,8 @@ def collect_telemetry(opts):
             "nameservers": dns_list
         },
         "knx_status": knx_res,
+        "technologies": tech_data,
+        "backups": backups_list,
         "tunnels": {
             "ha_core_local_8123": ha_alive,
             "ha_proto": ha_proto,
@@ -798,10 +994,15 @@ def send_heartbeat(hub_host, payload):
         try:
             with urllib.request.urlopen(req, context=ctx, timeout=6) as resp:
                 if resp.status in [200, 201]:
-                    return True, resp.status
+                    resp_json = {}
+                    try:
+                        resp_json = json.loads(resp.read().decode("utf-8"))
+                    except Exception:
+                        pass
+                    return True, resp_json
         except Exception:
             continue
-    return False, "Failed to reach hub API endpoints"
+    return False, {}
 
 def main():
     log("Starting Gavasah Cloud Agent Telemetry Engine v1.0.4...")
@@ -841,13 +1042,15 @@ def main():
                 ensure_supervisor_toggles()
 
             # 3. Transmit to central dealer hub
-            success, status = send_heartbeat(hub_host, payload)
+            success, hub_resp = send_heartbeat(hub_host, payload)
             slot = payload["system"]["boot_slot"]
             recovery = " [RECOVERY MODE ACTIVE!]" if payload["system"]["is_recovery_mode"] else ""
             if success:
                 log(f"Heartbeat OK | Slot: {slot}{recovery} | IP: {payload['network']['local_ipv4']} | KNX: {payload['knx_status'].get('reachable')}")
+                if isinstance(hub_resp, dict) and hub_resp.get("backup_trigger"):
+                    handle_backup_trigger_async(hub_host, opts, hub_resp["backup_trigger"])
             else:
-                log(f"Heartbeat Hub Sync Notice: {status} | Local metrics captured successfully.")
+                log(f"Heartbeat Hub Sync Notice: {hub_resp} | Local metrics captured successfully.")
         except Exception as e:
             log(f"Heartbeat loop exception: {e}")
 

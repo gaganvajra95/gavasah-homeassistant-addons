@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] - 2026-10-08
+
+### Added
+- **Multi-Technology Protocol Stack Auto-Detection**: Autonomously inspects and detects multiple concurrent automation technologies on the client gateway:
+  - **KNX**: IP Gateway, Routing & Tunneling connection detection.
+  - **Zigbee (Multi-Instance Zigbee2MQTT)**: Scans and enumerates all installed Zigbee2MQTT add-on instances simultaneously (supporting multi-floor/multi-coordinator deployments) as well as native ZHA.
+  - **Lutron**: Detects Caséta, RadioRA 2/3, and Homeworks QSX integrations from Home Assistant config entries.
+  - **Matter**: Detects Matter Server add-on and native Matter integration state.
+- **One-Click Backup & Snapshot Trigger**: Added automated Home Assistant Supervisor full backup creation via heartbeat command dispatch and automated `.tar` archive upload to central GAVASAH Cloud Hub for one-click downloading.
+- **Snapshot Telemetry**: Gateway reports latest 10 local Supervisor snapshots with date, slug, and size.
+
+---
+
 ## [1.0.9] - 2026-10-08
 
 ### Added

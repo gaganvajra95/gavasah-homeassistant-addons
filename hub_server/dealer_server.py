@@ -205,9 +205,21 @@ def init_sqlite_database():
             conn.execute("ALTER TABLE clients ADD COLUMN wg_pubkey TEXT")
         if 'wg_privkey' not in cols:
             conn.execute("ALTER TABLE clients ADD COLUMN wg_privkey TEXT")
-        if 'tunnel_mode' not in cols:
-            conn.execute("ALTER TABLE clients ADD COLUMN tunnel_mode TEXT DEFAULT 'wireguard'")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_wg_ip ON clients(wg_ip);")
+        
+        # Ensure Multi-Tech & Backup columns exist in clients table
+        if 'technologies_json' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN technologies_json TEXT")
+        if 'backups_json' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN backups_json TEXT")
+        if 'pending_backup' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN pending_backup TEXT")
+
+        # Ensure branding_json exists in dealers table
+        cur.execute("PRAGMA table_info(dealers)")
+        d_cols = {r['name'] for r in cur.fetchall()}
+        if 'branding_json' not in d_cols:
+            conn.execute("ALTER TABLE dealers ADD COLUMN branding_json TEXT")
 
         # Auto-migrate all existing clients to WireGuard
         cur.execute("SELECT client_id, name FROM clients WHERE wg_ip IS NULL OR wg_ip = ''")
@@ -350,7 +362,12 @@ def load_auth_state():
         row = cur.fetchone()
         owner = dict(row) if row else {}
         cur.execute("SELECT * FROM dealers")
-        dealers = {r['id']: dict(r) for r in cur.fetchall()}
+        dealers = {}
+        for r in cur.fetchall():
+            d = dict(r)
+            try: d['branding'] = json.loads(d.get('branding_json') or '{}')
+            except: d['branding'] = {}
+            dealers[d['id']] = d
         cur.execute("SELECT * FROM integrators")
         integrators = {r['id']: dict(r) for r in cur.fetchall()}
         cur.execute("SELECT * FROM sessions")
@@ -430,6 +447,10 @@ def load_clients_state():
             except: c['network'] = {}
             try: c['knx_status'] = json.loads(c.get('knx_json') or '{}')
             except: c['knx_status'] = {}
+            try: c['technologies'] = json.loads(c.get('technologies_json') or '{}')
+            except: c['technologies'] = {}
+            try: c['backups'] = json.loads(c.get('backups_json') or '[]')
+            except: c['backups'] = []
             res[c['client_id']] = c
         conn.close()
         return res
@@ -2614,126 +2635,251 @@ HTML_PAGE = """<!DOCTYPE html>
 
         /* Top Synchronized Scrollbar */
         .table-top-scroll {
-            width: 100%;
-            overflow-x: auto;
-            overflow-y: hidden;
-            height: 12px;
-            margin-bottom: 6px;
-            border-radius: 6px;
-            background: rgba(11, 16, 28, 0.6);
-            border: 1px solid rgba(255, 255, 255, 0.06);
-            display: none;
+            display: none !important;
         }
         .table-top-scroll::-webkit-scrollbar {
             height: 8px;
         }
-        .table-top-scroll::-webkit-scrollbar-track {
-            background: rgba(11, 16, 28, 0.85);
-            border-radius: 4px;
-        }
-        .table-top-scroll::-webkit-scrollbar-thumb {
-            background: rgba(0, 240, 255, 0.4);
-            border-radius: 4px;
-        }
-        .table-top-scroll::-webkit-scrollbar-thumb:hover {
-            background: var(--accent);
-        }
-        .table-top-scroll-track {
-            height: 1px;
-        }
-
-        /* Quick Column Scroll Buttons */
-        .table-scroll-controls {
+        /* Partner Filter Selector (Replaces column scroll buttons) */
+        .fleet-partner-filter-wrap {
             display: inline-flex;
             align-items: center;
-            gap: 6px;
-            background: rgba(15, 23, 42, 0.6);
-            border: 1px solid rgba(0, 240, 255, 0.2);
+            gap: 8px;
+            background: rgba(15, 23, 42, 0.75);
+            border: 1px solid rgba(56, 189, 248, 0.35);
             border-radius: 8px;
-            padding: 3px 8px;
+            padding: 4px 10px;
         }
-        .btn-scroll-arrow {
-            background: rgba(0, 240, 255, 0.1);
-            color: #00f0ff;
-            border: 1px solid rgba(0, 240, 255, 0.3);
-            border-radius: 6px;
-            padding: 3px 8px;
+        .partner-filter-icon {
+            font-size: 13px;
+        }
+        .partner-filter-label {
             font-size: 11px;
             font-weight: 700;
-            cursor: pointer;
-            transition: all 0.18s ease;
-            line-height: 1;
-        }
-        .btn-scroll-arrow:hover {
-            background: rgba(0, 240, 255, 0.25);
-            border-color: #00f0ff;
-            box-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
-            transform: translateY(-1px);
-        }
-        .scroll-label {
-            font-size: 10px;
-            color: #94a3b8;
-            font-family: 'JetBrains Mono', monospace;
+            color: #38bdf8;
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            user-select: none;
-        }
-
-        .actions-btn-flex {
-            display: flex;
-            align-items: center;
-            gap: 6px;
             white-space: nowrap;
         }
-        .btn-action-dashboard {
-            color: #00f0ff !important;
-            border: 1px solid rgba(0, 240, 255, 0.45) !important;
-            background: rgba(0, 240, 255, 0.12) !important;
-            font-weight: 600 !important;
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            padding: 5px 10px;
-            border-radius: 6px;
-            transition: all 0.18s ease;
+        .partner-filter-select {
+            padding: 4px 10px !important;
+            font-size: 12px !important;
+            height: auto !important;
+            border-radius: 6px !important;
+            background: #0b1120 !important;
+            color: #f1f5f9 !important;
+            border: 1px solid rgba(255, 255, 255, 0.15) !important;
+            cursor: pointer;
+            min-width: 170px;
+            max-width: 250px;
+            outline: none;
+            transition: all 0.2s ease;
         }
-        .btn-action-dashboard:hover {
-            background: rgba(0, 240, 255, 0.28) !important;
-            border-color: #00f0ff !important;
-            box-shadow: 0 0 12px rgba(0, 240, 255, 0.5);
-            transform: translateY(-1px);
-        }
-        .btn-action-logs {
-            color: #94a3b8 !important;
-            border-color: rgba(148, 163, 184, 0.3) !important;
-            background: rgba(148, 163, 184, 0.08) !important;
-        }
-        .btn-action-logs:hover {
-            color: #e2e8f0 !important;
-            border-color: rgba(148, 163, 184, 0.6) !important;
-            background: rgba(148, 163, 184, 0.2) !important;
-        }
-        .btn-action-edit {
-            color: #38bdf8 !important;
-            border-color: rgba(56, 189, 248, 0.35) !important;
-            background: rgba(56, 189, 248, 0.08) !important;
-        }
-        .btn-action-edit:hover {
-            background: rgba(56, 189, 248, 0.22) !important;
-            box-shadow: 0 0 10px rgba(56, 189, 248, 0.4);
-        }
-        .btn-action-del {
-            color: #ef4444 !important;
-            border-color: rgba(239, 68, 68, 0.35) !important;
-            background: rgba(239, 68, 68, 0.08) !important;
-        }
-        .btn-action-del:hover {
-            background: rgba(239, 68, 68, 0.22) !important;
-            box-shadow: 0 0 10px rgba(239, 68, 68, 0.4);
+        .partner-filter-select:focus {
+            border-color: #38bdf8 !important;
+            box-shadow: 0 0 10px rgba(56, 189, 248, 0.35) !important;
         }
 
-    </style>
+        /* Hideable Actions Dropdown Menu */
+        .col-actions-menu {
+            position: relative;
+            text-align: right;
+            white-space: nowrap;
+        }
+        .col-actions-menu.is-open,
+        .col-actions-menu:has(.btn-actions-toggle.active) {
+            z-index: 150 !important;
+        }
+        .action-dropdown-wrap {
+            position: relative;
+            display: inline-block;
+            text-align: right;
+        }
+        .btn-actions-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            color: #38bdf8;
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid rgba(56, 189, 248, 0.35);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+            white-space: nowrap;
+            user-select: none;
+        }
+        .btn-actions-toggle:hover, .btn-actions-toggle.active {
+            background: rgba(56, 189, 248, 0.2);
+            border-color: #38bdf8;
+            box-shadow: 0 0 12px rgba(56, 189, 248, 0.4);
+            color: #fff;
+            transform: translateY(-1px);
+        }
+        .action-caret {
+            font-size: 10px;
+            transition: transform 0.2s ease;
+        }
+        .btn-actions-toggle.active .action-caret {
+            transform: rotate(180deg);
+        }
+        .action-menu-popover {
+            position: absolute;
+            right: 0;
+            top: calc(100% + 6px);
+            min-width: 195px;
+            background: rgba(11, 17, 32, 0.98);
+            border: 1px solid rgba(56, 189, 248, 0.35);
+            border-radius: 10px;
+            box-shadow: 0 14px 35px rgba(0, 0, 0, 0.75), 0 0 1px 1px rgba(56, 189, 248, 0.25);
+            backdrop-filter: blur(16px);
+            z-index: 1000;
+            padding: 6px;
+            flex-direction: column;
+            gap: 2px;
+            animation: fadeInMenu 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        @keyframes fadeInMenu {
+            from { opacity: 0; transform: translateY(-4px) scale(0.97); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .action-menu-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+            padding: 8px 12px;
+            font-size: 12px;
+            font-weight: 500;
+            color: #cbd5e1;
+            background: transparent;
+            border: none;
+            border-radius: 6px;
+            text-decoration: none;
+            cursor: pointer;
+            text-align: left;
+            transition: background 0.15s, color 0.15s;
+            box-sizing: border-box;
+            white-space: nowrap;
+        }
+        .action-menu-item:hover {
+            background: rgba(56, 189, 248, 0.15);
+            color: #fff;
+        }
+        .action-menu-item.action-item-dash {
+            color: #38bdf8;
+            font-weight: 600;
+        }
+        .action-menu-item.action-item-dash:hover {
+            background: rgba(56, 189, 248, 0.25);
+        }
+        .action-menu-item.action-item-dash.pending {
+            color: #fbbf24;
+        }
+        .action-menu-item.action-item-dash.restricted {
+            color: #f87171;
+        }
+        .action-menu-item.item-danger {
+            color: #f87171;
+        }
+        .action-menu-item.item-danger:hover {
+            background: rgba(239, 68, 68, 0.18);
+            color: #ef4444;
+        }
+        .action-menu-divider {
+            height: 1px;
+            background: rgba(255, 255, 255, 0.08);
+            margin: 4px 0;
+        }
+
+    
+        /* Multi-Technology Protocol Badges */
+        .tech-badge-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            max-width: 250px;
+        }
+        .tech-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            white-space: nowrap;
+            transition: all 0.2s ease;
+        }
+        .tech-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .tech-knx {
+            background: rgba(56, 189, 248, 0.12);
+            color: #38bdf8;
+            border: 1px solid rgba(56, 189, 248, 0.3);
+        }
+        .tech-zigbee {
+            background: rgba(245, 158, 11, 0.12);
+            color: #fbbf24;
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+        .tech-lutron {
+            background: rgba(192, 132, 252, 0.12);
+            color: #c084fc;
+            border: 1px solid rgba(192, 132, 252, 0.3);
+        }
+        .tech-matter {
+            background: rgba(16, 185, 129, 0.12);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+        .tech-default {
+            background: rgba(100, 116, 139, 0.12);
+            color: #94a3b8;
+            border: 1px solid rgba(100, 116, 139, 0.3);
+        }
+
+        /* White-Label Branding Tab Styles */
+        .branding-preview-card {
+            background: rgba(11, 16, 28, 0.85);
+            border: 1px solid var(--accent-glow);
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 15px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .branding-preview-logo {
+            max-height: 48px;
+            max-width: 140px;
+            object-fit: contain;
+        }
+        .color-swatch-picker {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+        .color-swatch-btn {
+            width: 26px;
+            height: 26px;
+            border-radius: 6px;
+            border: 2px solid transparent;
+            cursor: pointer;
+            transition: transform 0.15s, border-color 0.15s;
+        }
+        .color-swatch-btn:hover {
+            transform: scale(1.15);
+            border-color: #fff;
+        }
+
+</style>
 </head>
 <body>
 
@@ -2834,6 +2980,13 @@ HTML_PAGE = """<!DOCTYPE html>
                         <span id="nav-fleet-label">Client Fleets</span>
                     </div>
                     <span class="nav-item-badge" id="badge-fleet-count">0</span>
+                </div>
+
+                <div class="nav-item" id="nav-branding" onclick="switchTab('branding')" style="display: none;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span class="nav-item-icon">🎨</span>
+                        <span>Branding & White-Label</span>
+                    </div>
                 </div>
 
                 <div class="nav-item" id="nav-account" onclick="switchTab('account')">
@@ -3055,10 +3208,13 @@ HTML_PAGE = """<!DOCTYPE html>
                             <button class="pill-btn pill-green" id="filter-pill-online" onclick="setFleetFilter('ONLINE')">🟢 Online (<span id="pill-count-online">0</span>)</button>
                             <button class="pill-btn pill-red" id="filter-pill-lost" onclick="setFleetFilter('LOST')">🔴 Lost (<span id="pill-count-lost">0</span>)</button>
                         </div>
-                        <div class="table-scroll-controls" title="Scroll columns left or right without scrolling to bottom">
-                            <button type="button" class="btn-scroll-arrow" onclick="scrollTableBy('#tab-fleet .table-wrap', -320)" title="Scroll Left">◀</button>
-                            <span class="scroll-label">Scroll Columns</span>
-                            <button type="button" class="btn-scroll-arrow" onclick="scrollTableBy('#tab-fleet .table-wrap', 320)" title="Scroll Right">▶</button>
+                        <!-- Partner Filter Dropdown (Replaces scroll column tab) -->
+                        <div class="fleet-partner-filter-wrap" id="fleet-partner-filter-wrap" style="display: none;">
+                            <span class="partner-filter-icon" id="partner-filter-icon">🏢</span>
+                            <span class="partner-filter-label" id="partner-filter-label">Filter:</span>
+                            <select class="partner-filter-select" id="fleet-partner-select" onchange="handlePartnerFilterChange(this.value)">
+                                <option value="ALL">All Partners</option>
+                            </select>
                         </div>
                         <div class="pagination-bar">
                             <span>Rows:</span>
@@ -3074,10 +3230,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- Top Synced Scrollbar for Instant Left/Right Navigation -->
-                    <div class="table-top-scroll" id="fleet-top-scroll">
-                        <div class="table-top-scroll-track" id="fleet-top-scroll-track"></div>
-                    </div>
+
 
                     <div class="table-wrap">
                         <table>
@@ -3089,7 +3242,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                     <th>Heartbeat Status</th>
                                     <th>Remote Ingress</th>
                                     <th>Boot Slot (RAUC)</th>
-                                    <th>Device LAN IP & Bus</th>
+                                    <th style="min-width: 180px;">Technologies & Subsystems</th>
                                     <th>Hardware Metrics</th>
                                     <th>Actions</th>
                                 </tr>
@@ -3153,6 +3306,136 @@ HTML_PAGE = """<!DOCTYPE html>
          MODALS
          ====================================================================== -->
 
+
+                <!-- ==============================================================
+                     TAB 5: DEALER WHITE-LABEL & BRANDING (DEALER LOGIN)
+                     ============================================================== -->
+                <div class="tab-pane" id="tab-branding">
+                    <div class="section-header">
+                        <div class="section-title">🎨 Custom Branding & White-Label Configuration</div>
+                        <button class="btn-action" onclick="saveDealerBranding()">💾 Save Brand Settings</button>
+                    </div>
+
+                    <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 24px; max-width: 820px;">
+                        <div style="font-size: 13px; color: #94a3b8; margin-bottom: 20px;">
+                            Customize your dealer portal appearance. If fields are left blank, your portal will automatically use the default <strong>GAVASAH</strong> ecosystem theme.
+                        </div>
+
+                        <form id="branding-form" onsubmit="handleBrandingFormSubmit(event)">
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                                <div class="form-group">
+                                    <label class="form-label">DEALER BUSINESS / BRAND NAME</label>
+                                    <input type="text" id="brand-company-name" class="form-input" placeholder="e.g. Apex Smart Automation" oninput="updateLiveBrandingPreview()">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">PORTAL TAGLINE / SUB-HEADER</label>
+                                    <input type="text" id="brand-tagline" class="form-input" placeholder="e.g. Luxury Automation Systems" oninput="updateLiveBrandingPreview()">
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label">CUSTOM LOGO IMAGE URL (PNG / SVG / WEBP)</label>
+                                <input type="url" id="brand-logo-url" class="form-input" placeholder="https://yourdomain.com/logo.png" oninput="updateLiveBrandingPreview()">
+                                <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Recommended: Transparent background PNG/SVG (Height: 32px to 48px).</div>
+                            </div>
+
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                                <div class="form-group">
+                                    <label class="form-label">PRIMARY ACCENT THEME COLOR</label>
+                                    <div style="display: flex; align-items: center; gap: 10px;">
+                                        <input type="color" id="brand-primary-color" value="#00f0ff" style="width: 44px; height: 38px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: transparent; cursor: pointer;" oninput="updateLiveBrandingPreview()">
+                                        <input type="text" id="brand-primary-color-text" class="form-input" value="#00f0ff" style="font-family: monospace;" oninput="syncColorInput(this.value, 'brand-primary-color')">
+                                    </div>
+                                    <div class="color-swatch-picker">
+                                        <div class="color-swatch-btn" style="background: #00f0ff;" onclick="setThemeSwatch('#00f0ff', '#38bdf8')"></div>
+                                        <div class="color-swatch-btn" style="background: #10b981;" onclick="setThemeSwatch('#10b981', '#34d399')"></div>
+                                        <div class="color-swatch-btn" style="background: #a855f7;" onclick="setThemeSwatch('#a855f7', '#c084fc')"></div>
+                                        <div class="color-swatch-btn" style="background: #f59e0b;" onclick="setThemeSwatch('#f59e0b', '#fbbf24')"></div>
+                                        <div class="color-swatch-btn" style="background: #3b82f6;" onclick="setThemeSwatch('#3b82f6', '#60a5fa')"></div>
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">SECONDARY ACCENT GLOW</label>
+                                    <div style="display: flex; align-items: center; gap: 10px;">
+                                        <input type="color" id="brand-accent-color" value="#38bdf8" style="width: 44px; height: 38px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: transparent; cursor: pointer;" oninput="updateLiveBrandingPreview()">
+                                        <input type="text" id="brand-accent-color-text" class="form-input" value="#38bdf8" style="font-family: monospace;" oninput="syncColorInput(this.value, 'brand-accent-color')">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                                <div class="form-group">
+                                    <label class="form-label">SUPPORT EMAIL</label>
+                                    <input type="email" id="brand-email" class="form-input" placeholder="support@yourcompany.com">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">SUPPORT HOTLINE / WHATSAPP</label>
+                                    <input type="text" id="brand-phone" class="form-input" placeholder="+91 98490 12345">
+                                </div>
+                            </div>
+
+                            <!-- Live Branding Preview Box -->
+                            <div style="margin-top: 16px;">
+                                <label class="form-label">LIVE HEADER PREVIEW</label>
+                                <div class="branding-preview-card" id="brand-preview-box">
+                                    <div id="brand-preview-logo-wrap">
+                                        <div class="brand-logo" style="width: 38px; height: 38px; font-size: 18px;" id="brand-preview-fallback-logo">G</div>
+                                    </div>
+                                    <div>
+                                        <div style="font-size: 16px; font-weight: 800; color: #fff; letter-spacing: 0.5px;" id="brand-preview-title">GAVASAH</div>
+                                        <div style="font-size: 11px; color: var(--accent); letter-spacing: 0.5px;" id="brand-preview-sub">CLOUD COMMAND & FLEET</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div style="display: flex; gap: 12px; margin-top: 24px;">
+                                <button type="submit" class="btn-action">💾 Save Custom Branding</button>
+                                <button type="button" class="btn-sm" onclick="resetToDefaultBranding()">↺ Reset to GAVASAH Default</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Snapshot Manager Modal -->
+                <div class="modal" id="snapshot-modal">
+                    <div class="modal-content" style="max-width: 680px;">
+                        <div class="modal-header">
+                            <div id="snapshot-modal-title">📸 Site Snapshots & Backups: Client Site</div>
+                            <div style="cursor: pointer;" onclick="closeSnapshotModal()">&times;</div>
+                        </div>
+                        <div class="modal-body">
+                            <input type="hidden" id="snapshot-client-id">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; background: rgba(56, 189, 248, 0.08); padding: 12px 16px; border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.2);">
+                                <div>
+                                    <div style="font-weight: 600; color: #fff;" id="snapshot-site-header">Site Gateway Backups</div>
+                                    <div style="font-size: 11px; color: #94a3b8;">Trigger a full Home Assistant snapshot or download archives directly to your PC.</div>
+                                </div>
+                                <button class="btn-action" style="font-size: 12px; padding: 7px 14px; background: linear-gradient(135deg, #0ea5e9, #0284c7);" onclick="triggerInstantBackup()">+ Create Full Snapshot</button>
+                            </div>
+
+                            <div style="font-size: 11px; font-weight: 700; color: #38bdf8; text-transform: uppercase; margin-bottom: 8px;">Available Site Snapshots</div>
+                            <div class="table-wrap" style="max-height: 280px; overflow-y: auto;">
+                                <table style="width: 100%;">
+                                    <thead>
+                                        <tr>
+                                            <th>Snapshot Name</th>
+                                            <th>Date</th>
+                                            <th>Size</th>
+                                            <th style="text-align: right;">Download Action</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="snapshot-table-body">
+                                        <tr><td colspan="4" style="text-align: center; color: #64748b; padding: 20px;">Loading site snapshots...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn-sm" onclick="closeSnapshotModal()">Close</button>
+                        </div>
+                    </div>
+                </div>
+
     <!-- Dealer Add / Edit Modal -->
     <div class="modal" id="dealer-modal">
         <div class="modal-content">
@@ -3168,10 +3451,11 @@ HTML_PAGE = """<!DOCTYPE html>
                         <input type="text" id="dlr-name" class="form-input" placeholder="e.g. Apex Smart Automation" required>
                     </div>
 
-                    <div class="form-group">
-                        <label class="form-label">PORTAL LOGIN USERNAME</label>
-                        <input type="text" id="dlr-username" class="form-input" placeholder="e.g. apex_dealer" required>
-                        <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Alphanumeric slug used by dealer to sign in.</div>
+                    <div class="form-group" id="dlr-username-group" style="display: none;">
+                        <label class="form-label">ASSIGNED LOGIN USERNAME</label>
+                        <div id="dlr-username-badge" class="badge-role" style="display: inline-block; padding: 6px 12px; font-size: 13px; font-family: monospace; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4);"></div>
+                        <input type="hidden" id="dlr-username">
+                        <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Autonomously generated username slug: &lt;dealer name&gt;.</div>
                     </div>
 
                     <div class="form-group">
@@ -3418,9 +3702,11 @@ HTML_PAGE = """<!DOCTYPE html>
                         <label class="form-label">INTEGRATOR FULL NAME</label>
                         <input type="text" id="int-name" class="form-input" placeholder="e.g. Rajesh Kumar" required>
                     </div>
-                    <div class="form-group">
+                    <div class="form-group" id="int-username-group" style="display: none;">
                         <label class="form-label">LOGIN USERNAME</label>
-                        <input type="text" id="int-username" class="form-input" placeholder="e.g. rajesh_knx" required autocomplete="off">
+                        <div id="int-username-badge" class="badge-role" style="display: inline-block; padding: 6px 12px; font-size: 13px; font-family: monospace; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4);"></div>
+                        <input type="hidden" id="int-username">
+                        <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Autonomously generated: &lt;integrator name&gt;-&lt;dealer name&gt;.</div>
                     </div>
                     <div class="form-group">
                         <label class="form-label" id="int-pwd-label">LOGIN PASSWORD</label>
@@ -3660,10 +3946,13 @@ HTML_PAGE = """<!DOCTYPE html>
                 const ovCardDealers = document.getElementById('ov-card-dealers');
                 if (ovCardDealers) ovCardDealers.style.display = '';
 
+                const navBrandMfg = document.getElementById('nav-branding'); if (navBrandMfg) navBrandMfg.style.display = 'none';
+                applyDealerBranding({});
                 switchTab('overview');
                 fetchDealers();
                 fetchIntegrators();
                 fetchFleet();
+                populatePartnerFilter();
 
             } else if (currentUser.role === 'dealer') {
                 document.body.classList.add('is-dealer');
@@ -3681,6 +3970,9 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('nav-integrators').style.display = 'flex';
                 document.getElementById('nav-fleet').style.display = 'flex';
                 document.getElementById('nav-account').style.display = 'none';
+                const navBrand = document.getElementById('nav-branding');
+                if (navBrand) navBrand.style.display = 'flex';
+                applyDealerBranding(currentUser.branding);
                 document.getElementById('th-dealer-col').style.display = 'none';
                 document.getElementById('th-int-dealership-col').style.display = 'none';
                 document.getElementById('integrator-dealer-filter-wrap').style.display = 'none';
@@ -3701,6 +3993,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 switchTab('overview');
                 fetchIntegrators();
                 fetchFleet();
+                populatePartnerFilter();
 
             } else if (currentUser.role === 'integrator') {
                 document.body.classList.add('is-integrator');
@@ -3845,6 +4138,8 @@ HTML_PAGE = """<!DOCTYPE html>
                 fetchDealers();
             } else if (tabId === 'integrators') {
                 fetchIntegrators();
+            } else if (tabId === 'branding') {
+                populateBrandingForm();
             } else if (tabId === 'fleet') {
                 fetchFleet();
             }
@@ -3861,6 +4156,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     dealersList = await res.json();
                     renderDealersUI();
                     updateDealerDropdowns();
+                    populatePartnerFilter();
                 }
             } catch (err) {
                 console.error("Error fetching dealers:", err);
@@ -4031,12 +4327,22 @@ HTML_PAGE = """<!DOCTYPE html>
 
 
 
+        function slugifyText(text) {
+            return (text || '')
+                .toString()
+                .toLowerCase()
+                .trim()
+                .replace(/[^a-z0-9]+/g, '-')
+                .replace(/^-+|-+$/g, '');
+        }
+
         function openCreateDealerModal() {
             document.getElementById('dealer-modal-title').innerText = 'Register New Authorized Dealer';
             document.getElementById('dealer-form-id').value = '';
             document.getElementById('dlr-name').value = '';
+            const uGroup = document.getElementById('dlr-username-group');
+            if (uGroup) uGroup.style.display = 'none';
             document.getElementById('dlr-username').value = '';
-            document.getElementById('dlr-username').readOnly = false;
             document.getElementById('dlr-pwd').value = '';
             document.getElementById('dlr-pwd').required = true;
             document.getElementById('dlr-pwd-hint').style.display = 'none';
@@ -4053,8 +4359,11 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('dealer-modal-title').innerText = `Edit Authorized Dealer: ${d.name}`;
             document.getElementById('dealer-form-id').value = d.id;
             document.getElementById('dlr-name').value = d.name;
+            const uGroup = document.getElementById('dlr-username-group');
+            const uBadge = document.getElementById('dlr-username-badge');
+            if (uGroup) uGroup.style.display = 'block';
+            if (uBadge) uBadge.innerText = d.username;
             document.getElementById('dlr-username').value = d.username;
-            document.getElementById('dlr-username').readOnly = false;
             
             // POPULATE PLAIN PASSWORD FOR MANUFACTURER TO SEE AND EDIT!
             document.getElementById('dlr-pwd').value = d.password_plain || '';
@@ -4075,9 +4384,15 @@ HTML_PAGE = """<!DOCTYPE html>
         async function handleDealerFormSubmit(e) {
             e.preventDefault();
             const id = document.getElementById('dealer-form-id').value;
+            const name = document.getElementById('dlr-name').value.trim();
+            let username = document.getElementById('dlr-username').value.trim();
+            if (!id) {
+                // Autonomous username generation format: <dealer name>
+                username = slugifyText(name);
+            }
             const payload = {
-                name: document.getElementById('dlr-name').value.trim(),
-                username: document.getElementById('dlr-username').value.trim(),
+                name: name,
+                username: username,
                 password: document.getElementById('dlr-pwd').value,
                 email: document.getElementById('dlr-email').value.trim(),
                 phone: document.getElementById('dlr-phone').value.trim()
@@ -4130,6 +4445,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     integratorsList = await res.json();
                     renderIntegratorsUI();
                     updateIntegratorDropdowns();
+                    populatePartnerFilter();
                 }
             } catch (err) {
                 console.error("Error fetching integrators:", err);
@@ -4315,6 +4631,8 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('integrator-modal-title').innerText = 'Register New Technical Integrator';
             document.getElementById('int-id').value = '';
             document.getElementById('int-name').value = '';
+            const uGroup = document.getElementById('int-username-group');
+            if (uGroup) uGroup.style.display = 'none';
             document.getElementById('int-username').value = '';
             document.getElementById('int-password').value = '';
             document.getElementById('int-password').required = true;
@@ -4342,6 +4660,10 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('integrator-modal-title').innerText = `Edit Integrator: ${it.name}`;
             document.getElementById('int-id').value = it.id;
             document.getElementById('int-name').value = it.name;
+            const uGroup = document.getElementById('int-username-group');
+            const uBadge = document.getElementById('int-username-badge');
+            if (uGroup) uGroup.style.display = 'block';
+            if (uBadge) uBadge.innerText = it.username;
             document.getElementById('int-username').value = it.username;
             
             // POPULATE PLAIN PASSWORD FOR MANUFACTURER AND DEALER TO SEE AND EDIT!
@@ -4372,9 +4694,34 @@ HTML_PAGE = """<!DOCTYPE html>
         async function handleIntegratorSubmit(e) {
             e.preventDefault();
             const id = document.getElementById('int-id').value;
+            const name = document.getElementById('int-name').value.trim();
+            let username = document.getElementById('int-username').value.trim();
+
+            let dealerId = '';
+            let dealerName = '';
+            if (currentUser.role === 'dealer') {
+                dealerId = currentUser.id;
+                dealerName = currentUser.name || currentUser.username;
+            } else if (currentUser.role === 'manufacturer') {
+                dealerId = document.getElementById('int-dealer-select').value;
+                if (dealerId === 'owner_master') {
+                    dealerName = 'manufacturer';
+                } else {
+                    const dObj = dealersList.find(x => x.id === dealerId);
+                    dealerName = dObj ? dObj.name : 'dealer';
+                }
+            }
+
+            if (!id) {
+                // Autonomous username generation format: <integrator name>-<dealer name>
+                const intSlug = slugifyText(name);
+                const dlrSlug = slugifyText(dealerName);
+                username = `${intSlug}-${dlrSlug}`.replace(/^-+|-+$/g, '');
+            }
+
             const payload = {
-                name: document.getElementById('int-name').value.trim(),
-                username: document.getElementById('int-username').value.trim(),
+                name: name,
+                username: username,
                 password: document.getElementById('int-password').value,
                 email: document.getElementById('int-email').value.trim(),
                 phone: document.getElementById('int-phone').value.trim()
@@ -4555,6 +4902,75 @@ HTML_PAGE = """<!DOCTYPE html>
             renderTable(currentFleetData);
         }
 
+        let selectedFleetPartner = 'ALL';
+
+        function populatePartnerFilter() {
+            const wrap = document.getElementById('fleet-partner-filter-wrap');
+            const sel = document.getElementById('fleet-partner-select');
+            const label = document.getElementById('partner-filter-label');
+            const icon = document.getElementById('partner-filter-icon');
+            if (!wrap || !sel || !currentUser) return;
+
+            if (currentUser.role === 'manufacturer') {
+                wrap.style.display = 'inline-flex';
+                if (label) label.innerText = 'Dealer:';
+                if (icon) icon.innerText = '🏢';
+                let html = '<option value="ALL">🏢 All Dealers (All Fleet)</option>';
+                html += '<option value="owner_master">🛡️ Master Direct Supervision</option>';
+                dealersList.forEach(d => {
+                    html += `<option value="${escapeHtml(d.id)}">${escapeHtml(d.name)} (${d.client_count || 0})</option>`;
+                });
+                sel.innerHTML = html;
+                sel.value = selectedFleetPartner || 'ALL';
+            } else if (currentUser.role === 'dealer') {
+                wrap.style.display = 'inline-flex';
+                if (label) label.innerText = 'Integrator:';
+                if (icon) icon.innerText = '🔧';
+                let html = '<option value="ALL">🔧 All Integrators</option>';
+                html += '<option value="DIRECT">🛡️ Direct Dealer Supervision</option>';
+                integratorsList.forEach(it => {
+                    html += `<option value="${escapeHtml(it.id)}">${escapeHtml(it.name)} (${it.client_count || 0})</option>`;
+                });
+                sel.innerHTML = html;
+                sel.value = selectedFleetPartner || 'ALL';
+            } else {
+                wrap.style.display = 'none';
+            }
+        }
+
+        function handlePartnerFilterChange(val) {
+            selectedFleetPartner = val;
+            fleetCurrentPage = 1;
+            renderTable(currentFleetData);
+        }
+
+        function toggleRowActionMenu(clientId, event) {
+            if (event) event.stopPropagation();
+            const menu = document.getElementById(`action-menu-${clientId}`);
+            const btn = document.getElementById(`btn-action-toggle-${clientId}`);
+            const td = btn ? btn.closest('td') : null;
+            if (!menu) return;
+            const isOpen = menu.style.display === 'flex';
+            closeAllActionMenus();
+            if (!isOpen) {
+                menu.style.display = 'flex';
+                if (btn) btn.classList.add('active');
+                if (td) td.classList.add('is-open');
+            }
+        }
+
+        function closeAllActionMenus() {
+            document.querySelectorAll('.action-menu-popover').forEach(el => el.style.display = 'none');
+            document.querySelectorAll('.btn-actions-toggle').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.col-actions-menu').forEach(el => el.classList.remove('is-open'));
+        }
+
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.action-dropdown-wrap')) {
+                closeAllActionMenus();
+            }
+        });
+
         function renderTable(data) {
             if (!Array.isArray(data)) return;
 
@@ -4563,12 +4979,26 @@ HTML_PAGE = """<!DOCTYPE html>
             let warningCount = 0;
             let offlineCount = 0;
 
-            // Optional Dealer Filter for Manufacturer
-            const dFilter = document.getElementById('fleet-dealer-filter');
-            const selectedDealer = (dFilter && currentUser.role === 'manufacturer') ? dFilter.value : 'all';
-
             const filtered = data.filter(c => {
-                if (selectedDealer !== 'all' && c.dealer_id !== selectedDealer) return false;
+                // Partner Selection Filter (Dealers in Manufacturer, Integrators in Dealer)
+                if (currentUser.role === 'manufacturer') {
+                    if (selectedFleetPartner !== 'ALL') {
+                        if (selectedFleetPartner === 'owner_master') {
+                            if (c.dealer_id && c.dealer_id !== 'owner_master') return false;
+                        } else if (c.dealer_id !== selectedFleetPartner) {
+                            return false;
+                        }
+                    }
+                } else if (currentUser.role === 'dealer') {
+                    if (selectedFleetPartner !== 'ALL') {
+                        if (selectedFleetPartner === 'DIRECT') {
+                            const isDirect = !c.integrator_id || c.integrator_id === 'DIRECT' || !c.integrator_name || c.integrator_name === 'Direct Dealer Supervision';
+                            if (!isDirect) return false;
+                        } else if (c.integrator_id !== selectedFleetPartner) {
+                            return false;
+                        }
+                    }
+                }
 
                 const isPending = !c.last_heartbeat || c.last_heartbeat === 0 || c.status === 'pending';
                 const diff = isPending ? -1 : now - (c.last_heartbeat || 0);
@@ -4751,36 +5181,93 @@ HTML_PAGE = """<!DOCTYPE html>
                             <span class="badge-slot slot-${slot.toLowerCase()}">SLOT ${slot}</span>
                             ${isRecovery ? '<span class="badge-slot" style="background: rgba(239, 68, 68, 0.2); color: #ef4444; margin-left: 4px;">RECOVERY</span>' : ''}
                         </td>
-                        <td style="font-size: 12px; font-family: monospace;">
-                            <div style="color: #cbd5e1;">IP: ${escapeHtml(net.local_ipv4 || '—')}</div>
-                            ${c.knx_ip && c.knx_ip !== '—' && c.knx_ip !== 'none' ? `
-                                <div style="color: #38bdf8; font-size: 11px;" title="KNXnet/IP Auto-Discovered">KNX: ${escapeHtml(c.knx_ip)}:${c.knx_port || 3671}</div>
-                            ` : `
-                                <div style="color: #64748b; font-size: 11px;" title="Non-KNX System (Zigbee / Lutron / Other)">Non-KNX (Zigbee/Lutron)</div>
-                            `}
+                        <td style="font-size: 12px;">
+                            <div style="color: #94a3b8; font-family: monospace; font-size: 11px; margin-bottom: 4px;">IP: ${escapeHtml(net.local_ipv4 || '—')}</div>
+                            <div class="tech-badge-container">
+                                ${(() => {
+                                    const tech = c.technologies || {};
+                                    const knx = tech.knx || c.knx_status || {};
+                                    const zigbee = tech.zigbee || {};
+                                    const lutron = tech.lutron || {};
+                                    const matter = tech.matter || {};
+                                    const badges = [];
+
+                                    // KNX
+                                    if (knx.configured || knx.reachable || (c.knx_ip && c.knx_ip !== '—' && c.knx_ip !== 'none' && c.knx_ip !== '')) {
+                                        const ep = knx.gateway_ip ? `${knx.gateway_ip}:${knx.gateway_port || 3671}` : (c.knx_ip ? `${c.knx_ip}:${c.knx_port || 3671}` : 'Bus');
+                                        badges.push(`<span class="tech-badge tech-knx" title="KNXnet/IP Gateway: ${escapeHtml(ep)}"><span class="tech-dot" style="background:#38bdf8;"></span>KNX ${escapeHtml(ep)}</span>`);
+                                    }
+
+                                    // Zigbee (Multiple Zigbee2MQTT Add-ons supported)
+                                    if (zigbee.detected) {
+                                        const zc = zigbee.count || (zigbee.instances ? zigbee.instances.length : 1);
+                                        const zTitle = zigbee.instances && zigbee.instances.length > 0 ? zigbee.instances.map(i => `${i.name} (${i.state})`).join(', ') : 'Zigbee Mesh';
+                                        const zLbl = zc > 1 ? `Zigbee (${zc}x Z2M)` : 'Zigbee (Z2M)';
+                                        badges.push(`<span class="tech-badge tech-zigbee" title="${escapeHtml(zTitle)}"><span class="tech-dot" style="background:#fbbf24;"></span>${escapeHtml(zLbl)}</span>`);
+                                    }
+
+                                    // Lutron
+                                    if (lutron.detected) {
+                                        const lTitle = lutron.entries && lutron.entries.length > 0 ? lutron.entries.map(e => e.title || e.domain).join(', ') : 'Lutron Repeater';
+                                        badges.push(`<span class="tech-badge tech-lutron" title="${escapeHtml(lTitle)}"><span class="tech-dot" style="background:#c084fc;"></span>Lutron (${escapeHtml(lutron.type || 'Caséta')})</span>`);
+                                    }
+
+                                    // Matter
+                                    if (matter.detected) {
+                                        badges.push(`<span class="tech-badge tech-matter" title="Matter Server: ${escapeHtml(matter.state || 'running')}"><span class="tech-dot" style="background:#34d399;"></span>Matter</span>`);
+                                    }
+
+                                    if (badges.length === 0) {
+                                        badges.push(`<span class="tech-badge tech-default" title="Standard Core Gateway"><span class="tech-dot" style="background:#64748b;"></span>HA Core</span>`);
+                                    }
+                                    return badges.join('');
+                                })()}
+                            </div>
                         </td>
                         <td style="font-size: 12px;">
                             <div style="color: #cbd5e1; font-weight: 500;">CPU: ${sys.cpu_percent !== undefined && sys.cpu_percent !== null ? sys.cpu_percent : 0}% &bull; RAM: ${sys.memory_percent !== undefined && sys.memory_percent !== null ? sys.memory_percent : 0}%</div>
                             <div style="color: #94a3b8; font-size: 11px; margin-top: 2px;">💾 Storage: ${sys.disk_total_gb ? `${(sys.disk_total_gb - (sys.disk_free_gb || 0)).toFixed(1)} / ${Number(sys.disk_total_gb).toFixed(1)} GB (${Math.round(((sys.disk_total_gb - (sys.disk_free_gb || 0)) / sys.disk_total_gb) * 100)}%)` : (sys.disk_free_gb ? `${Number(sys.disk_free_gb).toFixed(1)} GB Free` : '—')}</div>
                             <div style="color: #64748b; font-size: 10px; margin-top: 1px;">HAOS ${escapeHtml(sys.haos_version || '13.2')}${sys.core_version ? ` &bull; Core ${escapeHtml(sys.core_version)}` : ''}</div>
                         </td>
-                        <td class="col-actions-sticky">
-                            <div class="actions-btn-flex">
-                                ${remoteEnabled ? (
-                                    isPending ? `
-                                        <a href="https://${escapeHtml(c.domain)}" target="_blank" class="btn-action-icon btn-action-dashboard" style="border-color: rgba(245,158,11,0.5); color: #fbbf24;" title="Gateway Provisioned - Click to open Dashboard (Awaiting Initial Telemetry Pulse)">⏳ Dashboard ↗</a>
-                                    ` : `
-                                        <a href="https://${escapeHtml(c.domain)}" target="_blank" class="btn-action-icon btn-action-dashboard" title="Open Client Remote User Interface (Home Assistant Dashboard)">📊 Dashboard ↗</a>
-                                    `
-                                ) : `
-                                    <a href="https://${escapeHtml(c.domain)}" target="_blank" class="btn-action-icon btn-action-dashboard" style="border-color: rgba(239,68,68,0.4); color: #f87171;" title="Remote Access Disabled - Click to View Restricted Notice">🔒 Restricted ↗</a>
-                                `}
-                                <button class="btn-action-icon btn-action-logs" onclick="openLogsModal('${c.client_id}')" title="Audit Telemetry Logs">📋 Logs</button>
-                                ${currentUser.role !== 'integrator' ? `
-                                    <button class="btn-action-icon btn-reassign-sm" onclick="openReassignModal('${c.client_id}')" title="Reassign Supervision">🔄 Transfer</button>
-                                ` : ''}
-                                <button class="btn-action-icon btn-action-edit" onclick="openEditModal('${c.client_id}')" title="Edit Site Config">✏️ Edit</button>
-                                <button class="btn-action-icon btn-action-del" onclick="promptDelete('${c.client_id}', '${escapeHtml(c.name)}')" title="Delete Site">🗑️</button>
+                        <td class="col-actions-menu">
+                            <div class="action-dropdown-wrap" id="action-wrap-${c.client_id}">
+                                <button type="button" class="btn-actions-toggle" id="btn-action-toggle-${c.client_id}" onclick="toggleRowActionMenu('${c.client_id}', event)" title="Actions for ${escapeHtml(c.name)}">
+                                    ⚙️ Actions <span class="action-caret">▼</span>
+                                </button>
+                                <div class="action-menu-popover" id="action-menu-${c.client_id}" style="display: none;">
+                                    ${remoteEnabled ? (
+                                        isPending ? `
+                                            <a href="https://${escapeHtml(c.domain)}" target="_blank" class="action-menu-item" style="color: #fbbf24;" onclick="closeAllActionMenus()">
+                                                <span>⏳</span> Dashboard (Pending) ↗
+                                            </a>
+                                        ` : `
+                                            <a href="https://${escapeHtml(c.domain)}" target="_blank" class="action-menu-item" style="color: #38bdf8;" onclick="closeAllActionMenus()">
+                                                <span>📊</span> Open Dashboard ↗
+                                            </a>
+                                        `
+                                    ) : `
+                                        <a href="https://${escapeHtml(c.domain)}" target="_blank" class="action-menu-item" style="color: #f87171;" onclick="closeAllActionMenus()">
+                                            <span>🔒</span> Restricted Notice ↗
+                                        </a>
+                                    `}
+                                    <button type="button" class="action-menu-item" style="color: #38bdf8;" onclick="openSnapshotModal('${c.client_id}', '${escapeHtml(c.name)}'); closeAllActionMenus();">
+                                        <span>📸</span> Snapshots & Backups
+                                    </button>
+                                    <button type="button" class="action-menu-item" onclick="openLogsModal('${c.client_id}'); closeAllActionMenus();">
+                                        <span>📋</span> Telemetry Logs
+                                    </button>
+                                    ${currentUser.role !== 'integrator' ? `
+                                        <button type="button" class="action-menu-item" onclick="openReassignModal('${c.client_id}'); closeAllActionMenus();">
+                                            <span>🔄</span> Transfer Supervision
+                                        </button>
+                                    ` : ''}
+                                    <button type="button" class="action-menu-item" onclick="openEditModal('${c.client_id}'); closeAllActionMenus();">
+                                        <span>✏️</span> Edit Site Config
+                                    </button>
+                                    <button type="button" class="action-menu-item" style="color: #f87171;" onclick="promptDelete('${c.client_id}', '${escapeHtml(c.name)}'); closeAllActionMenus();">
+                                        <span>🗑️</span> Delete Client Site
+                                    </button>
+                                </div>
                             </div>
                         </td>
                     </tr>
@@ -4794,7 +5281,246 @@ HTML_PAGE = """<!DOCTYPE html>
         // ======================================================================
         // HORIZONTAL SCROLL & RESPONSIVE TABLE UTILITIES
         // ======================================================================
-        function formatHeartbeatTime(diff) {
+        
+        // ======================================================================
+        // DEALER BRANDING & WHITE-LABEL UTILITIES
+        // ======================================================================
+        function applyDealerBranding(branding) {
+            const b = branding || {};
+            const brandTitle = document.getElementById('side-brand-title') || document.querySelector('.brand-text .title');
+            const brandSub = document.getElementById('side-brand-sub') || document.querySelector('.brand-text .sub');
+            const brandLogo = document.getElementById('side-brand-logo') || document.querySelector('.brand-logo');
+
+            if (brandTitle) brandTitle.innerText = b.company_name || 'GAVASAH';
+            if (brandSub) brandSub.innerText = b.tagline || 'CLOUD FLEET';
+
+            if (b.primary_color) {
+                document.documentElement.style.setProperty('--accent', b.primary_color);
+            } else {
+                document.documentElement.style.setProperty('--accent', '#00f0ff');
+            }
+            if (b.accent_color) {
+                document.documentElement.style.setProperty('--accent-glow', b.accent_color);
+            } else {
+                document.documentElement.style.setProperty('--accent-glow', '#38bdf8');
+            }
+
+            if (b.logo_url && brandLogo) {
+                brandLogo.innerHTML = `<img src="${escapeHtml(b.logo_url)}" style="width: 100%; height: 100%; object-fit: contain; border-radius: 8px;">`;
+            } else if (brandLogo) {
+                brandLogo.innerHTML = 'G';
+            }
+
+            if (b.company_name) {
+                document.title = `${b.company_name} | Operations Portal`;
+            } else {
+                document.title = 'GAVASAH Cloud Ecosystem | Operations Hub';
+            }
+        }
+
+        function populateBrandingForm() {
+            if (!currentUser || !currentUser.branding) return;
+            const b = currentUser.branding;
+            const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
+            setVal('brand-company-name', b.company_name);
+            setVal('brand-tagline', b.tagline);
+            setVal('brand-logo-url', b.logo_url);
+            setVal('brand-primary-color', b.primary_color || '#00f0ff');
+            setVal('brand-primary-color-text', b.primary_color || '#00f0ff');
+            setVal('brand-accent-color', b.accent_color || '#38bdf8');
+            setVal('brand-accent-color-text', b.accent_color || '#38bdf8');
+            setVal('brand-email', b.support_email);
+            setVal('brand-phone', b.support_phone);
+            updateLiveBrandingPreview();
+        }
+
+        function updateLiveBrandingPreview() {
+            const name = document.getElementById('brand-company-name')?.value.trim() || 'GAVASAH';
+            const tagline = document.getElementById('brand-tagline')?.value.trim() || 'CLOUD COMMAND & FLEET';
+            const logo = document.getElementById('brand-logo-url')?.value.trim();
+            const pColor = document.getElementById('brand-primary-color')?.value || '#00f0ff';
+            const aColor = document.getElementById('brand-accent-color')?.value || '#38bdf8';
+
+            const pTitle = document.getElementById('brand-preview-title');
+            const pSub = document.getElementById('brand-preview-sub');
+            const pBox = document.getElementById('brand-preview-box');
+            const pLogoWrap = document.getElementById('brand-preview-logo-wrap');
+
+            if (pTitle) pTitle.innerText = name;
+            if (pSub) {
+                pSub.innerText = tagline;
+                pSub.style.color = pColor;
+            }
+            if (pBox) pBox.style.borderColor = aColor;
+
+            if (pLogoWrap) {
+                if (logo) {
+                    pLogoWrap.innerHTML = `<img src="${escapeHtml(logo)}" class="branding-preview-logo" onerror="this.src=''; this.style.display='none';">`;
+                } else {
+                    pLogoWrap.innerHTML = `<div class="brand-logo" style="width: 38px; height: 38px; font-size: 18px; background: ${pColor}; color: #000;">${name.charAt(0).toUpperCase()}</div>`;
+                }
+            }
+        }
+
+        function setThemeSwatch(primary, accent) {
+            const pEl = document.getElementById('brand-primary-color');
+            const pTxt = document.getElementById('brand-primary-color-text');
+            const aEl = document.getElementById('brand-accent-color');
+            const aTxt = document.getElementById('brand-accent-color-text');
+            if (pEl) pEl.value = primary;
+            if (pTxt) pTxt.value = primary;
+            if (aEl) aEl.value = accent;
+            if (aTxt) aTxt.value = accent;
+            updateLiveBrandingPreview();
+        }
+
+        function syncColorInput(val, targetId) {
+            const el = document.getElementById(targetId);
+            if (el && /^#[0-9A-Fa-f]{6}$/.test(val)) {
+                el.value = val;
+                updateLiveBrandingPreview();
+            }
+        }
+
+        async function handleBrandingFormSubmit(e) {
+            e.preventDefault();
+            await saveDealerBranding();
+        }
+
+        async function saveDealerBranding() {
+            const payload = {
+                company_name: document.getElementById('brand-company-name').value.trim(),
+                tagline: document.getElementById('brand-tagline').value.trim(),
+                logo_url: document.getElementById('brand-logo-url').value.trim(),
+                primary_color: document.getElementById('brand-primary-color').value,
+                accent_color: document.getElementById('brand-accent-color').value,
+                support_email: document.getElementById('brand-email').value.trim(),
+                support_phone: document.getElementById('brand-phone').value.trim()
+            };
+
+            try {
+                const res = await fetch('/api/update_dealer_branding', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast(data.message || 'Branding saved successfully', 'success');
+                    if (currentUser) currentUser.branding = data.branding;
+                    applyDealerBranding(data.branding);
+                } else {
+                    showToast(data.error || 'Failed to save branding', 'error');
+                }
+            } catch (err) {
+                showToast('Network error saving branding', 'error');
+            }
+        }
+
+        async function resetToDefaultBranding() {
+            if (!confirm("Reset to default GAVASAH branding?")) return;
+            try {
+                const res = await fetch('/api/reset_dealer_branding', { method: 'POST' });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast("Reset to default GAVASAH branding.", "success");
+                    if (currentUser) currentUser.branding = {};
+                    populateBrandingForm();
+                    applyDealerBranding({});
+                }
+            } catch (err) {
+                showToast("Failed to reset branding", "error");
+            }
+        }
+
+        // ======================================================================
+        // ONE-CLICK SNAPSHOT & BACKUP MANAGER
+        // ======================================================================
+        let currentSnapshotClientId = null;
+
+        async function openSnapshotModal(clientId, siteName) {
+            currentSnapshotClientId = clientId;
+            document.getElementById('snapshot-client-id').value = clientId;
+            document.getElementById('snapshot-modal-title').innerText = `📸 Site Snapshots & Backups: ${siteName}`;
+            document.getElementById('snapshot-site-header').innerText = `${siteName} (${clientId})`;
+            document.getElementById('snapshot-table-body').innerHTML = `<tr><td colspan="4" style="text-align: center; color: #64748b; padding: 20px;">Fetching site snapshots...</td></tr>`;
+            document.getElementById('snapshot-modal').classList.add('active');
+
+            await fetchAndRenderSnapshots(clientId);
+        }
+
+        function closeSnapshotModal() {
+            document.getElementById('snapshot-modal').classList.remove('active');
+        }
+
+        async function fetchAndRenderSnapshots(clientId) {
+            const tbody = document.getElementById('snapshot-table-body');
+            try {
+                const res = await fetch(`/api/client_backups?client_id=${encodeURIComponent(clientId)}&t=${Date.now()}`);
+                const data = await res.json();
+                if (res.ok && data.ok && Array.isArray(data.backups) && data.backups.length > 0) {
+                    tbody.innerHTML = data.backups.map(b => {
+                        const dateStr = b.date ? new Date(b.date).toLocaleString() : 'Recent';
+                        const sizeStr = b.size_mb ? `${b.size_mb} MB` : 'Available';
+                        return `
+                            <tr>
+                                <td style="font-weight: 600; color: #fff;">
+                                    <div>${escapeHtml(b.name || 'Full Backup')}</div>
+                                    <div style="font-size: 10px; color: #64748b; font-family: monospace;">Slug: ${escapeHtml(b.slug)}</div>
+                                </td>
+                                <td style="font-size: 11px; color: #cbd5e1;">${escapeHtml(dateStr)}</td>
+                                <td style="font-size: 11px; color: #38bdf8; font-family: monospace;">${sizeStr}</td>
+                                <td style="text-align: right;">
+                                    <button type="button" class="btn-sm" style="padding: 4px 10px; font-size: 11px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4);" onclick="downloadBackupFile('${clientId}', '${b.slug}')">
+                                        📥 Download (.tar)
+                                    </button>
+                                </td>
+                            </tr>
+                        `;
+                    }).join('');
+                } else {
+                    tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: #64748b; padding: 24px;">No backups found for this gateway. Click "+ Create Full Snapshot" above to generate one now.</td></tr>`;
+                }
+            } catch (err) {
+                tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: #ef4444; padding: 20px;">Failed to load site backups.</td></tr>`;
+            }
+        }
+
+        async function triggerInstantBackup() {
+            const clientId = currentSnapshotClientId;
+            if (!clientId) return;
+            const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 16);
+            const bName = prompt("Enter snapshot name / label:", `Gavasah Snapshot - ${nowStr}`);
+            if (!bName) return;
+
+            showToast("Dispatching backup snapshot trigger to gateway...", "info");
+            try {
+                const res = await fetch('/api/client_backup_trigger', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ client_id: clientId, name: bName })
+                });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast(data.message || "Snapshot trigger sent!", "success");
+                    // Refresh snapshot list after 5s and 25s
+                    setTimeout(() => fetchAndRenderSnapshots(clientId), 5000);
+                    setTimeout(() => fetchAndRenderSnapshots(clientId), 25000);
+                } else {
+                    showToast(data.error || "Failed to trigger backup", "error");
+                }
+            } catch (e) {
+                showToast("Network error dispatching backup", "error");
+            }
+        }
+
+        function downloadBackupFile(clientId, slug) {
+            showToast("Starting backup download directly to your computer...", "info");
+            const downloadUrl = `/api/download_backup?client_id=${encodeURIComponent(clientId)}&slug=${encodeURIComponent(slug)}`;
+            window.location.href = downloadUrl;
+        }
+
+function formatHeartbeatTime(diff) {
             if (diff === null || diff === undefined || diff < 0) return 'never';
             if (diff < 5) return 'just now';
             if (diff < 60) return `${diff}s ago`;
@@ -5606,7 +6332,7 @@ All active sessions for this integrator will be terminated immediately.` : '';
             const nameEl = document.getElementById('onb-name');
             const slugEl = document.getElementById('onb-slug');
             const rawVal = (slugEl && slugEl.value) ? slugEl.value : slugifyText(nameEl ? nameEl.value : '');
-            const raw = rawVal.trim().toLowerCase().replace(/[^a-z0-9\-]/g, '');
+            const raw = rawVal.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
             const dSlug = getActiveDealerSlug();
             const cleanBase = raw.replace(new RegExp(`-${dSlug}$`), '');
             const domainPreviewEl = document.getElementById('onb-preview-domain');
@@ -6023,6 +6749,106 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             return
 
         # 6. Audit Logs for a specific client
+        
+        # --- RETRIEVE SITE BACKUPS LIST ---
+        elif parsed.path == '/api/client_backups':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+
+            query = parse_qs(parsed.query)
+            client_id = query.get('client_id', [''])[0].strip()
+            clients = load_clients_state()
+            if client_id not in clients:
+                self.send_json(404, {'error': 'Client site not found'})
+                return
+            c = clients[client_id]
+            if user['role'] == 'dealer' and c.get('dealer_id') != user['id']:
+                self.send_json(403, {'error': 'Unauthorized'})
+                return
+
+            backups = c.get('backups') or []
+            client_dir = os.path.join(BACKUPS_DIR, client_id)
+            if os.path.exists(client_dir):
+                for f in os.listdir(client_dir):
+                    if f.endswith('.tar'):
+                        slug = f[:-4]
+                        if not any(b.get('slug') == slug for b in backups):
+                            fp = os.path.join(client_dir, f)
+                            sz = round(os.path.getsize(fp) / (1024 * 1024), 2)
+                            backups.append({
+                                'slug': slug,
+                                'name': f"Archived Snapshot ({slug[:8]})",
+                                'date': datetime.datetime.fromtimestamp(os.path.getmtime(fp)).isoformat() + "Z",
+                                'size_mb': sz,
+                                'type': 'full'
+                            })
+
+            self.send_json(200, {'ok': True, 'backups': backups})
+            return
+
+        # --- DIRECT DOWNLOAD BACKUP ARCHIVE TO USER COMPUTER ---
+        elif parsed.path == '/api/download_backup':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+
+            query = parse_qs(parsed.query)
+            client_id = query.get('client_id', [''])[0].strip()
+            slug = query.get('slug', [''])[0].strip()
+
+            if not client_id or not slug:
+                self.send_json(400, {'error': 'client_id and slug parameters required'})
+                return
+
+            clients = load_clients_state()
+            if client_id not in clients:
+                self.send_json(404, {'error': 'Client site not found'})
+                return
+            c = clients[client_id]
+            if user['role'] == 'dealer' and c.get('dealer_id') != user['id']:
+                self.send_json(403, {'error': 'Unauthorized'})
+                return
+
+            tar_file = os.path.join(BACKUPS_DIR, client_id, f"{slug}.tar")
+            clean_cid = re.sub(r'[^a-zA-Z0-9_-]', '', client_id)
+            filename = f"backup_{clean_cid}_{slug[:8]}.tar"
+
+            if os.path.exists(tar_file):
+                file_size = os.path.getsize(tar_file)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/x-tar')
+                self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+                self.send_header('Content-Length', str(file_size))
+                self.end_headers()
+                with open(tar_file, 'rb') as f:
+                    shutil.copyfileobj(f, self.wfile)
+                return
+
+            # Fallback: Proxy directly from gateway tunnel if available
+            d_port = c.get('dashboard_port')
+            if d_port:
+                proxy_url = f"http://127.0.0.1:{d_port}/api/hassio/backups/{slug}/download"
+                try:
+                    req = urllib.request.Request(proxy_url, headers={'Authorization': f"Bearer {c.get('auth_secret', '')}"})
+                    with urllib.request.urlopen(req, timeout=30) as p_resp:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/x-tar')
+                        self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+                        cl = p_resp.headers.get('Content-Length')
+                        if cl:
+                            self.send_header('Content-Length', cl)
+                        self.end_headers()
+                        shutil.copyfileobj(p_resp, self.wfile)
+                        return
+                except Exception as pe:
+                    print(f"[DOWNLOAD_PROXY_ERR] {pe}", flush=True)
+
+            self.send_json(404, {'error': 'Backup archive not found on hub or gateway'})
+            return
+
         elif parsed.path == '/api/logs':
             user = self.get_authenticated_user()
             if not user:
@@ -6300,7 +7126,8 @@ PersistentKeepalive = 25
                                 'id': d['id'],
                                 'username': d['username'],
                                 'name': d.get('name', ''),
-                                'role': 'dealer'
+                                'role': 'dealer',
+                                'branding': d.get('branding') or {}
                             }
                             break
 
@@ -6455,6 +7282,148 @@ PersistentKeepalive = 25
         # 5. Create Dealer (Manufacturer Only)
         
         # --- TOGGLE DEALER STATUS (MANUFACTURER: ACTIVATE / SUSPEND & KILL SESSIONS) ---
+        
+        # --- ONE-CLICK BACKUP & SNAPSHOT TRIGGER ---
+        elif parsed.path == '/api/client_backup_trigger':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            client_id = body.get('client_id', '').strip()
+            b_name = body.get('name', '').strip() or f"Gavasah Snapshot - {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
+
+            clients = load_clients_state()
+            if client_id not in clients:
+                self.send_json(404, {'error': 'Client site not found'})
+                return
+            c = clients[client_id]
+            if user['role'] == 'dealer' and c.get('dealer_id') != user['id']:
+                self.send_json(403, {'error': 'Unauthorized for this client site'})
+                return
+
+            with DB_LOCK:
+                conn = get_db_connection()
+                with conn:
+                    conn.execute("UPDATE clients SET pending_backup = ? WHERE client_id = ?", (b_name, client_id))
+                conn.close()
+
+            print(f"[SNAPSHOT_TRIGGER] Queued backup '{b_name}' for client '{client_id}'", flush=True)
+            self.send_json(200, {
+                'ok': True,
+                'message': f"Snapshot trigger '{b_name}' dispatched to gateway. The system will create and synchronize the archive within 30-60 seconds."
+            })
+            return
+
+        # --- GATEWAY UPLOAD OF BACKUP ARCHIVE ---
+        elif parsed.path == '/api/client_backup_upload':
+            query = parse_qs(parsed.query)
+            client_id = (query.get('client_id', [''])[0] or self.headers.get('X-Client-Id', '')).strip()
+            slug = (query.get('slug', [''])[0] or self.headers.get('X-Backup-Slug', '')).strip()
+            b_name = (query.get('name', [''])[0] or 'Home Assistant Snapshot').strip()
+            content_length = int(self.headers.get('Content-Length', 0))
+
+            if not client_id or not slug:
+                self.send_json(400, {'error': 'client_id and slug required'})
+                return
+
+            client_dir = os.path.join(BACKUPS_DIR, client_id)
+            os.makedirs(client_dir, exist_ok=True)
+            tar_path = os.path.join(client_dir, f"{slug}.tar")
+
+            with open(tar_path, 'wb') as bf:
+                remaining = content_length
+                chunk_sz = 65536
+                while remaining > 0:
+                    sz = min(chunk_sz, remaining)
+                    chunk = self.rfile.read(sz)
+                    if not chunk:
+                        break
+                    bf.write(chunk)
+                    remaining -= len(chunk)
+
+            size_mb = round(os.path.getsize(tar_path) / (1024 * 1024), 2)
+            log_entry = {
+                'slug': slug,
+                'name': b_name,
+                'date': datetime.datetime.utcnow().isoformat() + "Z",
+                'size_mb': size_mb,
+                'file_path': tar_path,
+                'uploaded_at': int(time.time())
+            }
+
+            with DB_LOCK:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT backups_json FROM clients WHERE client_id = ?", (client_id,))
+                row = cur.fetchone()
+                existing_bk = []
+                if row and row['backups_json']:
+                    try: existing_bk = json.loads(row['backups_json'])
+                    except: existing_bk = []
+                existing_bk = [x for x in existing_bk if x.get('slug') != slug]
+                existing_bk.insert(0, log_entry)
+                with conn:
+                    conn.execute("UPDATE clients SET backups_json = ? WHERE client_id = ?", (json.dumps(existing_bk[:15]), client_id))
+                conn.close()
+
+            print(f"[BACKUP_UPLOAD] Stored backup archive {tar_path} ({size_mb} MB) for '{client_id}'", flush=True)
+            self.send_json(200, {'ok': True, 'slug': slug, 'size_mb': size_mb})
+            return
+
+        # --- DEALER CUSTOM BRANDING UPDATE ---
+        elif parsed.path == '/api/update_dealer_branding':
+            user = self.get_authenticated_user()
+            if not user or user['role'] not in ['dealer', 'manufacturer']:
+                self.send_json(403, {'error': 'Dealer privilege required'})
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            dealer_id = user['id'] if user['role'] == 'dealer' else body.get('dealer_id', '').strip()
+
+            branding = {
+                'company_name': body.get('company_name', '').strip(),
+                'tagline': body.get('tagline', '').strip(),
+                'logo_url': body.get('logo_url', '').strip(),
+                'primary_color': body.get('primary_color', '').strip() or '#00f0ff',
+                'accent_color': body.get('accent_color', '').strip() or '#38bdf8',
+                'support_email': body.get('support_email', '').strip(),
+                'support_phone': body.get('support_phone', '').strip(),
+                'updated_at': int(time.time())
+            }
+
+            with AUTH_LOCK:
+                auth = load_auth_state()
+                if dealer_id not in auth.get('dealers', {}):
+                    self.send_json(404, {'error': 'Dealer record not found'})
+                    return
+                auth['dealers'][dealer_id]['branding'] = branding
+                auth['dealers'][dealer_id]['branding_json'] = json.dumps(branding)
+                save_auth_state(auth)
+
+            self.send_json(200, {'ok': True, 'message': 'Custom branding updated successfully!', 'branding': branding})
+            return
+
+        elif parsed.path == '/api/reset_dealer_branding':
+            user = self.get_authenticated_user()
+            if not user or user['role'] not in ['dealer', 'manufacturer']:
+                self.send_json(403, {'error': 'Dealer privilege required'})
+                return
+
+            dealer_id = user['id'] if user['role'] == 'dealer' else body.get('dealer_id', '').strip()
+            with AUTH_LOCK:
+                auth = load_auth_state()
+                if dealer_id in auth.get('dealers', {}):
+                    auth['dealers'][dealer_id]['branding'] = {}
+                    auth['dealers'][dealer_id]['branding_json'] = ''
+                    save_auth_state(auth)
+
+            self.send_json(200, {'ok': True, 'message': 'Reset to default GAVASAH branding.'})
+            return
+
         elif parsed.path == '/api/toggle_dealer_status':
             user = self.get_authenticated_user()
             if not user or user['role'] != 'manufacturer':
@@ -6565,29 +7534,31 @@ PersistentKeepalive = 25
             email = body.get('email', '').strip()
             phone = body.get('phone', '').strip()
 
-            if not name or not username or not password:
-                self.send_json(400, {'error': 'Dealer name, username, and password are required'})
+            if not name or not password:
+                self.send_json(400, {'error': 'Dealer name and password are required'})
                 return
 
-            clean_slug = re.sub(r'[^a-zA-Z0-9_]', '', username.lower())
+            # Autonomous username: <dealer name> format
+            clean_slug = re.sub(r'[^a-zA-Z0-9_\-]', '', username.lower()) if username else ''
             if not clean_slug:
-                self.send_json(400, {'error': 'Invalid username format'})
-                return
+                base_slug = re.sub(r'[^a-zA-Z0-9]+', '-', name.lower().strip()).strip('-')
+                clean_slug = base_slug if base_slug else f"dealer-{int(time.time())}"
 
             with AUTH_LOCK:
                 auth = load_auth_state()
-                # Check uniqueness across owner, dealers, integrators
-                if clean_slug == auth.get('owner', {}).get('username', '').lower():
-                    self.send_json(400, {'error': 'Username already taken by Manufacturer'})
-                    return
+                existing_usernames = {auth.get('owner', {}).get('username', '').lower()}
                 for d in auth.get('dealers', {}).values():
-                    if d.get('username', '').lower() == clean_slug:
-                        self.send_json(400, {'error': 'Username already exists for another Dealer'})
-                        return
+                    existing_usernames.add(d.get('username', '').lower())
                 for it in auth.get('integrators', {}).values():
-                    if it.get('username', '').lower() == clean_slug:
-                        self.send_json(400, {'error': 'Username already taken by an Integrator'})
-                        return
+                    existing_usernames.add(it.get('username', '').lower())
+
+                # Autonomously resolve collisions
+                candidate = clean_slug
+                counter = 1
+                while candidate in existing_usernames:
+                    candidate = f"{clean_slug}-{counter}"
+                    counter += 1
+                clean_slug = candidate
 
                 dealer_id = f"dealer_{clean_slug}"
                 salt, pwd_hash = hash_password(password)
@@ -6746,13 +7717,8 @@ PersistentKeepalive = 25
             email = body.get('email', '').strip()
             phone = body.get('phone', '').strip()
 
-            if not name or not username or not password:
-                self.send_json(400, {'error': 'Integrator name, username, and password are required'})
-                return
-
-            clean_slug = re.sub(r'[^a-zA-Z0-9_]', '', username.lower())
-            if not clean_slug:
-                self.send_json(400, {'error': 'Invalid username format'})
+            if not name or not password:
+                self.send_json(400, {'error': 'Integrator name and password are required'})
                 return
 
             auth = load_auth_state()
@@ -6773,20 +7739,29 @@ PersistentKeepalive = 25
                     dealer_id = 'owner_master'
                     dealer_name = 'Master Manufacturer (Direct)'
 
+            # Autonomous username: <integrator name>-<dealer name> format
+            clean_slug = re.sub(r'[^a-zA-Z0-9_\-]', '', username.lower()) if username else ''
+            if not clean_slug:
+                int_slug = re.sub(r'[^a-zA-Z0-9]+', '-', name.lower().strip()).strip('-')
+                dlr_slug = re.sub(r'[^a-zA-Z0-9]+', '-', dealer_name.lower().strip()).strip('-')
+                base_slug = f"{int_slug}-{dlr_slug}".strip('-')
+                clean_slug = base_slug if base_slug else f"integrator-{int(time.time())}"
+
             with AUTH_LOCK:
                 auth = load_auth_state()
-                # Uniqueness check
-                if clean_slug == auth.get('owner', {}).get('username', '').lower():
-                    self.send_json(400, {'error': 'Username already taken by Manufacturer'})
-                    return
+                existing_usernames = {auth.get('owner', {}).get('username', '').lower()}
                 for d in auth.get('dealers', {}).values():
-                    if d.get('username', '').lower() == clean_slug:
-                        self.send_json(400, {'error': 'Username already taken by a Dealer'})
-                        return
+                    existing_usernames.add(d.get('username', '').lower())
                 for it in auth.get('integrators', {}).values():
-                    if it.get('username', '').lower() == clean_slug:
-                        self.send_json(400, {'error': 'Username already exists for an Integrator'})
-                        return
+                    existing_usernames.add(it.get('username', '').lower())
+
+                # Autonomously resolve collisions
+                candidate = clean_slug
+                counter = 1
+                while candidate in existing_usernames:
+                    candidate = f"{clean_slug}-{counter}"
+                    counter += 1
+                clean_slug = candidate
 
                 int_id = f"int_{clean_slug}_{int(time.time()) % 10000}"
                 salt, pwd_hash = hash_password(password)
@@ -7512,6 +8487,28 @@ PersistentKeepalive = 25
             if 'ssh_public_key' in body and body['ssh_public_key']:
                 sync_client_ssh_user(client_id, body['ssh_public_key'])
 
+            tech_dict = body.get('technologies')
+            if tech_dict is None:
+                try: tech_dict = json.loads(client.get('technologies_json') or '{}')
+                except: tech_dict = {}
+
+            backups_list = body.get('backups')
+            if backups_list is None:
+                try: backups_list = json.loads(client.get('backups_json') or '[]')
+                except: backups_list = []
+
+            pending_bk = client.get('pending_backup')
+            resp_payload = {
+                'ok': True,
+                'server_time': now,
+                'remote_enabled': bool(client.get('remote_enabled', 1))
+            }
+            if pending_bk:
+                resp_payload['backup_trigger'] = {
+                    'action': 'create_backup',
+                    'name': pending_bk
+                }
+
             # Targeted single-row SQL update (§3.D.2)
             with DB_LOCK:
                 conn = get_db_connection()
@@ -7525,7 +8522,10 @@ PersistentKeepalive = 25
                                 network_json = ?,
                                 knx_json = ?,
                                 knx_ip = ?,
-                                knx_port = ?
+                                knx_port = ?,
+                                technologies_json = ?,
+                                backups_json = ?,
+                                pending_backup = CASE WHEN ? IS NOT NULL THEN NULL ELSE pending_backup END
                             WHERE client_id = ?
                         """, (
                             now,
@@ -7534,12 +8534,15 @@ PersistentKeepalive = 25
                             json.dumps(knx_dict),
                             knx_ip_val or '',
                             knx_port_val if knx_port_val is not None else 3671,
+                            json.dumps(tech_dict),
+                            json.dumps(backups_list),
+                            pending_bk,
                             client_id
                         ))
                 finally:
                     conn.close()
 
-            self.send_json(200, {'ok': True, 'server_time': now, 'remote_enabled': bool(client.get('remote_enabled', 1))})
+            self.send_json(200, resp_payload)
             return
 
         else:
