@@ -4752,9 +4752,13 @@ HTML_PAGE = """<!DOCTYPE html>
                         </td>
                         <td class="col-actions-sticky">
                             <div class="actions-btn-flex">
-                                ${remoteEnabled ? `
-                                    <a href="https://${escapeHtml(c.domain)}" target="_blank" class="btn-action-icon btn-action-dashboard" title="Open Client Remote User Interface (Home Assistant Dashboard)">📊 Dashboard ↗</a>
-                                ` : `
+                                ${remoteEnabled ? (
+                                    isPending ? `
+                                        <span class="btn-action-icon btn-action-dashboard" style="opacity: 0.65; cursor: wait; border-color: rgba(245,158,11,0.3); color: #fbbf24;" title="Gateway Provisioned - Waiting for initial gateway connection">⏳ Awaiting Pulse</span>
+                                    ` : `
+                                        <a href="https://${escapeHtml(c.domain)}" target="_blank" class="btn-action-icon btn-action-dashboard" title="Open Client Remote User Interface (Home Assistant Dashboard)">📊 Dashboard ↗</a>
+                                    `
+                                ) : `
                                     <span class="btn-action-icon btn-action-dashboard" style="opacity: 0.45; cursor: not-allowed; text-decoration: line-through; border-color: rgba(239,68,68,0.3); color: #f87171;" title="Remote Access Disabled - Flip Toggle to Enable">🔒 Disabled</span>
                                 `}
                                 <button class="btn-action-icon btn-action-logs" onclick="openLogsModal('${c.client_id}')" title="Audit Telemetry Logs">📋 Logs</button>
@@ -5844,6 +5848,21 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                     self.send_response(200)
                     self.end_headers()
                     return
+
+                # Tolerant alias matching (e.g. mr-pranav-chilukuri matches pranav-chilukuri)
+                clean_slug = re.sub(r'^(mr|mrs|ms|dr)-', '', slug)
+                for cid, c in c_data.items():
+                    clean_cid = re.sub(r'^(mr|mrs|ms|dr)-', '', cid)
+                    if clean_slug == clean_cid:
+                        self.send_response(200)
+                        self.end_headers()
+                        return
+                    name_slug = re.sub(r'[^a-z0-9]+', '-', (c.get('name') or '').lower()).strip('-')
+                    clean_name = re.sub(r'^(mr|mrs|ms|dr)-', '', name_slug)
+                    if clean_slug == clean_name or clean_slug.startswith(clean_name):
+                        self.send_response(200)
+                        self.end_headers()
+                        return
 
             self.send_response(404)
             self.end_headers()
@@ -7156,8 +7175,8 @@ PersistentKeepalive = 25
                 'tunnel_mode': 'wireguard',
                 'knx_ip': knx_ip,
                 'knx_port': knx_port,
-                'last_heartbeat': int(time.time()),
-                'status': 'online',
+                'last_heartbeat': 0,
+                'status': 'pending',
                 'remote_enabled': bool(body.get('remote_enabled', True)),
                 'system': {
                     'haos_version': '13.2',

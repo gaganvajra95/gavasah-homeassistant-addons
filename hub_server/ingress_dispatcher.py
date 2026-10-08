@@ -9,6 +9,7 @@ import sqlite3
 import time
 import os
 import html
+import re
 
 DB_PATH = '/srv/gavasah-cloud/fleet.db'
 
@@ -266,6 +267,22 @@ def get_client_info(slug):
             (slug, f"{slug}.gavasah.com")
         )
         row = cur.fetchone()
+
+        if not row:
+            clean_slug = re.sub(r'^(mr|mrs|ms|dr)-', '', slug.lower())
+            cur.execute("SELECT client_id, name, dealer_name, dashboard_port, remote_enabled, domain FROM clients")
+            for r in cur.fetchall():
+                cid = (r['client_id'] or '').lower()
+                clean_cid = re.sub(r'^(mr|mrs|ms|dr)-', '', cid)
+                if clean_slug == clean_cid:
+                    row = r
+                    break
+                name_slug = re.sub(r'[^a-z0-9]+', '-', (r['name'] or '').lower()).strip('-')
+                clean_name = re.sub(r'^(mr|mrs|ms|dr)-', '', name_slug)
+                if clean_slug == clean_name or clean_slug.startswith(clean_name):
+                    row = r
+                    break
+
         conn.close()
 
         if not row:
@@ -380,12 +397,25 @@ async def connect_upstream(target_port, clean_initial_data):
         up_writer.write(clean_initial_data)
         await up_writer.drain()
 
-        # Read first chunk to see if plain HTTP worked or if server closed (TLS required)
-        first_chunk = await asyncio.wait_for(up_reader.read(65536), timeout=2.5)
-        if not first_chunk:
-            # Server closed immediately -> port is likely HTTPS!
+        # Check if remote server instantly drops/closes plain HTTP socket (behavior of SSL server receiving non-TLS bytes)
+        is_ssl = False
+        try:
+            first_chunk = await asyncio.wait_for(up_reader.read(65536), timeout=0.15)
+            if first_chunk == b"":
+                # Server closed immediately -> port is HTTPS!
+                is_ssl = True
+            else:
+                # Plain HTTP responded with data!
+                PORT_SSL_CACHE[target_port] = False
+                return up_reader, up_writer, first_chunk
+        except asyncio.TimeoutError:
+            # Server accepted the connection and is processing the request normally (Plain HTTP)!
+            PORT_SSL_CACHE[target_port] = False
+            return up_reader, up_writer, None
+
+        if is_ssl:
+            up_writer.close()
             try:
-                up_writer.close()
                 await up_writer.wait_closed()
             except Exception:
                 pass
@@ -396,16 +426,10 @@ async def connect_upstream(target_port, clean_initial_data):
             )
             ssl_writer.write(clean_initial_data)
             await ssl_writer.drain()
-            first_ssl_chunk = await asyncio.wait_for(ssl_reader.read(65536), timeout=3.0)
-            if first_ssl_chunk:
-                PORT_SSL_CACHE[target_port] = True
-                return ssl_reader, ssl_writer, first_ssl_chunk
-            return None, None, None
-        else:
-            PORT_SSL_CACHE[target_port] = False
-            return up_reader, up_writer, first_chunk
+            PORT_SSL_CACHE[target_port] = True
+            return ssl_reader, ssl_writer, None
     except Exception:
-        # Retry with SSL
+        # Fallback to SSL if initial plain connection failed completely
         try:
             ssl_reader, ssl_writer = await asyncio.wait_for(
                 asyncio.open_connection('127.0.0.1', target_port, ssl=SSL_CTX),
@@ -413,10 +437,8 @@ async def connect_upstream(target_port, clean_initial_data):
             )
             ssl_writer.write(clean_initial_data)
             await ssl_writer.drain()
-            first_ssl_chunk = await asyncio.wait_for(ssl_reader.read(65536), timeout=3.0)
-            if first_ssl_chunk:
-                PORT_SSL_CACHE[target_port] = True
-                return ssl_reader, ssl_writer, first_ssl_chunk
+            PORT_SSL_CACHE[target_port] = True
+            return ssl_reader, ssl_writer, None
         except Exception:
             pass
         return None, None, None
