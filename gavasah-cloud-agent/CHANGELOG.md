@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.7] - 2026-10-08
+
+### Fixed
+- **Symmetric RAUC A/B Slot Health**: Corrected false-positive recovery detection where normal system updates booting into Slot B were reported as recovery mode. Slot B is recognized as an active healthy operational partition unless RAUC explicitly flags a boot failure.
+- **Sensor Status Accuracy**: Updated local binary sensor status and portal reporting to accurately reflect active slot health without spurious alerts.
+
+---
+
 ## [1.0.6] - 2026-10-08
 
 ### Fixed

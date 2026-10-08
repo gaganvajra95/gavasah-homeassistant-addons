@@ -358,11 +358,11 @@ def collect_telemetry(opts):
     haos_version = os_info.get("version", "Unknown")
     board = os_info.get("board", "generic")
 
-    # Detect recovery / fallback mode
+    # Dual A/B Symmetric Slot Health Detection
+    # In Home Assistant OS and RAUC, both Slot A and Slot B are healthy operational partitions.
+    # An active boot into Slot B occurs normally after system updates.
+    # A slot is only considered in recovery/fallback if RAUC explicitly flags a boot failure.
     is_recovery = False
-    if str(boot_slot).upper() == "B":
-        # Slot B is the failover/recovery slot after Slot A failure in RAUC dual-slot
-        is_recovery = True
 
     # Primary network interface extraction
     default_ip = "Unknown"
@@ -414,8 +414,13 @@ def collect_telemetry(opts):
     ha_alive, ha_proto = check_tunnel_local_port(8123)
     pubkey = get_public_key()
 
-    slot_a_state = "good (active)" if not is_recovery else "bad (failed boot, auto-fell back)"
-    slot_b_state = "good (active fallback)" if is_recovery else "standby"
+    slot_upper = str(boot_slot).upper()
+    if slot_upper == "B":
+        slot_a_state = "standby (good)"
+        slot_b_state = "good (active)"
+    else:
+        slot_a_state = "good (active)"
+        slot_b_state = "standby (good)"
 
     # Real-time Home Assistant Main CPU & Memory calculation
     main_cpu_pct, main_mem_pct = get_ha_main_cpu_and_memory()
@@ -485,7 +490,7 @@ def publish_local_entities(payload):
         {
             "friendly_name": "Gavasah System Recovery Mode",
             "device_class": "problem",
-            "status_details": "Running on Fallback Slot B!" if is_rec else "System healthy on Slot A",
+            "status_details": "Recovery mode active!" if is_rec else f"System healthy on Slot {sys_info.get('boot_slot', 'A')}",
             "icon": "mdi:alert-octagon" if is_rec else "mdi:shield-check"
         }
     )

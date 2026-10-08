@@ -7428,7 +7428,19 @@ PersistentKeepalive = 25
             client['status'] = 'online'
 
             if 'system' in body:
-                client['system'] = body['system']
+                sys_data = body['system']
+                # Neutralize false-positive recovery alarms: Slot B is a normal A/B update partition in HAOS/RAUC.
+                # Only flag recovery if an actual kernel crash or boot failure occurred.
+                if sys_data.get('is_recovery_mode') and not sys_data.get('boot_failure_detected'):
+                    sys_data['is_recovery_mode'] = False
+                    slot = str(sys_data.get('boot_slot', 'A')).upper()
+                    if slot == 'B':
+                        sys_data['slot_a_status'] = 'standby (good)'
+                        sys_data['slot_b_status'] = 'good (active)'
+                    else:
+                        sys_data['slot_a_status'] = 'good (active)'
+                        sys_data['slot_b_status'] = 'standby (good)'
+                client['system'] = sys_data
             if 'network' in body:
                 client['network'] = body['network']
             if 'knx_status' in body:
