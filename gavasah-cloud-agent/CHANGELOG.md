@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.0.9] - 2026-10-08
+
+### Added
+- **Onboard Loopback KNX Router Support**: Added local loopback `127.0.0.1:3671` probe support in auto-discovery watchdog for all-in-one controller hardware running integrated knxd services.
+
+### Fixed
+- **Localhost Probe Sanitization**: Resolved telemetry issue where `ping_knx_gateway` discarded `127.0.0.1` and `localhost` configurations as unconfigured.
+- **Heartbeat Endpoint Prioritization**: Ensured HTTPS dealer API endpoint is tested first for rapid telemetry delivery without HTTP 308 redirect drops.
 
 ---
 

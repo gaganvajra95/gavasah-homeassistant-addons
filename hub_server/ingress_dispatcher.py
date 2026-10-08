@@ -238,22 +238,44 @@ OFFLINE_HTML_TEMPLATE = """<!DOCTYPE html>
 </body>
 </html>"""
 
+_CLIENT_CACHE = {}
+_CACHE_TTL = 3.0  # 3-second in-memory lookup cache to eliminate SQLite churn
+
 def get_client_info(slug):
-    """Fetches real-time client status directly from SQLite WAL database."""
+    """Fetches real-time client status directly from SQLite WAL database with 3s TTL caching."""
+    now = time.time()
+    cached = _CLIENT_CACHE.get(slug)
+    if cached and (now - cached[0] < _CACHE_TTL):
+        return cached[1]
+
+    # Periodic cache cleanup to prevent memory growth
+    if len(_CLIENT_CACHE) > 1000:
+        for k in list(_CLIENT_CACHE.keys()):
+            if now - _CLIENT_CACHE[k][0] > 10.0:
+                _CLIENT_CACHE.pop(k, None)
+
     try:
         conn = sqlite3.connect(DB_PATH, timeout=5.0)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         cur.execute(
-            "SELECT client_id, name, dealer_name, dashboard_port, remote_enabled "
-            "FROM clients WHERE client_id = ? OR domain = ?",
+            "SELECT c.client_id, c.name, c.dealer_id, c.dealer_name, c.dashboard_port, c.remote_enabled, "
+            "d.status AS dealer_status "
+            "FROM clients c "
+            "LEFT JOIN dealers d ON c.dealer_id = d.id "
+            "WHERE c.client_id = ? OR c.domain = ?",
             (slug, f"{slug}.gavasah.com")
         )
         row = cur.fetchone()
 
         if not row:
             clean_slug = re.sub(r'^(mr|mrs|ms|dr)-', '', slug.lower())
-            cur.execute("SELECT client_id, name, dealer_name, dashboard_port, remote_enabled, domain FROM clients")
+            cur.execute(
+                "SELECT c.client_id, c.name, c.dealer_id, c.dealer_name, c.dashboard_port, c.remote_enabled, c.domain, "
+                "d.status AS dealer_status "
+                "FROM clients c "
+                "LEFT JOIN dealers d ON c.dealer_id = d.id"
+            )
             for r in cur.fetchall():
                 cid = (r['client_id'] or '').lower()
                 clean_cid = re.sub(r'^(mr|mrs|ms|dr)-', '', cid)
@@ -273,26 +295,48 @@ def get_client_info(slug):
         conn.close()
 
         if not row:
-            return {'status': 'NOT_FOUND', 'slug': slug}
+            res = {'status': 'NOT_FOUND', 'slug': slug}
+            _CLIENT_CACHE[slug] = (now, res)
+            return res
 
-        is_enabled = bool(row['remote_enabled'])
-        if not is_enabled:
-            return {
+        # 1. Enforce Dealer Account Suspension (§3.C.1)
+        dealer_status = (row['dealer_status'] or 'active').lower() if row['dealer_id'] != 'owner_master' else 'active'
+        if dealer_status != 'active':
+            res = {
                 'status': 'SUSPENDED',
                 'client_id': row['client_id'],
                 'name': row['name'] or row['client_id'],
                 'dealer_name': row['dealer_name'] or 'Authorized Dealer',
                 'port': None
             }
+            _CLIENT_CACHE[slug] = (now, res)
+            return res
+
+        # 2. Enforce Site Remote Toggle Suspension
+        is_enabled = bool(row['remote_enabled'])
+        if not is_enabled:
+            res = {
+                'status': 'SUSPENDED',
+                'client_id': row['client_id'],
+                'name': row['name'] or row['client_id'],
+                'dealer_name': row['dealer_name'] or 'Authorized Dealer',
+                'port': None
+            }
+            _CLIENT_CACHE[slug] = (now, res)
+            return res
 
         port = int(row['dashboard_port']) if row['dashboard_port'] else None
-        return {
+        res = {
             'status': 'ACTIVE',
             'client_id': row['client_id'],
             'name': row['name'] or row['client_id'],
             'dealer_name': row['dealer_name'] or 'Authorized Dealer',
             'port': port
         }
+        _CLIENT_CACHE[slug] = (now, res)
+        if row['client_id'] and row['client_id'] != slug:
+            _CLIENT_CACHE[row['client_id']] = (now, res)
+        return res
     except Exception as e:
         print(f"[!] Dispatcher DB lookup error for {slug}: {e}", flush=True)
         return {'status': 'ERROR', 'error': str(e), 'slug': slug}

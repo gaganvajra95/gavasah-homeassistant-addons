@@ -211,7 +211,7 @@ def ensure_supervisor_toggles():
         log(f"[!] [Supervisor] Error setting toggles: {e}")
 
 def ping_knx_gateway(ip, port=3671, timeout=2.0):
-    if not ip or str(ip).strip() in ["", "127.0.0.1", "localhost", "none", "null"]:
+    if not ip or str(ip).strip().lower() in ["", "none", "null", "false"]:
         return {
             "configured": False,
             "reachable": False,
@@ -373,7 +373,20 @@ def auto_detect_knx_gateway(opts):
             found = True
             conn_type = "addon_options"
 
-    # 4. If KNX was found, test reachable latency
+    # 4. Integrated loopback KNX probe (e.g. onboard knxd service on 127.0.0.1:3671)
+    if not detected_host:
+        try:
+            loopback_res = ping_knx_gateway("127.0.0.1", 3671, timeout=0.8)
+            if loopback_res.get("reachable"):
+                detected_host = "127.0.0.1"
+                detected_port = 3671
+                found = True
+                conn_type = "integrated_loopback"
+                log("[✓] [KNX Auto-Discovery] Found active onboard KNX service on 127.0.0.1:3671")
+        except Exception:
+            pass
+
+    # 5. If KNX was found, test reachable latency
     if detected_host:
         res = ping_knx_gateway(detected_host, detected_port)
         res["connection_type"] = conn_type

@@ -564,7 +564,7 @@ def sync_client_ssh_user(client_id, ssh_public_key):
         res = subprocess.run(["id", client_id], capture_output=True, timeout=3)
         if res.returncode != 0:
             ua = subprocess.run([
-                "useradd", "--badname", "-m", "-s", "/bin/bash", "-g", "haclients", client_id
+                "useradd", "--badname", "-m", "-s", "/usr/sbin/nologin", "-g", "haclients", client_id
             ], capture_output=True, timeout=5)
             if ua.returncode != 0:
                 with open('/etc/passwd', 'r') as pf:
@@ -575,7 +575,7 @@ def sync_client_ssh_user(client_id, ssh_public_key):
                     while n_uid in existing_uids:
                         n_uid += 1
                     with open('/etc/passwd', 'a') as pf:
-                        pf.write(f"{client_id}:x:{n_uid}:{gid}::/home/{client_id}:/bin/bash\n")
+                        pf.write(f"{client_id}:x:{n_uid}:{gid}::/home/{client_id}:/usr/sbin/nologin\n")
                     with open('/etc/shadow', 'a') as sf:
                         sf.write(f"{client_id}:*:19000:0:99999:7:::\n")
                     print(f"[+] Autonomously created user {client_id} (UID {n_uid})")
@@ -7316,22 +7316,33 @@ PersistentKeepalive = 25
             client_id = body.get('client_id', '').strip()
             enabled = bool(body.get('enabled', True))
 
-            c_data = load_clients_state()
-            client = c_data.get(client_id)
-            if not client:
-                self.send_json(404, {'error': 'Client site not found'})
-                return
+            with DB_LOCK:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM clients WHERE client_id = ?", (client_id,))
+                row = cur.fetchone()
+                if not row:
+                    conn.close()
+                    self.send_json(404, {'error': 'Client site not found'})
+                    return
+                client = dict(row)
 
-            # Role verification
-            if user['role'] == 'dealer' and client.get('dealer_id') != user['id']:
-                self.send_json(403, {'error': 'Access denied'})
-                return
-            elif user['role'] == 'integrator' and client.get('integrator_id') != user['id']:
-                self.send_json(403, {'error': 'Access denied'})
-                return
+                # Role verification
+                if user['role'] == 'dealer' and client.get('dealer_id') != user['id']:
+                    conn.close()
+                    self.send_json(403, {'error': 'Access denied'})
+                    return
+                elif user['role'] == 'integrator' and client.get('integrator_id') != user['id']:
+                    conn.close()
+                    self.send_json(403, {'error': 'Access denied'})
+                    return
+
+                # Targeted single-row update (§3.D.2)
+                conn.execute("UPDATE clients SET remote_enabled = ? WHERE client_id = ?", (1 if enabled else 0, client_id))
+                conn.commit()
+                conn.close()
 
             client['remote_enabled'] = enabled
-            save_clients_state(c_data)
 
             if not enabled:
                 # Terminate active reverse tunnel sessions immediately when suspended
@@ -7427,28 +7438,26 @@ PersistentKeepalive = 25
             auth_hdr = self.headers.get('Authorization', '').replace('Bearer ', '').strip()
             secret = (body.get('auth_key') or body.get('auth_secret') or body.get('secret') or auth_hdr or '').strip()
 
-            c_data = load_clients_state()
-            client = c_data.get(client_id)
-            if not client:
-                # Case-insensitive fallback
-                for cid, cobj in c_data.items():
-                    if cid.lower() == client_id.lower():
-                        client = cobj
-                        client_id = cid
-                        break
+            # Targeted client lookup (§3.D.2)
+            with DB_LOCK:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM clients WHERE client_id = ?", (client_id,))
+                row = cur.fetchone()
+                if not row:
+                    # Case-insensitive fallback
+                    cur.execute("SELECT * FROM clients WHERE lower(client_id) = lower(?)", (client_id,))
+                    row = cur.fetchone()
+                conn.close()
 
-            if not client:
+            if not row:
                 print(f"[HB_NOT_FOUND_404] client_id='{client_id}', payload_keys={list(body.keys())}", flush=True)
                 self.send_json(404, {'error': 'Client not registered'})
                 return
 
+            client = dict(row)
+            client_id = client['client_id']
             expected_secret = (client.get('auth_secret') or '').strip()
-            try:
-                with open('/tmp/hb_payloads.log', 'a') as _f:
-                    _f.write(f"TIME={int(time.time())} CID={client_id} INC_SEC={secret} DB_SEC={expected_secret} BODY={raw_body}\n")
-                    _f.flush()
-            except Exception as _e:
-                pass
 
             # Validate auth_secret if set on client
             if expected_secret and secret != expected_secret:
@@ -7458,9 +7467,8 @@ PersistentKeepalive = 25
 
             # Update telemetry data
             now = int(time.time())
-            client['last_heartbeat'] = now
-            client['status'] = 'online'
 
+            sys_dict = {}
             if 'system' in body:
                 sys_data = body['system']
                 # Neutralize false-positive recovery alarms: Slot B is a normal A/B update partition in HAOS/RAUC.
@@ -7474,23 +7482,63 @@ PersistentKeepalive = 25
                     else:
                         sys_data['slot_a_status'] = 'good (active)'
                         sys_data['slot_b_status'] = 'standby (good)'
-                client['system'] = sys_data
-            if 'network' in body:
-                client['network'] = body['network']
+                sys_dict = sys_data
+            else:
+                try: sys_dict = json.loads(client.get('system_json') or '{}')
+                except: sys_dict = {}
+
+            net_dict = body.get('network')
+            if net_dict is None:
+                try: net_dict = json.loads(client.get('network_json') or '{}')
+                except: net_dict = {}
+
+            knx_ip_val = client.get('knx_ip', '')
+            knx_port_val = client.get('knx_port', 3671)
+            knx_dict = {}
             if 'knx_status' in body:
                 knx_st = body.get('knx_status') or {}
-                client['knx_status'] = knx_st
+                knx_dict = knx_st
                 if knx_st.get('configured') and knx_st.get('gateway_ip'):
-                    client['knx_ip'] = knx_st['gateway_ip']
-                    client['knx_port'] = int(knx_st.get('gateway_port', 3671))
+                    knx_ip_val = knx_st['gateway_ip']
+                    knx_port_val = int(knx_st.get('gateway_port', 3671))
                 elif knx_st.get('reason') == 'no_knx_integration' or not knx_st.get('configured'):
-                    client['knx_ip'] = ''
-                    client['knx_port'] = None
+                    knx_ip_val = ''
+                    knx_port_val = None
+            else:
+                try: knx_dict = json.loads(client.get('knx_json') or '{}')
+                except: knx_dict = {}
+
             if 'ssh_public_key' in body and body['ssh_public_key']:
                 sync_client_ssh_user(client_id, body['ssh_public_key'])
 
-            save_clients_state(c_data)
-            self.send_json(200, {'ok': True, 'server_time': now, 'remote_enabled': client.get('remote_enabled', True)})
+            # Targeted single-row SQL update (§3.D.2)
+            with DB_LOCK:
+                conn = get_db_connection()
+                try:
+                    with conn:
+                        conn.execute("""
+                            UPDATE clients SET
+                                last_heartbeat = ?,
+                                status = 'online',
+                                system_json = ?,
+                                network_json = ?,
+                                knx_json = ?,
+                                knx_ip = ?,
+                                knx_port = ?
+                            WHERE client_id = ?
+                        """, (
+                            now,
+                            json.dumps(sys_dict),
+                            json.dumps(net_dict),
+                            json.dumps(knx_dict),
+                            knx_ip_val or '',
+                            knx_port_val if knx_port_val is not None else 3671,
+                            client_id
+                        ))
+                finally:
+                    conn.close()
+
+            self.send_json(200, {'ok': True, 'server_time': now, 'remote_enabled': bool(client.get('remote_enabled', 1))})
             return
 
         else:
