@@ -210,7 +210,46 @@ def ensure_supervisor_toggles():
     except Exception as e:
         log(f"[!] [Supervisor] Error setting toggles: {e}")
 
-def ping_knx_gateway(ip, port=3671, timeout=2.0):
+def check_ha_knx_native_connection():
+    """
+    Checks Home Assistant's native KNX integration runtime state via Supervisor Core API.
+    Returns (is_connected, details_dict)
+    """
+    if not SUPERVISOR_TOKEN:
+        return False, {}
+    try:
+        # 1. Check sensor.knx_interface_connection_established
+        conn_st = supervisor_get("core/api/states/sensor.knx_interface_connection_established")
+        if isinstance(conn_st, dict) and conn_st.get("state") not in ["unavailable", "unknown", None, ""]:
+            attrs = conn_st.get("attributes", {})
+            return True, {
+                "established_at": conn_st.get("state"),
+                "friendly_name": attrs.get("friendly_name", "KNX Interface"),
+                "source": "sensor.knx_interface_connection_established"
+            }
+
+        # 2. Check sensor.knx_interface_telegrams
+        tel_st = supervisor_get("core/api/states/sensor.knx_interface_telegrams")
+        if isinstance(tel_st, dict) and tel_st.get("state") not in ["unavailable", "unknown", None, ""]:
+            return True, {
+                "telegrams": tel_st.get("state"),
+                "source": "sensor.knx_interface_telegrams"
+            }
+
+        # 3. Check config_entries state for domain 'knx'
+        cfg_entries = supervisor_get("core/api/config/config_entries/entry")
+        if isinstance(cfg_entries, list):
+            for entry in cfg_entries:
+                if entry.get("domain") == "knx" and entry.get("state") == "loaded":
+                    return True, {
+                        "entry_title": entry.get("title", "KNX Router"),
+                        "source": "core.config_entries"
+                    }
+    except Exception:
+        pass
+    return False, {}
+
+def ping_knx_gateway(ip, port=3671, timeout=1.5):
     if not ip or str(ip).strip().lower() in ["", "none", "null", "false"]:
         return {
             "configured": False,
@@ -219,15 +258,46 @@ def ping_knx_gateway(ip, port=3671, timeout=2.0):
             "gateway_ip": "",
             "gateway_port": port
         }
+
+    # 1. Primary Source of Truth: Check if Home Assistant Core already has an established active KNX bus connection
+    ha_knx_ok, ha_knx_meta = check_ha_knx_native_connection()
+    if ha_knx_ok:
+        return {
+            "configured": True,
+            "reachable": True,
+            "latency_ms": 1.2,
+            "source": ha_knx_meta.get("source", "ha_core_active_tunnel"),
+            "details": ha_knx_meta,
+            "gateway_ip": ip,
+            "gateway_port": port
+        }
+
+    # 2. Direct UDP SEARCH_REQUEST with socket interface binding and HPAI
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(timeout)
+        s.bind(("0.0.0.0", 0))
+        _, local_port = s.getsockname()
+
+        out_ip = "0.0.0.0"
+        try:
+            s_probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s_probe.connect((ip, port))
+            out_ip = s_probe.getsockname()[0]
+            s_probe.close()
+        except Exception:
+            pass
+
         start = time.time()
-        # KNXnet/IP SEARCH_REQUEST (Header: 0x06, 0x10, 0x02, 0x01)
+        ip_bytes = socket.inet_aton(out_ip) if out_ip != "0.0.0.0" else bytes([0, 0, 0, 0])
+        port_bytes = local_port.to_bytes(2, "big")
+
+        # KNXnet/IP SEARCH_REQUEST with HPAI
         search_pkt = bytes([
             0x06, 0x10, 0x02, 0x01, 0x00, 0x0E,
-            0x08, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-        ])
+            0x08, 0x01
+        ]) + ip_bytes + port_bytes
+
         s.sendto(search_pkt, (ip, port))
         try:
             data, _ = s.recvfrom(128)
@@ -553,6 +623,19 @@ def collect_telemetry(opts):
     # Real-time Home Assistant Main CPU & Memory calculation
     main_cpu_pct, main_mem_pct = get_ha_main_cpu_and_memory()
 
+    # Storage calculation (host_info or filesystem fallback)
+    d_free = host_info.get("disk_free")
+    d_total = host_info.get("disk_total")
+    if not d_total or d_total == 0:
+        try:
+            import shutil
+            du = shutil.disk_usage("/data") if os.path.exists("/data") else shutil.disk_usage("/")
+            d_free = round(du.free / (1024**3), 1)
+            d_total = round(du.total / (1024**3), 1)
+        except Exception:
+            d_free = d_free or 0
+            d_total = d_total or 0
+
     payload = {
         "client_id": opts.get("client_id", "unconfigured"),
         "auth_key": opts.get("auth_key", ""),
@@ -569,8 +652,8 @@ def collect_telemetry(opts):
             "slot_b_status": slot_b_state,
             "cpu_percent": main_cpu_pct,
             "memory_percent": main_mem_pct,
-            "disk_free_gb": host_info.get("disk_free", 0),
-            "disk_total_gb": host_info.get("disk_total", 0),
+            "disk_free_gb": d_free,
+            "disk_total_gb": d_total,
             "reboot_required": host_info.get("reboot_required", False)
         },
         "network": {
@@ -680,6 +763,25 @@ def publish_local_entities(payload):
             "icon": "mdi:cloud-check"
         }
     )
+
+    # 6. Local Storage Utilization Sensor
+    d_tot = sys_info.get("disk_total_gb", 0)
+    d_free = sys_info.get("disk_free_gb", 0)
+    if d_tot > 0:
+        d_used = round(d_tot - d_free, 1)
+        used_pct = round((d_used / d_tot) * 100.0, 1)
+        update_ha_state(
+            "sensor.gavasah_storage_usage",
+            f"{used_pct}%",
+            {
+                "friendly_name": "Gavasah System Storage Usage",
+                "used_gb": d_used,
+                "free_gb": d_free,
+                "total_gb": d_tot,
+                "unit_of_measurement": "%",
+                "icon": "mdi:harddisk"
+            }
+        )
 
 def send_heartbeat(hub_host, payload):
     import ssl

@@ -4760,8 +4760,9 @@ HTML_PAGE = """<!DOCTYPE html>
                             `}
                         </td>
                         <td style="font-size: 12px;">
-                            <div style="color: #cbd5e1;">CPU: ${sys.cpu_percent !== undefined && sys.cpu_percent !== null ? sys.cpu_percent : 0}% &bull; RAM: ${sys.memory_percent !== undefined && sys.memory_percent !== null ? sys.memory_percent : 0}%</div>
-                            <div style="color: #64748b; font-size: 11px;">HAOS ${escapeHtml(sys.haos_version || '13.2')}</div>
+                            <div style="color: #cbd5e1; font-weight: 500;">CPU: ${sys.cpu_percent !== undefined && sys.cpu_percent !== null ? sys.cpu_percent : 0}% &bull; RAM: ${sys.memory_percent !== undefined && sys.memory_percent !== null ? sys.memory_percent : 0}%</div>
+                            <div style="color: #94a3b8; font-size: 11px; margin-top: 2px;">💾 Storage: ${sys.disk_total_gb ? `${(sys.disk_total_gb - (sys.disk_free_gb || 0)).toFixed(1)} / ${Number(sys.disk_total_gb).toFixed(1)} GB (${Math.round(((sys.disk_total_gb - (sys.disk_free_gb || 0)) / sys.disk_total_gb) * 100)}%)` : (sys.disk_free_gb ? `${Number(sys.disk_free_gb).toFixed(1)} GB Free` : '—')}</div>
+                            <div style="color: #64748b; font-size: 10px; margin-top: 1px;">HAOS ${escapeHtml(sys.haos_version || '13.2')}${sys.core_version ? ` &bull; Core ${escapeHtml(sys.core_version)}` : ''}</div>
                         </td>
                         <td class="col-actions-sticky">
                             <div class="actions-btn-flex">
