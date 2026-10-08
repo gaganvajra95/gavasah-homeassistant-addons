@@ -523,6 +523,23 @@ def generate_ssh_keypair(comment="client"):
             pass
         return "", ""
 
+def prewarm_caddy_tls(domain_to_warm):
+    """Asynchronously triggers Caddy ACME on-demand certificate issuance during onboarding so domain loads instantly."""
+    def _worker():
+        try:
+            import urllib.request, ssl
+            w_ctx = ssl.create_default_context()
+            w_ctx.check_hostname = False
+            w_ctx.verify_mode = ssl.CERT_NONE
+            w_req = urllib.request.Request(f"https://{domain_to_warm}/", headers={"User-Agent": "Gavasah-TLS-Prewarm/1.0"})
+            with urllib.request.urlopen(w_req, context=w_ctx, timeout=12) as _:
+                pass
+            print(f"[✓] Successfully pre-warmed Caddy TLS certificate for {domain_to_warm}")
+        except Exception as e:
+            # Expected on initial handshake before tunnel opens; TLS cert is still issued by Caddy!
+            print(f"[*] Caddy TLS pre-warm triggered for {domain_to_warm}: {e}")
+    threading.Thread(target=_worker, daemon=True).start()
+
 def sync_client_ssh_user(client_id, ssh_public_key):
     if not ssh_public_key:
         return True
@@ -3268,13 +3285,13 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <div class="form-group">
-                        <label class="form-label">KNX IP ROUTER / INTERFACE IP</label>
-                        <input type="text" id="onb-knx-ip" class="form-input" value="192.168.1.100">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">KNX PORT</label>
-                        <input type="number" id="onb-knx-port" class="form-input" value="3671">
+                    <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 8px; padding: 10px 14px; margin-top: 10px;">
+                        <div style="font-size: 12px; color: #34d399; font-weight: 600; display: flex; align-items: center; gap: 6px;">
+                            <span>⚡ Autonomous Protocol & KNX Discovery</span>
+                        </div>
+                        <div style="font-size: 11px; color: #94a3b8; margin-top: 3px;">
+                            The GAVASAH add-on automatically inspects Home Assistant to discover whether the site uses KNX, Lutron, Zigbee, or other protocols, retrieving gateway IP & port autonomously without manual entry.
+                        </div>
                     </div>
                     <div class="form-group" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(0, 240, 255, 0.25); border-radius: 10px; padding: 12px 16px; margin-top: 14px;">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -3342,15 +3359,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <div class="form-group">
-                        <label class="form-label">KNX GATEWAY IP</label>
-                        <input type="text" id="edit-knx-ip" class="form-input">
-                    </div>
 
-                    <div class="form-group">
-                        <label class="form-label">KNX PORT</label>
-                        <input type="number" id="edit-knx-port" class="form-input" value="3671">
-                    </div>
 
                     <div class="form-group" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(0, 240, 255, 0.25); border-radius: 10px; padding: 12px 16px; margin-top: 14px;">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -4744,7 +4753,11 @@ HTML_PAGE = """<!DOCTYPE html>
                         </td>
                         <td style="font-size: 12px; font-family: monospace;">
                             <div style="color: #cbd5e1;">IP: ${escapeHtml(net.local_ipv4 || '—')}</div>
-                            <div style="color: #94a3b8; font-size: 11px;">KNX: ${escapeHtml(c.knx_ip || '—')}:${c.knx_port || 3671}</div>
+                            ${c.knx_ip && c.knx_ip !== '—' && c.knx_ip !== 'none' ? `
+                                <div style="color: #38bdf8; font-size: 11px;" title="KNXnet/IP Auto-Discovered">KNX: ${escapeHtml(c.knx_ip)}:${c.knx_port || 3671}</div>
+                            ` : `
+                                <div style="color: #64748b; font-size: 11px;" title="Non-KNX System (Zigbee / Lutron / Other)">Non-KNX (Zigbee/Lutron)</div>
+                            `}
                         </td>
                         <td style="font-size: 12px;">
                             <div style="color: #cbd5e1;">CPU: ${sys.cpu_percent !== undefined && sys.cpu_percent !== null ? sys.cpu_percent : 0}% &bull; RAM: ${sys.memory_percent !== undefined && sys.memory_percent !== null ? sys.memory_percent : 0}%</div>
@@ -4754,12 +4767,12 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="actions-btn-flex">
                                 ${remoteEnabled ? (
                                     isPending ? `
-                                        <span class="btn-action-icon btn-action-dashboard" style="opacity: 0.65; cursor: wait; border-color: rgba(245,158,11,0.3); color: #fbbf24;" title="Gateway Provisioned - Waiting for initial gateway connection">⏳ Awaiting Pulse</span>
+                                        <a href="https://${escapeHtml(c.domain)}" target="_blank" class="btn-action-icon btn-action-dashboard" style="border-color: rgba(245,158,11,0.5); color: #fbbf24;" title="Gateway Provisioned - Click to open Dashboard (Awaiting Initial Telemetry Pulse)">⏳ Dashboard ↗</a>
                                     ` : `
                                         <a href="https://${escapeHtml(c.domain)}" target="_blank" class="btn-action-icon btn-action-dashboard" title="Open Client Remote User Interface (Home Assistant Dashboard)">📊 Dashboard ↗</a>
                                     `
                                 ) : `
-                                    <span class="btn-action-icon btn-action-dashboard" style="opacity: 0.45; cursor: not-allowed; text-decoration: line-through; border-color: rgba(239,68,68,0.3); color: #f87171;" title="Remote Access Disabled - Flip Toggle to Enable">🔒 Disabled</span>
+                                    <a href="https://${escapeHtml(c.domain)}" target="_blank" class="btn-action-icon btn-action-dashboard" style="border-color: rgba(239,68,68,0.4); color: #f87171;" title="Remote Access Disabled - Click to View Restricted Notice">🔒 Restricted ↗</a>
                                 `}
                                 <button class="btn-action-icon btn-action-logs" onclick="openLogsModal('${c.client_id}')" title="Audit Telemetry Logs">📋 Logs</button>
                                 ${currentUser.role !== 'integrator' ? `
@@ -5039,8 +5052,8 @@ HTML_PAGE = """<!DOCTYPE html>
                 name: nameVal,
                 client_id: autoSlug.toLowerCase(),
                 auth_secret: secretVal,
-                knx_ip: (document.getElementById('onb-knx-ip') ? document.getElementById('onb-knx-ip').value.trim() : '192.168.1.100'),
-                knx_port: parseInt(document.getElementById('onb-knx-port') ? document.getElementById('onb-knx-port').value : 3671) || 3671,
+                knx_ip: '',
+                knx_port: 3671,
                 ssh_public_key: (document.getElementById('onb-ssh-key') ? document.getElementById('onb-ssh-key').value.trim() : ''),
                 remote_enabled: remoteToggle ? remoteToggle.checked : true
             };
@@ -5080,8 +5093,6 @@ HTML_PAGE = """<!DOCTYPE html>
             const client = currentFleetData.find(c => c.client_id === clientId);
             
             const secret = (document.getElementById('edit-secret') ? document.getElementById('edit-secret').value : '') || (client ? client.auth_secret : '');
-            const knxIp = (document.getElementById('edit-knx-ip') ? document.getElementById('edit-knx-ip').value : '') || (client ? client.knx_ip : '192.168.1.100');
-            const knxPort = (document.getElementById('edit-knx-port') ? document.getElementById('edit-knx-port').value : '') || (client ? client.knx_port : 3671);
             const dashPort = (client && client.dashboard_port) ? client.dashboard_port : 10001;
             const sshPort = (client && client.ssh_port) ? client.ssh_port : 22001;
 
@@ -5091,8 +5102,6 @@ client_id: "${clientId}"
 auth_key: "${secret}"
 remote_dashboard_port: ${dashPort}
 remote_ssh_port: ${sshPort}
-knx_gateway_ip: "${knxIp}"
-knx_gateway_port: ${knxPort}
 heartbeat_interval: 60
 auto_update_external_url: true`;
 
@@ -5122,8 +5131,6 @@ auto_update_external_url: true`;
             setVal('edit-id', client.client_id);
             setVal('edit-client-id', client.client_id);
             setVal('edit-name', client.name || '');
-            setVal('edit-knx-ip', client.knx_ip || '');
-            setVal('edit-knx-port', client.knx_port || 3671);
             setVal('edit-secret', client.auth_secret || '');
 
             const dGroup = document.getElementById('edit-dealer-group');
@@ -5189,11 +5196,12 @@ auto_update_external_url: true`;
             const idEl = document.getElementById('edit-id') || document.getElementById('edit-client-id');
             const clientId = idEl ? idEl.value : '';
             const remoteToggle = document.getElementById('edit-remote-toggle');
+            const client = currentFleetData.find(c => c.client_id === clientId);
             const payload = {
                 client_id: clientId,
                 name: (document.getElementById('edit-name') ? document.getElementById('edit-name').value.trim() : ''),
-                knx_ip: (document.getElementById('edit-knx-ip') ? document.getElementById('edit-knx-ip').value.trim() : ''),
-                knx_port: parseInt(document.getElementById('edit-knx-port') ? document.getElementById('edit-knx-port').value : 3671) || 3671,
+                knx_ip: (client ? client.knx_ip : ''),
+                knx_port: (client && client.knx_port ? client.knx_port : 3671),
                 auth_secret: (document.getElementById('edit-secret') ? document.getElementById('edit-secret').value.trim() : ''),
                 remote_enabled: remoteToggle ? remoteToggle.checked : true
             };
@@ -5849,17 +5857,21 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                     self.end_headers()
                     return
 
-                # Tolerant alias matching (e.g. mr-pranav-chilukuri matches pranav-chilukuri)
+                # Tolerant alias matching (bidirectional match for abbreviated subdomains)
                 clean_slug = re.sub(r'^(mr|mrs|ms|dr)-', '', slug)
                 for cid, c in c_data.items():
                     clean_cid = re.sub(r'^(mr|mrs|ms|dr)-', '', cid)
-                    if clean_slug == clean_cid:
+                    if (clean_slug == clean_cid or 
+                        clean_cid.startswith(clean_slug) or 
+                        clean_slug.startswith(clean_cid)):
                         self.send_response(200)
                         self.end_headers()
                         return
                     name_slug = re.sub(r'[^a-z0-9]+', '-', (c.get('name') or '').lower()).strip('-')
                     clean_name = re.sub(r'^(mr|mrs|ms|dr)-', '', name_slug)
-                    if clean_slug == clean_name or clean_slug.startswith(clean_name):
+                    if (clean_slug == clean_name or 
+                        clean_name.startswith(clean_slug) or 
+                        clean_slug.startswith(clean_name)):
                         self.send_response(200)
                         self.end_headers()
                         return
@@ -7208,6 +7220,9 @@ PersistentKeepalive = 25
             if ssh_key:
                 sync_client_ssh_user(clean_id, ssh_key)
 
+            # Pre-warm Caddy TLS certificate immediately in background so the dashboard loads with 0 TLS delay
+            prewarm_caddy_tls(domain)
+
             append_client_log(clean_id, 'INFO', 'ONBOARD_COMPLETE', f"Site '{client_name}' onboarded successfully by {user['name']}.")
             bootstrap_cmd = f"curl -sSL https://dealer.gavasah.com/api/bootstrap?client_id={clean_id}&auth_secret={new_client['auth_secret']} | bash"
             self.send_json(200, {
@@ -7463,7 +7478,14 @@ PersistentKeepalive = 25
             if 'network' in body:
                 client['network'] = body['network']
             if 'knx_status' in body:
-                client['knx_status'] = body['knx_status']
+                knx_st = body.get('knx_status') or {}
+                client['knx_status'] = knx_st
+                if knx_st.get('configured') and knx_st.get('gateway_ip'):
+                    client['knx_ip'] = knx_st['gateway_ip']
+                    client['knx_port'] = int(knx_st.get('gateway_port', 3671))
+                elif knx_st.get('reason') == 'no_knx_integration' or not knx_st.get('configured'):
+                    client['knx_ip'] = ''
+                    client['knx_port'] = None
             if 'ssh_public_key' in body and body['ssh_public_key']:
                 sync_client_ssh_user(client_id, body['ssh_public_key'])
 

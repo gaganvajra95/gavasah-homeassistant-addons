@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.8] - 2026-10-08
+
+### Added
+- **Autonomous KNXnet/IP Zero-Config Discovery**: Agent autonomously inspects Home Assistant's `.storage/core.config_entries` and `configuration.yaml` to detect KNX integration, extracting the target IP gateway address and port without requiring manual dealer entry.
+- **Heterogeneous Protocol Support (Non-KNX)**: Sites using Lutron, Zigbee, Z-Wave, or Matter are dynamically detected and reported as `non_knx`, suppressing spurious KNX gateway failure alerts.
+- **Dynamic Port 80 & 8123 Detection**: Telemetry probe automatically checks both standard port 8123 and port 80 to verify local Home Assistant Core availability across diverse network deployments.
+
+### Changed
+- **Zero-Config Onboarding**: Removed mandatory KNX IP and Port configuration prompts from Dealer and Manufacturer site creation menus, making gateway commissioning fully autonomous.
+
+---
+
 ## [1.0.7] - 2026-10-08
 
 ### Fixed

@@ -240,9 +240,8 @@ def ping_knx_gateway(ip, port=3671, timeout=2.0):
     except Exception as e:
         return {"configured": True, "reachable": False, "error": str(e), "gateway_ip": ip, "gateway_port": port}
 
-def check_tunnel_local_port(port=8123):
+def _probe_single_port(port):
     import ssl
-    # Check if HTTPS is available
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -255,7 +254,6 @@ def check_tunnel_local_port(port=8123):
     except Exception:
         pass
 
-    # Check if HTTP is available
     try:
         req = urllib.request.Request(f"http://127.0.0.1:{port}/")
         with urllib.request.urlopen(req, timeout=2) as r:
@@ -270,6 +268,126 @@ def check_tunnel_local_port(port=8123):
             return True, "http"
     except Exception:
         return False, "http"
+
+def check_tunnel_local_port(port=8123):
+    alive, proto = _probe_single_port(port)
+    if not alive and port == 8123:
+        alive_80, proto_80 = _probe_single_port(80)
+        if alive_80:
+            return alive_80, proto_80
+    return alive, proto
+
+def auto_detect_knx_gateway(opts):
+    """
+    Automatically detects if Home Assistant is connected to a KNX bus or not.
+    Retrieves the KNX IP Gateway address and port automatically without asking dealers.
+    
+    Checks in sequence:
+    1. Home Assistant Core Storage (.storage/core.config_entries)
+    2. Home Assistant configuration.yaml (YAML-based KNX integration)
+    3. Add-on options fallback if explicitly supplied
+    
+    If no KNX integration is detected, returns configured=False (Non-KNX / Zigbee / Lutron).
+    """
+    detected_host = None
+    detected_port = 3671
+    conn_type = "tunneling"
+    found = False
+
+    # 1. Inspect core.config_entries
+    storage_candidates = [
+        "/homeassistant/.storage/core.config_entries",
+        "/config/.storage/core.config_entries"
+    ]
+    for spath in storage_candidates:
+        if os.path.exists(spath):
+            try:
+                with open(spath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                entries = data.get("data", {}).get("entries", [])
+                for entry in entries:
+                    if entry.get("domain") == "knx":
+                        found = True
+                        edata = entry.get("data", {})
+                        eopts = entry.get("options", {})
+                        conn_type = edata.get("connection_type") or eopts.get("connection_type", "tunneling")
+                        host = (
+                            edata.get("host") or 
+                            edata.get("gateway_ip") or 
+                            eopts.get("host") or 
+                            eopts.get("gateway_ip")
+                        )
+                        port = (
+                            edata.get("port") or 
+                            edata.get("gateway_port") or 
+                            eopts.get("port") or 
+                            eopts.get("gateway_port") or 
+                            3671
+                        )
+                        if host and str(host).strip() not in ["", "0.0.0.0", "None"]:
+                            detected_host = str(host).strip()
+                            detected_port = int(port)
+                            log(f"[✓] [KNX Auto-Discovery] Found KNX integration in {spath}: {detected_host}:{detected_port} ({conn_type})")
+                            break
+                        if conn_type == "routing":
+                            detected_host = edata.get("routing_ip", "224.0.23.12")
+                            detected_port = int(port)
+                            log(f"[✓] [KNX Auto-Discovery] Found KNX routing config entry with multicast {detected_host}:{detected_port}")
+                            break
+                if found and detected_host:
+                    break
+            except Exception as e:
+                log(f"[!] Warning reading {spath}: {e}")
+
+    # 2. Inspect configuration.yaml
+    if not detected_host:
+        yaml_candidates = [
+            "/homeassistant/configuration.yaml",
+            "/config/configuration.yaml"
+        ]
+        for ypath in yaml_candidates:
+            if os.path.exists(ypath):
+                try:
+                    with open(ypath, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    if "knx:" in content:
+                        found = True
+                        import re
+                        m_host = re.search(r'(?:host|gateway_ip)\s*:\s*["\']?([0-9a-zA-Z\.\-]+)["\']?', content)
+                        m_port = re.search(r'(?:port|gateway_port)\s*:\s*([0-9]+)', content)
+                        if m_host:
+                            detected_host = m_host.group(1).strip()
+                            detected_port = int(m_port.group(1).strip()) if m_port else 3671
+                            conn_type = "yaml"
+                            log(f"[✓] [KNX Auto-Discovery] Found KNX config in {ypath}: {detected_host}:{detected_port}")
+                            break
+                except Exception as e:
+                    log(f"[!] Warning reading {ypath}: {e}")
+
+    # 3. Add-on options fallback if user/dealer manually provided one
+    if not detected_host and opts.get("knx_gateway_ip"):
+        opt_ip = str(opts.get("knx_gateway_ip")).strip()
+        if opt_ip and opt_ip not in ["", "none", "null"]:
+            detected_host = opt_ip
+            detected_port = int(opts.get("knx_gateway_port", 3671))
+            found = True
+            conn_type = "addon_options"
+
+    # 4. If KNX was found, test reachable latency
+    if detected_host:
+        res = ping_knx_gateway(detected_host, detected_port)
+        res["connection_type"] = conn_type
+        return res
+
+    # 5. Non-KNX device (e.g. Lutron, Zigbee, Z-Wave, Matter, etc.)
+    return {
+        "configured": False,
+        "reachable": False,
+        "reason": "no_knx_integration",
+        "system_type": "non_knx",
+        "gateway_ip": "",
+        "gateway_port": None
+    }
 
 # Previous CPU jiffies cache for real-time CPU % calculation
 _prev_cpu_jiffies = None
@@ -405,11 +523,8 @@ def collect_telemetry(opts):
         except Exception:
             pass
 
-    # KNX Gateway Check
-    knx_res = ping_knx_gateway(
-        opts.get("knx_gateway_ip", ""),
-        opts.get("knx_gateway_port", 3671)
-    )
+    # Autonomous KNX vs Non-KNX (Zigbee / Lutron) Discovery & Watchdog
+    knx_res = auto_detect_knx_gateway(opts)
 
     ha_alive, ha_proto = check_tunnel_local_port(8123)
     pubkey = get_public_key()
@@ -495,32 +610,33 @@ def publish_local_entities(payload):
         }
     )
 
-    # 3. KNX Gateway Binary Sensor & Latency
-    knx_ok = knx_info.get("reachable", False)
-    update_ha_state(
-        "binary_sensor.gavasah_knx_gateway",
-        "on" if knx_ok else "off",
-        {
-            "friendly_name": "Gavasah KNX Gateway Connectivity",
-            "device_class": "connectivity",
-            "gateway_ip": knx_info.get("gateway_ip"),
-            "gateway_port": knx_info.get("gateway_port"),
-            "latency_ms": knx_info.get("latency_ms"),
-            "icon": "mdi:transit-connection-variant"
-        }
-    )
-
-    if knx_ok and "latency_ms" in knx_info:
+    # 3. KNX Gateway Binary Sensor & Latency (Only published if KNX is configured)
+    if knx_info.get("configured", False):
+        knx_ok = knx_info.get("reachable", False)
         update_ha_state(
-            "sensor.gavasah_knx_latency",
-            knx_info["latency_ms"],
+            "binary_sensor.gavasah_knx_gateway",
+            "on" if knx_ok else "off",
             {
-                "friendly_name": "Gavasah KNX Latency",
-                "unit_of_measurement": "ms",
-                "state_class": "measurement",
-                "icon": "mdi:speedometer"
+                "friendly_name": "Gavasah KNX Gateway Connectivity",
+                "device_class": "connectivity",
+                "gateway_ip": knx_info.get("gateway_ip"),
+                "gateway_port": knx_info.get("gateway_port"),
+                "latency_ms": knx_info.get("latency_ms"),
+                "icon": "mdi:transit-connection-variant"
             }
         )
+
+        if knx_ok and "latency_ms" in knx_info:
+            update_ha_state(
+                "sensor.gavasah_knx_latency",
+                knx_info["latency_ms"],
+                {
+                    "friendly_name": "Gavasah KNX Latency",
+                    "unit_of_measurement": "ms",
+                    "state_class": "measurement",
+                    "icon": "mdi:speedometer"
+                }
+            )
 
     # 4. Local IP Sensor
     update_ha_state(
@@ -553,7 +669,11 @@ def publish_local_entities(payload):
     )
 
 def send_heartbeat(hub_host, payload):
+    import ssl
+    ctx = ssl._create_unverified_context()
     endpoints = [
+        "https://dealer.gavasah.com/api/heartbeat",
+        f"https://{hub_host}/api/heartbeat",
         f"http://{hub_host}:3000/api/heartbeat",
         f"http://{hub_host}/api/heartbeat"
     ]
@@ -561,7 +681,7 @@ def send_heartbeat(hub_host, payload):
     for ep in endpoints:
         req = urllib.request.Request(ep, data=data, headers={"Content-Type": "application/json"}, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=8) as resp:
+            with urllib.request.urlopen(req, context=ctx, timeout=6) as resp:
                 if resp.status in [200, 201]:
                     return True, resp.status
         except Exception:
@@ -579,6 +699,16 @@ def main():
     # Initial sync of Home Assistant External Network URL & Supervisor Toggles (Auto-Update, Watchdog)
     ensure_external_url(opts)
     ensure_supervisor_toggles()
+
+    # Immediate Second-0 Initial Pulse on Startup (Eliminates 60s onboarding wait)
+    try:
+        init_payload = collect_telemetry(opts)
+        publish_local_entities(init_payload)
+        init_ok, init_st = send_heartbeat(hub_host, init_payload)
+        if init_ok:
+            log(f"Immediate second-0 startup heartbeat acknowledged by hub: {init_st}")
+    except Exception as e:
+        log(f"Initial startup heartbeat notice: {e}")
 
     loop_count = 0
     while True:

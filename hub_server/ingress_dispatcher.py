@@ -130,23 +130,6 @@ SUSPENSION_HTML_TEMPLATE = """<!DOCTYPE html>
             gap: 6px;
         }}
     </style>
-    <script>
-        // Aggressively unregister all Service Workers and clear caches from previously saved sessions
-        if ('serviceWorker' in navigator) {{
-            navigator.serviceWorker.getRegistrations().then(function(regs) {{
-                for (var r of regs) {{ r.unregister(); }}
-            }});
-        }}
-        if ('caches' in window) {{
-            caches.keys().then(function(names) {{
-                for (var name of names) {{ caches.delete(name); }}
-            }});
-        }}
-        try {{
-            sessionStorage.clear();
-            localStorage.clear();
-        }} catch(e) {{}}
-    </script>
 </head>
 <body>
     <div class="suspension-card">
@@ -274,12 +257,16 @@ def get_client_info(slug):
             for r in cur.fetchall():
                 cid = (r['client_id'] or '').lower()
                 clean_cid = re.sub(r'^(mr|mrs|ms|dr)-', '', cid)
-                if clean_slug == clean_cid:
+                if (clean_slug == clean_cid or 
+                    clean_cid.startswith(clean_slug) or 
+                    clean_slug.startswith(clean_cid)):
                     row = r
                     break
                 name_slug = re.sub(r'[^a-z0-9]+', '-', (r['name'] or '').lower()).strip('-')
                 clean_name = re.sub(r'^(mr|mrs|ms|dr)-', '', name_slug)
-                if clean_slug == clean_name or clean_slug.startswith(clean_name):
+                if (clean_slug == clean_name or 
+                    clean_name.startswith(clean_slug) or 
+                    clean_slug.startswith(clean_name)):
                     row = r
                     break
 
@@ -310,7 +297,7 @@ def get_client_info(slug):
         print(f"[!] Dispatcher DB lookup error for {slug}: {e}", flush=True)
         return {'status': 'ERROR', 'error': str(e), 'slug': slug}
 
-def build_http_response(status_code, status_text, body_html, clear_site_data=False):
+def build_http_response(status_code, status_text, body_html):
     crlf = b"\r\n"
     body_bytes = body_html.encode('utf-8')
     headers = [
@@ -322,8 +309,6 @@ def build_http_response(status_code, status_text, body_html, clear_site_data=Fal
         b"Pragma: no-cache",
         b"Expires: 0"
     ]
-    if clear_site_data:
-        headers.append(b'Clear-Site-Data: "cache", "cookies", "storage", "executionContexts"')
     
     header_block = crlf.join(headers) + crlf + crlf
     return header_block + body_bytes
@@ -467,7 +452,7 @@ async def handle_connection(reader, writer):
         client_info = get_client_info(slug)
         status = client_info.get('status')
 
-        # 1. Suspended / Remote Access Disabled
+        # 1. Suspended / Remote Access Disabled -> Return 200 OK with Restricted Card
         if status == 'SUSPENDED':
             client_display = html.escape(client_info.get('name', slug))
             dealer_name = html.escape(client_info.get('dealer_name', 'Authorized Dealer'))
@@ -475,7 +460,7 @@ async def handle_connection(reader, writer):
                 client_display=client_display,
                 dealer_name=dealer_name
             )
-            resp = build_http_response(403, "Forbidden", resp_html, clear_site_data=True)
+            resp = build_http_response(200, "OK", resp_html)
             writer.write(resp)
             await writer.drain()
             writer.close()
@@ -484,7 +469,7 @@ async def handle_connection(reader, writer):
         # 2. Not Registered
         if status in ['NOT_FOUND', 'ERROR']:
             resp_html = f"""<!DOCTYPE html><html><body style="background:#060913;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><div style="text-align:center;max-width:480px;padding:30px;"><h2 style="color:#ef4444;">Gateway Not Found</h2><p style="color:#94a3b8;line-height:1.6;">Gateway <code>{html.escape(slug)}</code> is not registered on GAVASAH Cloud.<br><br>Please contact your Authorized Dealer or Manufacturer.</p></div></body></html>"""
-            resp = build_http_response(404, "Not Found", resp_html, clear_site_data=True)
+            resp = build_http_response(404, "Not Found", resp_html)
             writer.write(resp)
             await writer.drain()
             writer.close()
