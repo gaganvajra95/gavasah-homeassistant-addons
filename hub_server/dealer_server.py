@@ -3717,7 +3717,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="metric-sub" id="ov-integrators-sub">Supervised Field Integrators</div>
                         </div>
                         <div class="metric-card">
-                            <div class="metric-label">Total Client Gateways</div>
+                            <div class="metric-label">Total Gavasah Gateways</div>
                             <div class="metric-value" style="color: #00f0ff;" id="ov-total-clients">0</div>
                             <div class="metric-sub">Across All Dealer Networks</div>
                         </div>
@@ -3774,7 +3774,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                     <th>Portal Login Username</th>
                                     <th>Portal Password</th>
                                     <th>Contact Email & Phone</th>
-                                    <th>Managed Client Gateways</th>
+                                    <th>Managed Gavasah Gateways</th>
                                     <th>Created Date</th>
                                     <th>Status</th>
                                     <th>Actions</th>
@@ -5246,7 +5246,7 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('delete-modal-title').innerText = `Delete Dealer: ${dealerName}`;
             document.getElementById('delete-modal-msg').innerHTML = `
                 Are you sure you want to delete dealer <strong>${escapeHtml(dealerName)}</strong>?<br><br>
-                <span style="color: #38bdf8;">✓ SAFETY GUARANTEE:</span> All client gateways currently assigned to this dealer will <strong>NOT</strong> be deleted. They will automatically be transferred to Master Manufacturer Direct Supervision.
+                <span style="color: #38bdf8;">✓ SAFETY GUARANTEE:</span> All Gavasah Gateways currently assigned to this dealer will <strong>NOT</strong> be deleted. They will automatically be transferred to Master Manufacturer Direct Supervision.
             `;
             document.getElementById('delete-modal').classList.add('active');
         }
@@ -5578,7 +5578,7 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('delete-modal-title').innerText = `Delete Integrator: ${intName}`;
             document.getElementById('delete-modal-msg').innerHTML = `
                 Are you sure you want to delete technical integrator <strong>${escapeHtml(intName)}</strong>?<br><br>
-                <span style="color: #10b981; font-weight: 600;">✓ SAFETY GUARANTEE:</span> All client gateways currently supervised by this integrator will <strong>NOT</strong> be deleted. They will automatically be transferred to <strong>Direct Dealer Supervision</strong>.
+                <span style="color: #10b981; font-weight: 600;">✓ SAFETY GUARANTEE:</span> All Gavasah Gateways currently supervised by this integrator will <strong>NOT</strong> be deleted. They will automatically be transferred to <strong>Direct Dealer Supervision</strong>.
             `;
             document.getElementById('delete-modal').classList.add('active');
         }
@@ -6023,7 +6023,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                     `;
                                 } else {
                                     return `
-                                        <div class="heartbeat-status-wrap" title="Gavasah Server/Hub connected and streaming telemetry (Last pulse ${humanDiff})">
+                                        <div class="heartbeat-status-wrap" title="Gavasah Gateway connected and streaming telemetry (Last pulse ${humanDiff})">
                                             <span class="heartbeat-pill-badge hb-pill-online">
                                                 <span class="hb-ball hb-ball-online"></span>
                                                 <span>ONLINE</span>
@@ -6064,7 +6064,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                     const matter = tech.matter || {};
                                     const badges = [];
 
-                                    // 1. KNX (Strict reality check: only show if genuinely configured on the client gateway)
+                                    // 1. KNX (Strict reality check: only show if genuinely configured on the Gavasah Gateway)
                                     const hasKnx = Boolean(knx.configured && knx.reason !== 'no_knx_integration' && ((knx.gateway_ip && knx.gateway_ip !== '192.168.1.100' && knx.gateway_ip !== '192.168.1.111' && knx.gateway_ip !== '—' && knx.gateway_ip !== 'none' && (knx.connection_type !== 'addon_options' || knx.reachable)) || (c.knx_ip && c.knx_ip !== '192.168.1.100' && c.knx_ip !== '192.168.1.111' && c.knx_ip !== '—' && c.knx_ip !== 'none' && c.knx_ip !== '')));
                                     if (hasKnx) {
                                         const ep = knx.gateway_ip ? `${knx.gateway_ip}:${knx.gateway_port || 3671}` : (c.knx_ip ? `${c.knx_ip}:${c.knx_port || 3671}` : 'Bus');
@@ -6552,7 +6552,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     }
                 } else if (Array.isArray(currentFleetData) && currentFleetData.length === 0) {
                     mCardVal.innerText = '0 Provisioned Gateways';
-                    if (mCardSub) mCardSub.innerText = 'No client gateways assigned to this account';
+                    if (mCardSub) mCardSub.innerText = 'No Gavasah Gateways assigned to this account';
                     if (mStatusPill) {
                         mStatusPill.innerText = 'FLEET READY';
                         mStatusPill.style.color = '#38bdf8';
@@ -6852,7 +6852,7 @@ function formatHeartbeatTime(diff) {
                     dateText: 'Awaiting first contact',
                     timeText: 'Not connected yet',
                     fullText: 'Awaiting initial contact with manufacturer server',
-                    tooltip: 'Client gateway provisioned — awaiting initial connection to manufacturer server'
+                    tooltip: 'Gavasah Gateway provisioned — awaiting initial connection to manufacturer server'
                 };
             }
             const d = new Date(onboardedAt * 1000);
@@ -7102,7 +7102,7 @@ function formatHeartbeatTime(diff) {
                 });
                 const data = await res.json();
                 if (res.ok && data.ok) {
-                    showToast(`Gavasah Server/Hub '${payload.name}' onboarded successfully! Opening client configuration...`, 'success');
+                    showToast(`Gavasah Gateway '${payload.name}' onboarded successfully! Opening client configuration...`, 'success');
                     closeOnboardModal();
                     await fetchFleet();
                     if (data.client && data.client.client_id) {
@@ -7252,7 +7252,7 @@ auto_update_external_url: true`;
                 });
                 const data = await res.json();
                 if (res.ok && data.ok) {
-                    showToast('Gavasah Server/Hub configuration updated', 'success');
+                    showToast('Gavasah Gateway configuration updated', 'success');
                     closeEditModal();
                     fetchFleet();
                 } else {
@@ -7679,7 +7679,7 @@ All active sessions for this integrator will be terminated immediately.` : '';
                 details = knx.connection_type ? `Connection Type: ${knx.connection_type}` : 'Native Tunneling';
                 if (!isOnline) {
                     reason = knx.error === 'timeout' ? 'Gateway Unreachable (UDP Ping Timed Out)' : (knx.error || knx.offline_reason || 'Connection Failed');
-                    fixAction = 'Verify that the KNXnet/IP Router or Interface is powered on, connected to the local network, and UDP port 3671 is accessible from the Gavasah Server/Hub.';
+                    fixAction = 'Verify that the KNXnet/IP Router or Interface is powered on, connected to the local network, and UDP port 3671 is accessible from the Gavasah Gateway.';
                 } else {
                     fixAction = 'KNXnet/IP interface is actively communicating with Telegram exchange verified.';
                 }
@@ -7694,7 +7694,7 @@ All active sessions for this integrator will be terminated immediately.` : '';
                     endpoint = insts.map(i => `${i.name} (v${i.version || '?'})`).join(', ');
                     if (!isOnline) {
                         reason = failedInsts.map(i => `${i.name} container state: ${i.state}`).join('; ');
-                        fixAction = 'Verify that the Zigbee USB coordinator dongle is firmly inserted into the Gavasah Server/Hub USB port, and restart the Zigbee2MQTT add-on.';
+                        fixAction = 'Verify that the Zigbee USB coordinator dongle is firmly inserted into the Gavasah Gateway USB port, and restart the Zigbee2MQTT add-on.';
                     } else {
                         fixAction = 'All Zigbee2MQTT container instances are running with healthy coordinator communication.';
                     }
@@ -7720,7 +7720,7 @@ All active sessions for this integrator will be terminated immediately.` : '';
                 endpoint = `Matter Server (${matter.state || 'not_installed'})`;
                 if (!isOnline) {
                     reason = `Matter Server add-on container is ${matter.state || 'stopped'}`;
-                    fixAction = 'Start the Matter Server add-on from Settings > Add-ons on the Gavasah Server/Hub.';
+                    fixAction = 'Start the Matter Server add-on from Settings > Add-ons on the Gavasah Gateway.';
                 } else {
                     fixAction = 'Matter Server daemon is running and listening for IPv6 Thread/Matter commissioning.';
                 }
@@ -7742,7 +7742,7 @@ All active sessions for this integrator will be terminated immediately.` : '';
 
                     <table class="diag-table">
                         <tr>
-                            <th>Gavasah Server/Hub</th>
+                            <th>Gavasah Gateway</th>
                             <td>${escapeHtml(client.name)} (${escapeHtml(client.client_id)})</td>
                         </tr>
                         <tr>
