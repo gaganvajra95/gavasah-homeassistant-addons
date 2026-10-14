@@ -362,7 +362,8 @@ def init_sqlite_database():
             remote_enabled INTEGER NOT NULL DEFAULT 1,
             system_json TEXT,
             network_json TEXT,
-            knx_json TEXT
+            knx_json TEXT,
+            onboarded_at INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS client_logs (
@@ -415,6 +416,9 @@ def init_sqlite_database():
             conn.execute("ALTER TABLE clients ADD COLUMN pending_backup TEXT")
         if 'pending_command' not in cols:
             conn.execute("ALTER TABLE clients ADD COLUMN pending_command TEXT")
+        if 'onboarded_at' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN onboarded_at INTEGER")
+            conn.execute("UPDATE clients SET onboarded_at = last_heartbeat WHERE last_heartbeat > 0 AND onboarded_at IS NULL")
 
         # Ensure Remote ETS UDP Port Forwarding columns exist
         if 'ets_port' not in cols:
@@ -834,8 +838,9 @@ def save_clients_state(data):
                         last_heartbeat, status, remote_enabled, system_json, network_json, knx_json,
                         wg_ip, wg_pubkey, wg_privkey, tunnel_mode,
                         technologies_json, backups_json, pending_backup,
-                        ets_port, ets_target_type, ets_target_ip, ets_target_port, ets_port_assigned_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        ets_port, ets_target_type, ets_target_ip, ets_target_port, ets_port_assigned_at,
+                        onboarded_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (c.get('client_id', cid), c.get('name', cid), c.get('dealer_id', 'owner_master'), c.get('dealer_name', 'Master Manufacturer (Direct)'),
                          c.get('integrator_id'), c.get('integrator_name', 'Direct Dealer Supervision'), c.get('domain', f"{cid}.gavasah.com"),
                          c.get('auth_secret', ''), int(c.get('dashboard_port', d_port)), int(c.get('ssh_port', s_port)),
@@ -846,7 +851,8 @@ def save_clients_state(data):
                          sys_json, net_json, knx_json,
                          c.get('wg_ip'), c.get('wg_pubkey'), c.get('wg_privkey'), c.get('tunnel_mode', 'wireguard'),
                          tech_json, backups_json, c.get('pending_backup'),
-                         c.get('ets_port'), c.get('ets_target_type'), c.get('ets_target_ip'), c.get('ets_target_port'), c.get('ets_port_assigned_at'))
+                         c.get('ets_port'), c.get('ets_target_type'), c.get('ets_target_ip'), c.get('ets_target_port'), c.get('ets_port_assigned_at'),
+                         c.get('onboarded_at'))
                     )
             conn.close()
             return True
@@ -2132,6 +2138,13 @@ HTML_PAGE = """<!DOCTYPE html>
             background: rgba(168, 85, 247, 0.15);
             color: #c084fc;
             border: 1px solid rgba(168, 85, 247, 0.3);
+        }
+
+        .onboard-status-wrap {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-width: 140px;
         }
 
         /* Graphical Heartbeat Status Badge with Colored Glowing Balls */
@@ -3889,6 +3902,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                     <th>Client Site / Slug</th>
                                     <th id="th-dealer-col">Dealer Partner</th>
                                     <th id="th-integrator-col">Assigned Integrator</th>
+                                    <th id="th-onboarded-col" style="min-width: 145px;">Onboarded At</th>
                                     <th>Heartbeat Status</th>
                                     <th>Remote Ingress</th>
                                     <th>Boot Slot (RAUC)</th>
@@ -5934,6 +5948,29 @@ HTML_PAGE = """<!DOCTYPE html>
                     </td>
                 ` : '';
 
+                const onb = formatOnboardingDateTime(c.onboarded_at);
+                const onboardCell = `
+                    <td>
+                        ${onb.hasOnboarded ? `
+                            <div class="onboard-status-wrap" title="${escapeHtml(onb.tooltip)}">
+                                <div style="font-size: 12px; font-weight: 600; color: #f1f5f9; display: flex; align-items: center; gap: 5px; white-space: nowrap;">
+                                    <span style="color: #38bdf8;">📅</span> ${escapeHtml(onb.dateText)}
+                                </div>
+                                <div style="font-size: 11px; color: #94a3b8; margin-top: 3px; font-family: monospace; display: flex; align-items: center; gap: 5px; white-space: nowrap;">
+                                    <span style="color: #64748b;">⏰</span> ${escapeHtml(onb.timeText)}
+                                </div>
+                            </div>
+                        ` : `
+                            <div class="onboard-status-wrap" title="${escapeHtml(onb.tooltip)}">
+                                <span class="badge-role" style="background: rgba(245, 158, 11, 0.12); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 11px; white-space: nowrap;">
+                                    ⏳ Awaiting Contact
+                                </span>
+                                <div style="font-size: 10px; color: #64748b; margin-top: 3px;">Not connected yet</div>
+                            </div>
+                        `}
+                    </td>
+                `;
+
                 return `
                     <tr>
                         <td>
@@ -5941,9 +5978,13 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="site-slug-text">
                                 <a href="https://${escapeHtml(c.domain)}" target="_blank" class="site-domain-link" title="Open Remote GUI: ${escapeHtml(c.domain)}">${escapeHtml(c.domain)} ↗</a>
                             </div>
+                            <div style="font-size: 10px; color: ${onb.hasOnboarded ? '#64748b' : '#d97706'}; margin-top: 3px; white-space: nowrap;" title="${escapeHtml(onb.tooltip)}">
+                                ${onb.hasOnboarded ? `📅 Onboarded: ${escapeHtml(onb.fullText)}` : `⏳ Provisioned &bull; Awaiting initial contact`}
+                            </div>
                         </td>
                         ${dealerCell}
                         ${integratorCell}
+                        ${onboardCell}
                         <td>
                             ${(() => {
                                 if (isPending) {
@@ -6801,6 +6842,36 @@ function formatHeartbeatTime(diff) {
                 timestampText: `since ${formattedTime}`,
                 fullText: `Offline for ${durationStr} (since ${formattedTime})`,
                 tooltip: `Gateway went offline on ${d.toLocaleString()} (Offline for ${durationStr})`
+            };
+        }
+
+        function formatOnboardingDateTime(onboardedAt) {
+            if (!onboardedAt || onboardedAt === 0) {
+                return {
+                    hasOnboarded: false,
+                    dateText: 'Awaiting first contact',
+                    timeText: 'Not connected yet',
+                    fullText: 'Awaiting initial contact with manufacturer server',
+                    tooltip: 'Client gateway provisioned — awaiting initial connection to manufacturer server'
+                };
+            }
+            const d = new Date(onboardedAt * 1000);
+            const dateStr = d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+            let hours = d.getHours();
+            const ampm = hours >= 12 ? 'PM' : 'AM';
+            hours = hours % 12;
+            hours = hours ? hours : 12;
+            const mins = String(d.getMinutes()).padStart(2, '0');
+            const secs = String(d.getSeconds()).padStart(2, '0');
+            const timeStr = `${String(hours).padStart(2, '0')}:${mins}:${secs} ${ampm}`;
+            const fullFormatted = `${dateStr}, ${timeStr}`;
+
+            return {
+                hasOnboarded: true,
+                dateText: dateStr,
+                timeText: timeStr,
+                fullText: fullFormatted,
+                tooltip: `First contacted manufacturer server on ${d.toLocaleString()}`
             };
         }
 
@@ -7673,6 +7744,10 @@ All active sessions for this integrator will be terminated immediately.` : '';
                         <tr>
                             <th>Gavasah Server/Hub</th>
                             <td>${escapeHtml(client.name)} (${escapeHtml(client.client_id)})</td>
+                        </tr>
+                        <tr>
+                            <th>Onboarded At</th>
+                            <td>${escapeHtml(formatOnboardingDateTime(client.onboarded_at).fullText)}</td>
                         </tr>
                         <tr>
                             <th>Integration Type</th>
@@ -9684,6 +9759,7 @@ PersistentKeepalive = 25
                 'knx_port': knx_port,
                 'last_heartbeat': 0,
                 'status': 'pending',
+                'onboarded_at': None,
                 'remote_enabled': bool(body.get('remote_enabled', True)),
                 'system': {},
                 'network': {},
@@ -10071,6 +10147,7 @@ PersistentKeepalive = 25
                             UPDATE clients SET
                                 last_heartbeat = ?,
                                 status = 'online',
+                                onboarded_at = COALESCE(onboarded_at, ?),
                                 system_json = ?,
                                 network_json = ?,
                                 knx_json = ?,
@@ -10082,6 +10159,7 @@ PersistentKeepalive = 25
                                 pending_command = CASE WHEN ? IS NOT NULL THEN NULL ELSE pending_command END
                             WHERE client_id = ?
                         """, (
+                            now,
                             now,
                             json.dumps(sys_dict),
                             json.dumps(net_dict),
