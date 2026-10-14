@@ -5,6 +5,12 @@ All notable changes to the **Gavasah Cloud Agent** Home Assistant Add-on will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-10-14
+
+### Added
+- **Autonomous IP Ban Purge & Reverse Proxy Self-Healing**: Automatically scans and purges loopback IP bans (`127.0.0.1`, `::1`) from `/config/ip_bans.yaml` and provisions `trusted_proxies` in `/config/configuration.yaml` at startup and every 5 heartbeat cycles to prevent `403 Forbidden` and `400 Bad Request` tunnel lockout.
+- **Central Dealer Command Execution**: Added bidirectional remote command dispatcher allowing the Dealer Central Hub to remotely trigger IP unbans, core reloads, core restarts, and add-on self-updates on demand.
+
 ---
 
 ## [1.1.1] - 2026-10-14

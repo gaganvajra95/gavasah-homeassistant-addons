@@ -124,6 +124,63 @@ except Exception:
     pass
 "
 
+# 2d. Autonomous IP-Ban Purge & Reverse Proxy Self-Healing
+echo "[+] Verifying Home Assistant IP ban list and reverse proxy trusted headers..."
+python3 -c "
+import os
+config_paths = ['/homeassistant', '/config']
+for base in config_paths:
+    # 1. Purge loopback/tunnel IPs from ip_bans.yaml
+    ban_file = os.path.join(base, 'ip_bans.yaml')
+    if os.path.exists(ban_file):
+        try:
+            with open(ban_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            if '127.0.0.1' in content or '::1' in content or '10.42.0.' in content:
+                lines = content.splitlines()
+                cleaned = []
+                skip = False
+                for line in lines:
+                    if line.startswith('127.0.0.1:') or line.startswith('::1:') or ('10.42.0.' in line and ':' in line and not line.startswith(' ')):
+                        skip = True
+                        continue
+                    elif skip and (line.startswith(' ') or line.startswith('\t')):
+                        continue
+                    else:
+                        skip = False
+                        cleaned.append(line)
+                with open(ban_file, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(cleaned) + '\n')
+                print(f'[✓] Autonomous Self-Heal: Purged loopback/tunnel ban entries from {ban_file}')
+        except Exception as e:
+            print(f'[!] Notice: Could not clean {ban_file}: {e}')
+
+    # 2. Ensure trusted_proxies in configuration.yaml
+    cfg_file = os.path.join(base, 'configuration.yaml')
+    if os.path.exists(cfg_file):
+        try:
+            with open(cfg_file, 'r', encoding='utf-8') as f:
+                cfg_content = f.read()
+            if 'use_x_forwarded_for' not in cfg_content or 'trusted_proxies' not in cfg_content:
+                proxy_snippet = '''
+
+# GAVASAH Cloud Autonomous Fleet Ingress Reverse Proxy Configuration
+http:
+  use_x_forwarded_for: true
+  trusted_proxies:
+    - 127.0.0.1
+    - ::1
+    - 10.42.0.0/24
+    - 192.168.0.0/16
+    - 172.16.0.0/12
+'''
+                with open(cfg_file, 'a', encoding='utf-8') as f:
+                    f.write(proxy_snippet)
+                print(f'[✓] Autonomous Self-Heal: Appended trusted_proxies configuration to {cfg_file}')
+        except Exception as e:
+            print(f'[!] Notice: Could not update {cfg_file}: {e}')
+"
+
 # 3. Start Telemetry Engine in background
 echo "[+] Starting Gavasah Telemetry & Slot Watchdog..."
 python3 /usr/bin/heartbeat.py &

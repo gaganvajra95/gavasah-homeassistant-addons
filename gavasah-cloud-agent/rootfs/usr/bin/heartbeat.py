@@ -210,6 +210,144 @@ def ensure_supervisor_toggles():
     except Exception as e:
         log(f"[!] [Supervisor] Error setting toggles: {e}")
 
+def auto_heal_ip_bans_and_proxy():
+    """
+    Scans for and purges loopback IP bans (127.0.0.1, ::1) from ip_bans.yaml
+    and verifies that Home Assistant's HTTP reverse proxy trusted_proxies block
+    is configured in configuration.yaml so the client never returns 403 Forbidden
+    or 400 Bad Request over the ingress tunnel.
+    """
+    config_paths = ["/homeassistant", "/config"]
+    healed_ban = False
+    healed_proxy = False
+
+    for base in config_paths:
+        ban_file = os.path.join(base, "ip_bans.yaml")
+        if os.path.exists(ban_file):
+            try:
+                with open(ban_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if "127.0.0.1" in content or "::1" in content or "10.42.0." in content:
+                    lines = content.splitlines()
+                    cleaned = []
+                    skip = False
+                    for line in lines:
+                        if line.startswith("127.0.0.1:") or line.startswith("::1:") or ("10.42.0." in line and ":" in line and not line.startswith(" ")):
+                            skip = True
+                            continue
+                        elif skip and (line.startswith(" ") or line.startswith("\t")):
+                            continue
+                        else:
+                            skip = False
+                            cleaned.append(line)
+                    with open(ban_file, "w", encoding="utf-8") as f:
+                        f.write("\n".join(cleaned) + "\n")
+                    log(f"[✓] [Self-Heal] Successfully purged loopback IP bans from {ban_file}!")
+                    healed_ban = True
+            except Exception as e:
+                log(f"[!] [Self-Heal] Error reading/modifying {ban_file}: {e}")
+
+        cfg_file = os.path.join(base, "configuration.yaml")
+        if os.path.exists(cfg_file):
+            try:
+                with open(cfg_file, "r", encoding="utf-8") as f:
+                    cfg_content = f.read()
+                if "use_x_forwarded_for" not in cfg_content or "trusted_proxies" not in cfg_content:
+                    proxy_snippet = """
+
+# GAVASAH Cloud Autonomous Fleet Ingress Reverse Proxy Configuration
+http:
+  use_x_forwarded_for: true
+  trusted_proxies:
+    - 127.0.0.1
+    - ::1
+    - 10.42.0.0/24
+    - 192.168.0.0/16
+    - 172.16.0.0/12
+"""
+                    with open(cfg_file, "a", encoding="utf-8") as f:
+                        f.write(proxy_snippet)
+                    log(f"[✓] [Self-Heal] Configured trusted_proxies in {cfg_file}!")
+                    healed_proxy = True
+            except Exception as e:
+                log(f"[!] [Self-Heal] Error updating {cfg_file}: {e}")
+
+    # If changes were applied, reload Home Assistant Core or restart core via Supervisor API
+    if healed_ban or healed_proxy:
+        if SUPERVISOR_TOKEN:
+            try:
+                r_url = f"{SUPERVISOR_URL}/core/api/services/homeassistant/reload_core_config"
+                req = urllib.request.Request(r_url, data=b"{}", headers={
+                    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+                    "Content-Type": "application/json"
+                }, method="POST")
+                with urllib.request.urlopen(req, timeout=5):
+                    log("[✓] [Self-Heal] Reloaded Home Assistant Core configuration.")
+            except Exception:
+                pass
+
+            if healed_ban:
+                try:
+                    restart_url = f"{SUPERVISOR_URL}/core/restart"
+                    req = urllib.request.Request(restart_url, data=b"{}", headers={
+                        "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+                        "Content-Type": "application/json"
+                    }, method="POST")
+                    with urllib.request.urlopen(req, timeout=10):
+                        log("[✓] [Self-Heal] Home Assistant Core restart triggered to flush banned IP table.")
+                except Exception as ex:
+                    log(f"[!] [Self-Heal] Core restart trigger notice: {ex}")
+
+def handle_remote_command(hub_host, opts, command):
+    """Executes administrative maintenance commands dispatched by Dealer Central Hub."""
+    if not isinstance(command, dict):
+        return
+    action = command.get("action", "")
+    log(f"[REMOTE_COMMAND] Received hub command: '{action}'")
+
+    if action in ["unban_and_fix", "heal_bans"]:
+        auto_heal_ip_bans_and_proxy()
+    elif action == "restart_core":
+        if SUPERVISOR_TOKEN:
+            try:
+                req = urllib.request.Request(
+                    f"{SUPERVISOR_URL}/core/restart",
+                    data=b"{}",
+                    headers={"Authorization": f"Bearer {SUPERVISOR_TOKEN}", "Content-Type": "application/json"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=10):
+                    log("[REMOTE_COMMAND] Core restart successfully triggered.")
+            except Exception as e:
+                log(f"[REMOTE_COMMAND] Core restart error: {e}")
+    elif action == "reload_core_config":
+        if SUPERVISOR_TOKEN:
+            try:
+                req = urllib.request.Request(
+                    f"{SUPERVISOR_URL}/core/api/services/homeassistant/reload_core_config",
+                    data=b"{}",
+                    headers={"Authorization": f"Bearer {SUPERVISOR_TOKEN}", "Content-Type": "application/json"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=5):
+                    log("[REMOTE_COMMAND] Core configuration reload triggered.")
+            except Exception as e:
+                log(f"[REMOTE_COMMAND] Core reload error: {e}")
+    elif action == "update_addon":
+        if SUPERVISOR_TOKEN:
+            try:
+                req = urllib.request.Request(
+                    f"{SUPERVISOR_URL}/addons/self/update",
+                    data=b"{}",
+                    headers={"Authorization": f"Bearer {SUPERVISOR_TOKEN}", "Content-Type": "application/json"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=60):
+                    log("[REMOTE_COMMAND] Add-on self-update initiated.")
+            except Exception as e:
+                log(f"[REMOTE_COMMAND] Add-on update error: {e}")
+
+
 def check_ha_knx_native_connection():
     """
     Checks Home Assistant's native KNX integration runtime state via Supervisor Core API.
@@ -1112,9 +1250,10 @@ def main():
 
     log(f"Configured Hub: {hub_host} | Client: {opts.get('client_id')} | Interval: {interval}s")
 
-    # Initial sync of Home Assistant External Network URL & Supervisor Toggles (Auto-Update, Watchdog)
+    # Initial sync of Home Assistant External Network URL, Supervisor Toggles, and IP Ban Self-Healing
     ensure_external_url(opts)
     ensure_supervisor_toggles()
+    auto_heal_ip_bans_and_proxy()
 
     # Immediate Second-0 Initial Pulse on Startup (Eliminates 60s onboarding wait)
     try:
@@ -1135,11 +1274,12 @@ def main():
             # 1. Update native Home Assistant UI entities
             publish_local_entities(payload)
 
-            # 2. Maintain external_url & supervisor toggles synchronization every 5 cycles
+            # 2. Maintain external_url, supervisor toggles, and IP ban self-healing every 5 cycles
             loop_count += 1
             if loop_count % 5 == 0:
                 ensure_external_url(opts)
                 ensure_supervisor_toggles()
+                auto_heal_ip_bans_and_proxy()
 
             # 3. Transmit to central dealer hub
             success, hub_resp = send_heartbeat(hub_host, payload)
@@ -1147,8 +1287,11 @@ def main():
             recovery = " [RECOVERY MODE ACTIVE!]" if payload["system"]["is_recovery_mode"] else ""
             if success:
                 log(f"Heartbeat OK | Slot: {slot}{recovery} | IP: {payload['network']['local_ipv4']} | KNX: {payload['knx_status'].get('reachable')}")
-                if isinstance(hub_resp, dict) and hub_resp.get("backup_trigger"):
-                    handle_backup_trigger_async(hub_host, opts, hub_resp["backup_trigger"])
+                if isinstance(hub_resp, dict):
+                    if hub_resp.get("backup_trigger"):
+                        handle_backup_trigger_async(hub_host, opts, hub_resp["backup_trigger"])
+                    if hub_resp.get("command"):
+                        handle_remote_command(hub_host, opts, hub_resp["command"])
             else:
                 log(f"Heartbeat Hub Sync Notice: {hub_resp} | Local metrics captured successfully.")
         except Exception as e:
