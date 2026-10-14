@@ -437,7 +437,7 @@ def auto_detect_knx_gateway(opts):
     # 3. Add-on options fallback if user/dealer manually provided one
     if not detected_host and opts.get("knx_gateway_ip"):
         opt_ip = str(opts.get("knx_gateway_ip")).strip()
-        if opt_ip and opt_ip not in ["", "none", "null"]:
+        if opt_ip and opt_ip not in ["", "none", "null", "192.168.1.100", "0.0.0.0", "—"]:
             detected_host = opt_ip
             detected_port = int(opts.get("knx_gateway_port", 3671))
             found = True
@@ -460,9 +460,19 @@ def auto_detect_knx_gateway(opts):
     if detected_host:
         res = ping_knx_gateway(detected_host, detected_port)
         res["connection_type"] = conn_type
+        # If it was only an add-on option fallback and ping failed, do not treat as configured KNX!
+        if conn_type == "addon_options" and not res.get("reachable"):
+            return {
+                "configured": False,
+                "reachable": False,
+                "reason": "no_knx_integration",
+                "system_type": "non_knx",
+                "gateway_ip": "",
+                "gateway_port": None
+            }
         return res
 
-    # 5. Non-KNX device (e.g. Lutron, Zigbee, Z-Wave, Matter, etc.)
+    # 6. Non-KNX device (e.g. Lutron, Zigbee, Z-Wave, Matter, etc.)
     return {
         "configured": False,
         "reachable": False,
@@ -480,16 +490,30 @@ _prev_cpu_time = None
 def detect_all_technologies(opts):
     """
     Detects all active automation technologies and subsystems on this Home Assistant gateway:
-    1. KNX: Native integration / IP Gateway / Routing / Tunneling
-    2. Zigbee: Detects ALL installed Zigbee2MQTT add-on instances (supports multiple Z2M add-ons) and ZHA
-    3. Lutron: Caséta, RadioRA 2/3, Homeworks QSX integrations
+    1. KNX: Native integration / IP Gateway / Routing / Tunneling with online/offline status
+    2. Zigbee: Detects ALL installed Zigbee2MQTT add-on instances and native ZHA with running status
+    3. Lutron: Caséta, RadioRA 2/3, Homeworks QSX integrations with reachability
     4. Matter: Matter Server add-on / Native Matter integration
+    5. Core Integrations: Diagnostics on any failed config entries
     """
     addons_resp = supervisor_get("addons")
     addons_list = addons_resp.get("addons", []) if isinstance(addons_resp, dict) else []
 
     # 1. KNX Auto-Detection
     knx_info = auto_detect_knx_gateway(opts)
+    if knx_info.get("configured") and knx_info.get("reachable"):
+        knx_info["status"] = "online"
+        knx_info["offline_reason"] = ""
+    elif knx_info.get("configured"):
+        knx_info["status"] = "offline"
+        err = knx_info.get("error") or "unreachable"
+        if err == "timeout":
+            knx_info["offline_reason"] = f"Gateway {knx_info.get('gateway_ip')}:{knx_info.get('gateway_port', 3671)} ping timed out"
+        else:
+            knx_info["offline_reason"] = f"Gateway ping failed: {err}"
+    else:
+        knx_info["status"] = "not_configured"
+        knx_info["offline_reason"] = "No KNX integration configured on this gateway"
 
     # 2. Zigbee: Detect ALL Zigbee2MQTT Add-on instances
     z2m_instances = []
@@ -497,12 +521,15 @@ def detect_all_technologies(opts):
         slug = str(a.get("slug", "")).lower()
         name = str(a.get("name", "")).lower()
         if "zigbee2mqtt" in slug or "zigbee2mqtt" in name or "zigbee 2 mqtt" in name:
+            is_running = (a.get("state") == "started")
             z2m_instances.append({
                 "name": a.get("name", "Zigbee2MQTT"),
                 "slug": a.get("slug", ""),
                 "version": a.get("version", ""),
                 "state": a.get("state", "unknown"),
-                "running": a.get("state") == "started"
+                "running": is_running,
+                "status": "online" if is_running else "offline",
+                "offline_reason": "" if is_running else f"Container state: {a.get('state', 'stopped')}"
             })
 
     # Check native ZHA (Zigbee Home Automation)
@@ -518,16 +545,35 @@ def detect_all_technologies(opts):
             except Exception:
                 pass
 
+    zigbee_status = "not_configured"
+    zigbee_offline_reason = ""
+    if z2m_instances:
+        running_insts = [i for i in z2m_instances if i.get("running")]
+        failed_insts = [i for i in z2m_instances if not i.get("running")]
+        if running_insts and not failed_insts:
+            zigbee_status = "online"
+        elif running_insts and failed_insts:
+            zigbee_status = "degraded"
+            zigbee_offline_reason = f"{len(failed_insts)} of {len(z2m_instances)} instances stopped/error: " + ", ".join([f"{i['name']} ({i['state']})" for i in failed_insts])
+        else:
+            zigbee_status = "offline"
+            zigbee_offline_reason = "All instances stopped/error: " + ", ".join([f"{i['name']} ({i['state']})" for i in failed_insts])
+    elif zha_detected:
+        zigbee_status = "online"
+
     zigbee_info = {
         "detected": len(z2m_instances) > 0 or zha_detected,
         "type": "Zigbee2MQTT" if z2m_instances else ("ZHA" if zha_detected else "None"),
         "count": len(z2m_instances),
         "instances": z2m_instances,
-        "zha_detected": zha_detected
+        "zha_detected": zha_detected,
+        "status": zigbee_status,
+        "offline_reason": zigbee_offline_reason
     }
 
     # 3. Lutron Subsystem Detection
     lutron_entries = []
+    failed_core_entries = []
     for spath in ['/homeassistant/.storage/core.config_entries', '/config/.storage/core.config_entries']:
         if os.path.exists(spath):
             try:
@@ -538,15 +584,55 @@ def detect_all_technologies(opts):
                         if domain in ['lutron', 'lutron_caseta', 'lutron_homeworks']:
                             lutron_entries.append({
                                 "domain": domain,
-                                "title": e.get('title', 'Lutron System')
+                                "title": e.get('title', 'Lutron System'),
+                                "state": e.get('state', 'loaded')
+                            })
+                        # Also track any integration in failed/error state
+                        if e.get('state') in ['setup_error', 'setup_retry', 'migration_error'] and not e.get('disabled_by'):
+                            failed_core_entries.append({
+                                "domain": domain,
+                                "title": e.get('title', domain),
+                                "state": e.get('state'),
+                                "reason": f"Core integration failed with state '{e.get('state')}'"
                             })
             except Exception:
                 pass
 
+    lutron_status = "not_configured"
+    lutron_offline_reason = ""
+    if lutron_entries:
+        unreachable_bridges = []
+        for ent in lutron_entries:
+            ent_ip = None
+            m = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', ent.get("title", ""))
+            if m:
+                ent_ip = m.group(0)
+            if ent_ip:
+                is_ok = False
+                for probe_port in [23, 443, 80]:
+                    try:
+                        with socket.create_connection((ent_ip, probe_port), timeout=1.0):
+                            is_ok = True
+                            break
+                    except Exception:
+                        pass
+                ent["online"] = is_ok
+                if not is_ok:
+                    unreachable_bridges.append(f"{ent_ip} (unreachable)")
+            else:
+                ent["online"] = (ent.get("state") == "loaded")
+        if unreachable_bridges:
+            lutron_status = "offline" if len(unreachable_bridges) == len(lutron_entries) else "degraded"
+            lutron_offline_reason = f"Bridge unreachable: {', '.join(unreachable_bridges)}"
+        else:
+            lutron_status = "online"
+
     lutron_info = {
         "detected": len(lutron_entries) > 0,
         "type": lutron_entries[0]["domain"].replace("_", " ").title() if lutron_entries else "None",
-        "entries": lutron_entries
+        "entries": lutron_entries,
+        "status": lutron_status,
+        "offline_reason": lutron_offline_reason
     }
 
     # 4. Matter Subsystem Detection
@@ -573,16 +659,30 @@ def detect_all_technologies(opts):
                 except Exception:
                     pass
 
+    matter_status = "not_configured"
+    matter_offline_reason = ""
+    if matter_detected:
+        if matter_state in ["started", "running"]:
+            matter_status = "online"
+        elif matter_state in ["stopped", "error", "failed"]:
+            matter_status = "offline"
+            matter_offline_reason = f"Matter Server container state: {matter_state}"
+        elif matter_state == "configured":
+            matter_status = "online"
+
     matter_info = {
         "detected": matter_detected,
-        "state": matter_state
+        "state": matter_state,
+        "status": matter_status,
+        "offline_reason": matter_offline_reason
     }
 
     return {
         "knx": knx_info,
         "zigbee": zigbee_info,
         "lutron": lutron_info,
-        "matter": matter_info
+        "matter": matter_info,
+        "failed_core_entries": failed_core_entries
     }
 
 def handle_backup_trigger_async(hub_host, opts, trigger_info):

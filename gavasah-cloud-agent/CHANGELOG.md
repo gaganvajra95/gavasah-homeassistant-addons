@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.1] - 2026-10-14
+
+### Fixed
+- **Phantom KNX Detection Elimination**: Strict reality checks prevent false/phantom KNX IP or port reporting on gateways running purely Zigbee, Lutron, or non-KNX stacks. Add-on options fallback is ignored unless verified by reachable ping or active core config entries.
+- **Subsystem Health & Operational Diagnostics**: Added real-time operational status (Online, Offline, Degraded) and detailed failure reason reporting across all automation subsystems (KNX, Zigbee2MQTT, Lutron, and Matter).
+- **Core Integrations Diagnostic Inspection**: Heartbeat inspects Home Assistant `core.config_entries` and reports any failing integrations with exact setup error details.
+
+---
+
 ## [1.1.0] - 2026-10-08
 
 ### Added

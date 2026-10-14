@@ -129,10 +129,13 @@ echo "[+] Starting Gavasah Telemetry & Slot Watchdog..."
 python3 /usr/bin/heartbeat.py &
 HEARTBEAT_PID=$!
 
-# 4. Optional KNX UDP-to-TCP forwarder for ETS programming
-if [ -n "$KNX_IP" ]; then
-    echo "[+] Starting KNXnet/IP UDP Bridge to $KNX_IP:$KNX_PORT..."
+# 4. Optional KNX UDP & TCP forwarders for remote ETS programming (supports dedicated LAN KNX devices)
+if [ -n "$KNX_IP" ] && [ "$KNX_IP" != "127.0.0.1" ] && [ "$KNX_IP" != "localhost" ]; then
+    echo "[+] Starting KNXnet/IP UDP Bridge to LAN device $KNX_IP:$KNX_PORT..."
+    socat UDP-LISTEN:3671,fork,reuseaddr UDP:$KNX_IP:$KNX_PORT &
     socat TCP-LISTEN:3671,fork UDP:$KNX_IP:$KNX_PORT &
+elif [ "$KNX_IP" = "127.0.0.1" ] || [ -z "$KNX_IP" ]; then
+    echo "[+] Onboard NCN5120 knxd service handles local port 3671 directly."
 fi
 
 # 5. Detect Local Home Assistant Port (80 vs 8123)

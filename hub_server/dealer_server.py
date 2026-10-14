@@ -102,6 +102,191 @@ def get_db_connection():
     conn.execute('PRAGMA busy_timeout = 5000;')
     return conn
 
+# ==============================================================================
+# Remote ETS UDP Port Pool Management (Monotonic Ring Buffer & FIFO Recycle)
+# Designated Clean UDP Range: 10001 - 20000 (10,000 Ports)
+# ==============================================================================
+ETS_PORT_MIN = 10001
+ETS_PORT_MAX = 20000
+
+def allocate_ets_port(client_id, target_ip='127.0.0.1', target_port=3671, target_type='onboard'):
+    """
+    Ring buffer with FIFO recycle policy for ETS UDP remote programming ports (10001 - 20000).
+    1. Checks if client_id already holds an active ets_port. If so, updates target info and returns it.
+    2. Monotonically increments high_watermark from 10001 up to 20000.
+    3. Released ports are NEVER immediately reassigned until the pool reaches 20000 (every other port is taken).
+    4. Only when high_watermark >= 20000, recycles the oldest released port (FIFO based on released_at).
+    """
+    with DB_LOCK:
+        conn = get_db_connection()
+        try:
+            with conn:
+                cur = conn.cursor()
+                # 1. Existing allocation check
+                cur.execute("SELECT ets_port FROM clients WHERE client_id = ?", (client_id,))
+                row = cur.fetchone()
+                now = int(time.time())
+                if row and row['ets_port']:
+                    existing_port = row['ets_port']
+                    cur.execute("""
+                        UPDATE clients SET
+                            ets_target_type = ?,
+                            ets_target_ip = ?,
+                            ets_target_port = ?
+                        WHERE client_id = ?
+                    """, (target_type, target_ip or '127.0.0.1', target_port or 3671, client_id))
+                    cur.execute("""
+                        INSERT OR REPLACE INTO ets_port_pool (port, client_id, status, allocated_at, released_at)
+                        VALUES (?, ?, 'allocated', ?, NULL)
+                    """, (existing_port, client_id, now))
+                    return existing_port
+
+                # 2. Check high-watermark
+                cur.execute("SELECT value FROM ets_allocator_meta WHERE key = 'high_watermark'")
+                meta_row = cur.fetchone()
+                hw_val = int(meta_row['value']) if meta_row else 10000
+
+                assigned_port = None
+                if hw_val < ETS_PORT_MAX:
+                    # Allocate next clean monotonic port
+                    candidate = hw_val + 1
+                    assigned_port = candidate
+                    cur.execute("INSERT OR REPLACE INTO ets_allocator_meta (key, value) VALUES ('high_watermark', ?)", (str(candidate),))
+                else:
+                    # Ring buffer exhausted initial run: FIFO recycle oldest released port
+                    cur.execute("""
+                        SELECT port FROM ets_port_pool
+                        WHERE status = 'released'
+                        ORDER BY released_at ASC, port ASC
+                        LIMIT 1
+                    """)
+                    rel_row = cur.fetchone()
+                    if rel_row:
+                        assigned_port = rel_row['port']
+                    else:
+                        raise Exception(f"ETS Remote Port pool ({ETS_PORT_MIN}-{ETS_PORT_MAX}) fully exhausted! 10,000 active gateways connected.")
+
+                # Record assignment in pool
+                cur.execute("""
+                    INSERT OR REPLACE INTO ets_port_pool (port, client_id, status, allocated_at, released_at)
+                    VALUES (?, ?, 'allocated', ?, NULL)
+                """, (assigned_port, client_id, now))
+
+                # Update clients record
+                cur.execute("""
+                    UPDATE clients SET
+                        ets_port = ?,
+                        ets_target_type = ?,
+                        ets_target_ip = ?,
+                        ets_target_port = ?,
+                        ets_port_assigned_at = ?
+                    WHERE client_id = ?
+                """, (assigned_port, target_type, target_ip or '127.0.0.1', target_port or 3671, now, client_id))
+
+            conn.close()
+            return assigned_port
+        except Exception as e:
+            conn.close()
+            raise e
+
+def release_ets_port(client_id):
+    """
+    Frees the ETS port allocated to client_id.
+    Marks status as 'released' with current timestamp so it enters the FIFO queue,
+    which will only be recycled after the high-watermark reaches 20000.
+    """
+    with DB_LOCK:
+        conn = get_db_connection()
+        try:
+            with conn:
+                cur = conn.cursor()
+                cur.execute("SELECT ets_port FROM clients WHERE client_id = ?", (client_id,))
+                row = cur.fetchone()
+                if row and row['ets_port']:
+                    port = row['ets_port']
+                    now = int(time.time())
+                    cur.execute("""
+                        UPDATE ets_port_pool SET
+                            status = 'released',
+                            client_id = NULL,
+                            released_at = ?
+                        WHERE port = ?
+                    """, (now, port))
+                    cur.execute("""
+                        UPDATE clients SET
+                            ets_port = NULL,
+                            ets_target_type = NULL,
+                            ets_target_ip = NULL,
+                            ets_target_port = NULL,
+                            ets_port_assigned_at = NULL
+                        WHERE client_id = ?
+                    """, (client_id,))
+                    print(f"[*] Released remote ETS port {port} for client '{client_id}' (queued for FIFO recycle)")
+            conn.close()
+            return True
+        except Exception as e:
+            conn.close()
+            print(f"[!] Error releasing ETS port for {client_id}: {e}")
+            return False
+
+def sync_ets_nat_rules():
+    """
+    Synchronizes Linux iptables NAT rules on CT 150 for remote ETS UDP programming.
+    Uses dedicated chain GAVASAH_ETS_NAT in nat table.
+    Ensures:
+    1. GAVASAH_ETS_NAT chain exists and is linked at top of PREROUTING.
+    2. POSTROUTING masquerade on wg0 so client replies traverse wg0 cleanly back to CT 150 un-NAT.
+    3. Each client with an assigned ets_port gets a DNAT rule:
+       UDP dport [ets_port] -> [wg_ip]:3671
+    """
+    if os.name == 'nt' or os.environ.get('MOCK_NAT') == '1':
+        return True
+    try:
+        # 1. Enable IP forwarding
+        try:
+            with open('/proc/sys/net/ipv4/ip_forward', 'w') as f:
+                f.write('1\n')
+        except Exception:
+            pass
+
+        # 2. Ensure GAVASAH_ETS_NAT chain exists
+        subprocess.run(['iptables', '-t', 'nat', '-N', 'GAVASAH_ETS_NAT'], capture_output=True)
+        # Flush existing rules in chain
+        subprocess.run(['iptables', '-t', 'nat', '-F', 'GAVASAH_ETS_NAT'], check=True)
+
+        # 3. Ensure PREROUTING jumps to GAVASAH_ETS_NAT
+        check_jump = subprocess.run(['iptables', '-t', 'nat', '-C', 'PREROUTING', '-j', 'GAVASAH_ETS_NAT'], capture_output=True)
+        if check_jump.returncode != 0:
+            subprocess.run(['iptables', '-t', 'nat', '-I', 'PREROUTING', '1', '-j', 'GAVASAH_ETS_NAT'], check=True)
+
+        # 4. Ensure POSTROUTING MASQUERADE for wg0
+        check_masq = subprocess.run(['iptables', '-t', 'nat', '-C', 'POSTROUTING', '-o', WG_INTERFACE, '-j', 'MASQUERADE'], capture_output=True)
+        if check_masq.returncode != 0:
+            subprocess.run(['iptables', '-t', 'nat', '-A', 'POSTROUTING', '-o', WG_INTERFACE, '-j', 'MASQUERADE'], check=True)
+
+        # 5. Fetch all active clients with an ets_port
+        with DB_LOCK:
+            conn = get_db_connection()
+            rows = conn.execute("SELECT client_id, ets_port, wg_ip FROM clients WHERE ets_port IS NOT NULL AND wg_ip IS NOT NULL").fetchall()
+            conn.close()
+
+        count = 0
+        for r in rows:
+            port = r['ets_port']
+            wg_ip = r['wg_ip']
+            if port and wg_ip:
+                subprocess.run([
+                    'iptables', '-t', 'nat', '-A', 'GAVASAH_ETS_NAT',
+                    '-p', 'udp', '--dport', str(port),
+                    '-j', 'DNAT', '--to-destination', f"{wg_ip}:3671"
+                ], check=True)
+                count += 1
+        print(f"[OK] Synchronized {count} ETS UDP NAT rules in GAVASAH_ETS_NAT chain")
+        return True
+    except Exception as e:
+        print(f"[!] Warning syncing ETS NAT rules: {e}")
+        return False
+
 def init_sqlite_database():
     with DB_LOCK:
         conn = get_db_connection()
@@ -170,8 +355,8 @@ def init_sqlite_database():
             wg_privkey TEXT,
             tunnel_mode TEXT DEFAULT 'wireguard',
             
-            knx_ip TEXT NOT NULL,
-            knx_port INTEGER NOT NULL,
+            knx_ip TEXT,
+            knx_port INTEGER,
             last_heartbeat INTEGER NOT NULL,
             status TEXT NOT NULL,
             remote_enabled INTEGER NOT NULL DEFAULT 1,
@@ -190,9 +375,23 @@ def init_sqlite_database():
             source TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS ets_port_pool (
+            port INTEGER PRIMARY KEY,
+            client_id TEXT,
+            status TEXT NOT NULL DEFAULT 'released',
+            allocated_at INTEGER,
+            released_at INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS ets_allocator_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_clients_dealer ON clients(dealer_id);
         CREATE INDEX IF NOT EXISTS idx_clients_integrator ON clients(integrator_id);
         CREATE INDEX IF NOT EXISTS idx_logs_client_time ON client_logs(client_id, timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_ets_port_pool_status ON ets_port_pool(status, released_at);
         """)
 
         # Ensure WireGuard columns exist for upgrade
@@ -215,11 +414,36 @@ def init_sqlite_database():
         if 'pending_backup' not in cols:
             conn.execute("ALTER TABLE clients ADD COLUMN pending_backup TEXT")
 
+        # Ensure Remote ETS UDP Port Forwarding columns exist
+        if 'ets_port' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN ets_port INTEGER")
+        if 'ets_target_type' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN ets_target_type TEXT")
+        if 'ets_target_ip' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN ets_target_ip TEXT")
+        if 'ets_target_port' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN ets_target_port INTEGER")
+        if 'ets_port_assigned_at' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN ets_port_assigned_at INTEGER")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_ets_port ON clients(ets_port);")
+
+        # Initialize high-watermark metadata
+        cur.execute("SELECT value FROM ets_allocator_meta WHERE key = 'high_watermark'")
+        hw_row = cur.fetchone()
+        if not hw_row:
+            conn.execute("INSERT OR REPLACE INTO ets_allocator_meta (key, value) VALUES ('high_watermark', '10000')")
+
         # Ensure branding_json exists in dealers table
         cur.execute("PRAGMA table_info(dealers)")
         d_cols = {r['name'] for r in cur.fetchall()}
         if 'branding_json' not in d_cols:
             conn.execute("ALTER TABLE dealers ADD COLUMN branding_json TEXT")
+
+        # Ensure branding_json exists in owner table (for manufacturer branding)
+        cur.execute("PRAGMA table_info(owner)")
+        o_cols = {r['name'] for r in cur.fetchall()}
+        if 'branding_json' not in o_cols:
+            conn.execute("ALTER TABLE owner ADD COLUMN branding_json TEXT")
 
         # Auto-migrate all existing clients to WireGuard
         cur.execute("SELECT client_id, name FROM clients WHERE wg_ip IS NULL OR wg_ip = ''")
@@ -266,10 +490,14 @@ def init_sqlite_database():
                              ow.get('role', 'manufacturer'), ow.get('salt', ''), ow.get('password_hash', ''), ow.get('created_at', int(time.time())))
                         )
                     for did, d in auth_data.get('dealers', {}).items():
-                        conn.execute("INSERT OR REPLACE INTO dealers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        conn.execute("""INSERT OR REPLACE INTO dealers (
+                            id, username, name, password_plain, email, phone, role, status,
+                            salt, password_hash, created_at, branding_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                             (d.get('id', did), d.get('username', ''), d.get('name', ''), d.get('password_plain', 'apex123!'),
                              d.get('email', ''), d.get('phone', ''), d.get('role', 'dealer'), d.get('status', 'active'),
-                             d.get('salt', ''), d.get('password_hash', ''), d.get('created_at', int(time.time())))
+                             d.get('salt', ''), d.get('password_hash', ''), d.get('created_at', int(time.time())),
+                             json.dumps(d.get('branding') or {}))
                         )
                     for iid, it in auth_data.get('integrators', {}).items():
                         conn.execute("INSERT OR REPLACE INTO integrators VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -286,12 +514,16 @@ def init_sqlite_database():
                     ('owner_master', 'admin', 'Master Manufacturer', 'manufacturer', owner_salt, owner_hash, int(time.time()))
                 )
                 d1_salt, d1_hash = hash_password("apex123!")
-                conn.execute("INSERT INTO dealers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    ('dealer_apex', 'apex_dealer', 'Apex Smart Automation', 'apex123!', 'contact@apexsmart.in', '+91 98490 12345', 'dealer', 'active', d1_salt, d1_hash, int(time.time()) - 86400*30)
+                conn.execute("""INSERT INTO dealers (
+                    id, username, name, password_plain, email, phone, role, status, salt, password_hash, created_at, branding_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    ('dealer_apex', 'apex_dealer', 'Apex Smart Automation', 'apex123!', 'contact@apexsmart.in', '+91 98490 12345', 'dealer', 'active', d1_salt, d1_hash, int(time.time()) - 86400*30, '{}')
                 )
                 d2_salt, d2_hash = hash_password("vajra123!")
-                conn.execute("INSERT INTO dealers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    ('dealer_vajra', 'vajra_knx', 'Vajra KNX Solutions', 'vajra123!', 'sales@vajraknx.com', '+91 99887 76655', 'dealer', 'active', d2_salt, d2_hash, int(time.time()) - 86400*15)
+                conn.execute("""INSERT INTO dealers (
+                    id, username, name, password_plain, email, phone, role, status, salt, password_hash, created_at, branding_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    ('dealer_vajra', 'vajra_knx', 'Vajra KNX Solutions', 'vajra123!', 'sales@vajraknx.com', '+91 99887 76655', 'dealer', 'active', d2_salt, d2_hash, int(time.time()) - 86400*15, '{}')
                 )
                 i1_salt, i1_hash = hash_password("rajesh123!")
                 conn.execute("INSERT INTO integrators VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -347,9 +579,43 @@ def init_sqlite_database():
 
             conn.commit()
             print("[OK] SQLite WAL database synchronized successfully!")
+
+        # Auto-allocate remote ETS ports ONLY for genuine KNX-enabled clients & clean phantoms
+        try:
+            cur = conn.cursor()
+            # Startup purge of phantom ETS ports for non-KNX clients
+            cur.execute("SELECT client_id, knx_ip, knx_json, ets_port FROM clients WHERE ets_port IS NOT NULL")
+            for kc in cur.fetchall():
+                cid = kc['client_id']
+                kjson = kc['knx_json'] or '{}'
+                kip = (kc['knx_ip'] or '').strip()
+                if ('"reason": "no_knx_integration"' in kjson) or ('"configured": false' in kjson) or (kjson == '{}' and kip in ['', '192.168.1.100']):
+                    release_ets_port(cid)
+                    conn.execute("UPDATE clients SET knx_ip = NULL, knx_port = NULL WHERE client_id = ?", (cid,))
+                    print(f"[*] Cleaned phantom KNX & released ETS port for non-KNX client: {cid}")
+
+            # Allocate only for genuine KNX clients without ETS port
+            cur.execute("SELECT client_id, knx_ip, knx_port, knx_json FROM clients WHERE ets_port IS NULL")
+            cand_clients = cur.fetchall()
+            for kc in cand_clients:
+                cid = kc['client_id']
+                kip = (kc['knx_ip'] or '').strip()
+                kjson = kc['knx_json'] or '{}'
+                has_knx = bool(kip and kip not in ['192.168.1.100', '—', 'none', 'null', ''] and ('"reason": "no_knx_integration"' not in kjson) and (('"configured": true' in kjson) or ('"state": "connected"' in kjson)))
+                if has_knx:
+                    ttype = 'onboard' if kip in ['127.0.0.1', 'localhost', ''] else 'lan_device'
+                    try:
+                        p = allocate_ets_port(cid, target_ip=kip or '127.0.0.1', target_port=kc['knx_port'] or 3671, target_type=ttype)
+                        print(f"[*] Pre-allocated remote ETS port {p} for genuine KNX client '{cid}' (Type: {ttype})")
+                    except Exception as ex:
+                        print(f"[!] Error pre-allocating ETS port for '{cid}': {ex}")
+        except Exception as e:
+            print(f"[!] Warning checking existing KNX clients for ETS ports: {e}")
+
         conn.close()
 
 init_sqlite_database()
+sync_ets_nat_rules()
 
 # ==============================================================================
 # Compatibility Wrappers for Auth and Client State (Backed by SQLite WAL)
@@ -361,6 +627,8 @@ def load_auth_state():
         cur.execute("SELECT * FROM owner LIMIT 1")
         row = cur.fetchone()
         owner = dict(row) if row else {}
+        try: owner['branding'] = json.loads(owner.get('branding_json') or '{}')
+        except: owner['branding'] = {}
         cur.execute("SELECT * FROM dealers")
         dealers = {}
         for r in cur.fetchall():
@@ -387,9 +655,15 @@ def save_auth_state(data):
             with conn:
                 ow = data.get('owner', {})
                 if ow:
-                    conn.execute("INSERT OR REPLACE INTO owner VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    ow_branding_val = ow.get('branding_json')
+                    if ow_branding_val is None:
+                        ow_branding_val = json.dumps(ow.get('branding') or {})
+                    conn.execute("""INSERT OR REPLACE INTO owner (
+                        id, username, name, role, salt, password_hash, created_at, branding_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                         (ow.get('id', 'owner_master'), ow.get('username', 'admin'), ow.get('name', 'Master Manufacturer'),
-                         ow.get('role', 'manufacturer'), ow.get('salt', ''), ow.get('password_hash', ''), ow.get('created_at', int(time.time())))
+                         ow.get('role', 'manufacturer'), ow.get('salt', ''), ow.get('password_hash', ''), ow.get('created_at', int(time.time())),
+                         ow_branding_val)
                     )
                 existing_dealer_ids = {r['id'] for r in conn.execute("SELECT id FROM dealers").fetchall()}
                 current_dealer_ids = set(data.get('dealers', {}).keys())
@@ -397,10 +671,17 @@ def save_auth_state(data):
                     conn.execute("DELETE FROM dealers WHERE id = ?", (did,))
 
                 for did, d in data.get('dealers', {}).items():
-                    conn.execute("INSERT OR REPLACE INTO dealers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    branding_val = d.get('branding_json')
+                    if branding_val is None:
+                        branding_val = json.dumps(d.get('branding') or {})
+                    conn.execute("""INSERT OR REPLACE INTO dealers (
+                        id, username, name, password_plain, email, phone, role, status,
+                        salt, password_hash, created_at, branding_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (d.get('id', did), d.get('username', ''), d.get('name', ''), d.get('password_plain', ''),
                          d.get('email', ''), d.get('phone', ''), d.get('role', 'dealer'), d.get('status', 'active'),
-                         d.get('salt', ''), d.get('password_hash', ''), d.get('created_at', int(time.time())))
+                         d.get('salt', ''), d.get('password_hash', ''), d.get('created_at', int(time.time())),
+                         branding_val)
                     )
 
                 existing_int_ids = {r['id'] for r in conn.execute("SELECT id FROM integrators").fetchall()}
@@ -409,7 +690,10 @@ def save_auth_state(data):
                     conn.execute("DELETE FROM integrators WHERE id = ?", (iid,))
 
                 for iid, it in data.get('integrators', {}).items():
-                    conn.execute("INSERT OR REPLACE INTO integrators VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    conn.execute("""INSERT OR REPLACE INTO integrators (
+                        id, dealer_id, dealer_name, username, name, password_plain, email, phone,
+                        role, status, salt, password_hash, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (it.get('id', iid), it.get('dealer_id', ''), it.get('dealer_name', ''), it.get('username', ''),
                          it.get('name', ''), it.get('password_plain', ''), it.get('email', ''), it.get('phone', ''),
                          it.get('role', 'integrator'), it.get('status', 'active'), it.get('salt', ''), it.get('password_hash', ''),
@@ -422,7 +706,9 @@ def save_auth_state(data):
                     conn.execute("DELETE FROM sessions WHERE token = ?", (tok,))
 
                 for tok, s in data.get('sessions', {}).items():
-                    conn.execute("INSERT OR REPLACE INTO sessions VALUES (?, ?, ?, ?, ?)",
+                    conn.execute("""INSERT OR REPLACE INTO sessions (
+                        token, user_id, role, created_at, expires_at
+                    ) VALUES (?, ?, ?, ?, ?)""",
                         (tok, s.get('user_id', ''), s.get('role', ''), s.get('created_at', int(time.time())), s.get('expires_at', int(time.time()) + 86400*7))
                     )
             conn.close()
@@ -431,6 +717,54 @@ def save_auth_state(data):
             print(f"[!] Error saving auth state in SQLite: {e}")
             conn.close()
             return False
+
+def save_session(token, user_id, role, created_at=None, expires_at=None):
+    if not created_at:
+        created_at = int(time.time())
+    if not expires_at:
+        expires_at = created_at + 86400 * 7
+    with DB_LOCK:
+        conn = get_db_connection()
+        try:
+            with conn:
+                conn.execute("""INSERT OR REPLACE INTO sessions (
+                    token, user_id, role, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?)""", (token, user_id, role, created_at, expires_at))
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"[!] Error saving session {token} in SQLite: {e}")
+            conn.close()
+            return False
+
+def delete_session(token):
+    with DB_LOCK:
+        conn = get_db_connection()
+        try:
+            with conn:
+                conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"[!] Error deleting session {token} in SQLite: {e}")
+            conn.close()
+            return False
+
+def get_session(token):
+    if not token:
+        return None
+    with DB_LOCK:
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT token, user_id, role, created_at, expires_at FROM sessions WHERE token = ?", (token,))
+            row = cur.fetchone()
+            conn.close()
+            return dict(row) if row else None
+        except Exception as e:
+            print(f"[!] Error getting session {token} from SQLite: {e}")
+            conn.close()
+            return None
 
 def load_clients_state():
     with DB_LOCK:
@@ -490,19 +824,27 @@ def save_clients_state(data):
                     sys_json = json.dumps(c.get('system', {}))
                     net_json = json.dumps(c.get('network', {}))
                     knx_json = json.dumps(c.get('knx_status', {}))
+                    tech_json = json.dumps(c.get('technologies', {}))
+                    backups_json = json.dumps(c.get('backups', []))
                     conn.execute("""INSERT OR REPLACE INTO clients (
                         client_id, name, dealer_id, dealer_name, integrator_id, integrator_name,
                         domain, auth_secret, dashboard_port, ssh_port, knx_ip, knx_port,
                         last_heartbeat, status, remote_enabled, system_json, network_json, knx_json,
-                        wg_ip, wg_pubkey, wg_privkey, tunnel_mode
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        wg_ip, wg_pubkey, wg_privkey, tunnel_mode,
+                        technologies_json, backups_json, pending_backup,
+                        ets_port, ets_target_type, ets_target_ip, ets_target_port, ets_port_assigned_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (c.get('client_id', cid), c.get('name', cid), c.get('dealer_id', 'owner_master'), c.get('dealer_name', 'Master Manufacturer (Direct)'),
                          c.get('integrator_id'), c.get('integrator_name', 'Direct Dealer Supervision'), c.get('domain', f"{cid}.gavasah.com"),
                          c.get('auth_secret', ''), int(c.get('dashboard_port', d_port)), int(c.get('ssh_port', s_port)),
-                         c.get('knx_ip', '192.168.1.100'), int(c.get('knx_port', 3671)), int(c.get('last_heartbeat', int(time.time()))),
+                         (c.get('knx_ip') if c.get('knx_ip') and str(c.get('knx_ip')).strip() not in ['192.168.1.100', '—', 'none', 'null', ''] else None),
+                         (int(c['knx_port']) if c.get('knx_port') and c.get('knx_ip') and str(c.get('knx_ip')).strip() not in ['192.168.1.100', '—', 'none', 'null', ''] else None),
+                         int(c.get('last_heartbeat', int(time.time()))),
                          c.get('status', 'online'), 1 if c.get('remote_enabled', True) else 0,
                          sys_json, net_json, knx_json,
-                         c.get('wg_ip'), c.get('wg_pubkey'), c.get('wg_privkey'), c.get('tunnel_mode', 'wireguard'))
+                         c.get('wg_ip'), c.get('wg_pubkey'), c.get('wg_privkey'), c.get('tunnel_mode', 'wireguard'),
+                         tech_json, backups_json, c.get('pending_backup'),
+                         c.get('ets_port'), c.get('ets_target_type'), c.get('ets_target_ip'), c.get('ets_target_port'), c.get('ets_port_assigned_at'))
                     )
             conn.close()
             return True
@@ -2844,39 +3186,336 @@ HTML_PAGE = """<!DOCTYPE html>
             color: #94a3b8;
             border: 1px solid rgba(100, 116, 139, 0.3);
         }
+        .tech-status-online {
+            border-color: rgba(16, 185, 129, 0.45) !important;
+        }
+        .tech-status-offline {
+            background: rgba(239, 68, 68, 0.15) !important;
+            color: #f87171 !important;
+            border: 1px solid rgba(239, 68, 68, 0.45) !important;
+        }
+        .tech-status-degraded {
+            background: rgba(245, 158, 11, 0.15) !important;
+            color: #fbbf24 !important;
+            border: 1px solid rgba(245, 158, 11, 0.45) !important;
+        }
+        .tech-dot-pulsing {
+            animation: techDotPulse 1.8s infinite ease-in-out;
+        }
+        @keyframes techDotPulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.35; transform: scale(0.85); }
+        }
+        .diag-banner {
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 16px;
+            font-size: 13px;
+        }
+        .diag-banner-online {
+            background: rgba(16, 185, 129, 0.12);
+            border: 1px solid rgba(16, 185, 129, 0.35);
+            color: #34d399;
+        }
+        .diag-banner-offline {
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.45);
+            color: #f87171;
+        }
+        .diag-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        .diag-table th {
+            text-align: left;
+            color: #94a3b8;
+            padding: 8px 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            width: 32%;
+        }
+        .diag-table td {
+            padding: 8px 10px;
+            color: #cbd5e1;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            font-family: 'JetBrains Mono', monospace;
+        }
 
-        /* White-Label Branding Tab Styles */
-        .branding-preview-card {
-            background: rgba(11, 16, 28, 0.85);
-            border: 1px solid var(--accent-glow);
-            border-radius: 12px;
-            padding: 20px;
+        /* White-Label Branding Studio Styles */
+        .branding-studio-grid {
+            display: grid;
+            grid-template-columns: 1.25fr 1fr;
+            gap: 24px;
+            align-items: start;
             margin-top: 15px;
+        }
+        @media (max-width: 1100px) {
+            .branding-studio-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        .settings-card {
+            background: rgba(15, 23, 42, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            padding: 22px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+        }
+        .settings-card-header {
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        .settings-card-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: #fff;
+            letter-spacing: 0.3px;
             display: flex;
             align-items: center;
+            gap: 8px;
+        }
+        .settings-card-sub {
+            font-size: 12px;
+            color: #94a3b8;
+            margin-top: 4px;
+            line-height: 1.4;
+        }
+        .logo-dropzone {
+            border: 2px dashed rgba(255, 255, 255, 0.18);
+            border-radius: 12px;
+            padding: 28px 20px;
+            text-align: center;
+            background: rgba(30, 41, 59, 0.35);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .logo-dropzone:hover, .logo-dropzone.drag-active {
+            border-color: var(--accent);
+            background: rgba(0, 240, 255, 0.05);
+            transform: translateY(-1px);
+        }
+        .dropzone-icon {
+            font-size: 32px;
+            margin-bottom: 8px;
+            display: inline-block;
+        }
+        .active-logo-box {
+            background: rgba(11, 16, 28, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 12px;
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
             gap: 16px;
         }
-        .branding-preview-logo {
-            max-height: 48px;
+        .logo-thumbnail-preview {
             max-width: 140px;
+            height: 48px;
+            padding: 6px 12px;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .logo-thumbnail-preview img {
+            max-height: 100%;
+            max-width: 100%;
             object-fit: contain;
         }
-        .color-swatch-picker {
-            display: flex;
+        .btn-danger-sm {
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.4);
+            color: #f87171;
+            border-radius: 6px;
+            padding: 6px 14px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn-danger-sm:hover {
+            background: rgba(239, 68, 68, 0.3);
+            border-color: #ef4444;
+            color: #fff;
+        }
+        .theme-presets-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
             gap: 8px;
             margin-top: 8px;
         }
-        .color-swatch-btn {
-            width: 26px;
-            height: 26px;
-            border-radius: 6px;
-            border: 2px solid transparent;
+        .preset-pill {
+            background: rgba(30, 41, 59, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #cbd5e1;
+            padding: 7px 10px;
+            border-radius: 8px;
+            font-size: 11px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
             cursor: pointer;
-            transition: transform 0.15s, border-color 0.15s;
+            transition: all 0.15s ease;
+            text-align: left;
         }
-        .color-swatch-btn:hover {
-            transform: scale(1.15);
-            border-color: #fff;
+        .preset-pill:hover {
+            border-color: rgba(255, 255, 255, 0.3);
+            background: rgba(30, 41, 59, 0.85);
+            color: #fff;
+            transform: translateY(-1px);
+        }
+        .swatch-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            flex-shrink: 0;
+            box-shadow: 0 0 6px rgba(0, 0, 0, 0.5);
+        }
+        .color-picker-input {
+            width: 44px;
+            height: 38px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: transparent;
+            cursor: pointer;
+            padding: 2px;
+        }
+        .preview-sticky-wrap {
+            position: sticky;
+            top: 15px;
+        }
+        .mockup-frame {
+            background: rgba(11, 16, 28, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 16px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+        }
+        .mockup-header-title {
+            font-size: 10px;
+            font-weight: 800;
+            color: #94a3b8;
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+        }
+        .mockup-topbar-sample {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            padding: 10px 14px;
+        }
+        .preview-header-badge {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 5px 12px 5px 8px;
+            background: rgba(15, 23, 42, 0.95);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+            transition: border-color 0.2s ease;
+        }
+        .mock-header-logo-wrap {
+            height: 30px;
+            max-width: 120px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        .mock-header-name {
+            font-size: 13px;
+            font-weight: 700;
+            color: #f8fafc;
+            letter-spacing: 0.3px;
+            white-space: nowrap;
+            max-width: 160px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            line-height: 1.2;
+        }
+        .mock-header-tag {
+            font-size: 9px;
+            font-weight: 700;
+            color: var(--accent);
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            line-height: 1.2;
+            transition: color 0.2s ease;
+        }
+        .mockup-sidebar-sample {
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            padding: 14px;
+        }
+        .mock-sidebar-brand-box {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .mock-sidebar-logo {
+            width: 38px;
+            height: 38px;
+            border-radius: 10px;
+            background: rgba(0, 240, 255, 0.15);
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            font-weight: 900;
+            font-size: 17px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            transition: all 0.2s ease;
+        }
+        .mock-sidebar-title {
+            font-size: 14px;
+            font-weight: 800;
+            color: #fff;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            line-height: 1.2;
+        }
+        .mock-sidebar-sub {
+            font-size: 10px;
+            color: var(--accent);
+            font-weight: 700;
+            text-transform: uppercase;
+            line-height: 1.2;
+            transition: color 0.2s ease;
+        }
+        .mock-ui-card {
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid var(--accent-glow);
+            border-radius: 10px;
+            padding: 16px;
+            box-shadow: 0 0 15px rgba(0, 240, 255, 0.08);
+            transition: all 0.2s ease;
+        }
+        .mock-status-pill {
+            font-size: 9px;
+            font-weight: 800;
+            padding: 3px 8px;
+            border-radius: 6px;
+            background: rgba(16, 185, 129, 0.15);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            letter-spacing: 0.5px;
         }
 
 </style>
@@ -2931,17 +3570,17 @@ HTML_PAGE = """<!DOCTYPE html>
         <!-- Manufacturer Left Sidebar -->
         <div class="sidebar" id="sidebar">
             <div class="sidebar-brand">
-                <div style="width: 38px; height: 38px; border-radius: 10px; background: rgba(0, 240, 255, 0.15); border: 1px solid var(--accent); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 12px var(--accent-glow);">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#00f0ff" stroke-width="2.2">
+                <div id="side-brand-logo" style="width: 38px; height: 38px; border-radius: 10px; background: rgba(0, 240, 255, 0.15); border: 1px solid var(--accent); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 12px var(--accent-glow); overflow: hidden; flex-shrink: 0;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.2">
                         <rect x="2" y="2" width="20" height="8" rx="2"></rect>
                         <rect x="2" y="14" width="20" height="8" rx="2"></rect>
                     </svg>
                 </div>
-                <div>
-                    <div style="font-size: 14px; font-weight: 800; color: #fff;">GAVASAH HUB</div>
-                    <div style="font-size: 10px; color: var(--accent); font-weight: 700; text-transform: uppercase;">Master Console</div>
+                <div style="min-width: 0; overflow: hidden;">
+                    <div style="font-size: 14px; font-weight: 800; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" id="side-brand-title">GAVASAH HUB</div>
+                    <div style="font-size: 10px; color: var(--accent); font-weight: 700; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" id="side-brand-sub">Master Console</div>
                 </div>
-        <button class="sidebar-brand-toggle" onclick="toggleSidebar()" title="Collapse Sidebar">
+                <button class="sidebar-brand-toggle" onclick="toggleSidebar()" title="Collapse Sidebar">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                         <line x1="3" y1="6" x2="21" y2="6"></line>
                         <line x1="3" y1="12" x2="21" y2="12"></line>
@@ -3027,7 +3666,16 @@ HTML_PAGE = """<!DOCTYPE html>
                     </div>
                 </div>
 
-                <div class="header-actions">
+                <div class="header-actions" style="display: flex; align-items: center; gap: 14px;">
+                    <!-- Top-Right Brand Badge & Logo (Visible for Dealer and Manufacturer) -->
+                    <div id="header-brand-container" style="display: none; align-items: center; gap: 10px; padding: 5px 12px 5px 8px; background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 10px; backdrop-filter: blur(8px); box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
+                        <div id="header-brand-logo-wrap" style="height: 30px; max-width: 130px; display: flex; align-items: center; justify-content: center; overflow: hidden;"></div>
+                        <div style="display: flex; flex-direction: column; justify-content: center;">
+                            <div id="header-brand-name" style="font-size: 13px; font-weight: 700; color: #f8fafc; letter-spacing: 0.3px; white-space: nowrap; max-width: 180px; overflow: hidden; text-overflow: ellipsis; line-height: 1.2;"></div>
+                            <div id="header-brand-tag" style="font-size: 9px; font-weight: 700; color: var(--accent); letter-spacing: 0.5px; text-transform: uppercase; line-height: 1.2;"></div>
+                        </div>
+                    </div>
+
                     <!-- Quick buttons visible for Integrator users -->
                     <div id="integrator-header-actions" style="display: none; align-items: center; gap: 10px;">
                         <button class="btn-sm" onclick="openIntegratorPasswordModal()">🔑 Change Password</button>
@@ -3298,6 +3946,208 @@ HTML_PAGE = """<!DOCTYPE html>
                     </div>
                 </div>
 
+                <!-- ==============================================================
+                     TAB 5: BRANDING & WHITE-LABEL STUDIO (DEALER & MANUFACTURER)
+                     ============================================================== -->
+                <div class="tab-pane" id="tab-branding">
+                    <div class="section-header" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px;">
+                        <div>
+                            <div class="section-title" id="branding-pane-title">🎨 Brand Identity & White-Label Studio</div>
+                            <div style="font-size: 13px; color: #94a3b8; margin-top: 4px;" id="branding-pane-subtitle">
+                                Customize your portal identity, custom logo, theme accent colors, and contact info.
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn-sm" type="button" onclick="resetToDefaultBranding()" title="Reset to ecosystem default">↺ Reset Default</button>
+                            <button class="btn-action" type="button" onclick="saveDealerBranding()">💾 Save Brand Settings</button>
+                        </div>
+                    </div>
+
+                    <!-- 2-Column Studio Grid: Left Controls, Right Real-Time Preview Studio -->
+                    <div class="branding-studio-grid">
+                        <!-- LEFT COLUMN: Brand Identity & Asset Controls -->
+                        <div class="branding-controls-col">
+                            <form id="branding-form" onsubmit="handleBrandingFormSubmit(event)">
+                                <!-- Card 1: Brand Identity -->
+                                <div class="settings-card" style="margin-bottom: 20px;">
+                                    <div class="settings-card-header">
+                                        <div class="settings-card-title">🏢 Brand Identity</div>
+                                        <div class="settings-card-sub">Company name and marketing tagline displayed across portals.</div>
+                                    </div>
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                                        <div class="form-group">
+                                            <label class="form-label">BUSINESS / BRAND NAME</label>
+                                            <input type="text" id="brand-company-name" class="form-input" placeholder="e.g. Apex Smart Automation" oninput="updateLiveBrandingPreview()">
+                                        </div>
+                                        <div class="form-group">
+                                            <label class="form-label">TAGLINE / SUB-HEADER</label>
+                                            <input type="text" id="brand-tagline" class="form-input" placeholder="e.g. Luxury Automation Systems" oninput="updateLiveBrandingPreview()">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Card 2: Custom Logo Upload & Management -->
+                                <div class="settings-card" style="margin-bottom: 20px;">
+                                    <div class="settings-card-header">
+                                        <div class="settings-card-title">🖼️ Portal & Header Logo</div>
+                                        <div class="settings-card-sub">Upload an image file directly from your computer. Appears on the top-right header and sidebar.</div>
+                                    </div>
+
+                                    <!-- Hidden File Input -->
+                                    <input type="file" id="brand-logo-file-input" accept="image/png,image/jpeg,image/svg+xml,image/webp" style="display: none;" onchange="handleLogoFileSelect(event)">
+
+                                    <!-- Dropzone when no logo is uploaded -->
+                                    <div id="brand-logo-dropzone" class="logo-dropzone" onclick="document.getElementById('brand-logo-file-input').click()" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleFileDrop(event)">
+                                        <div class="dropzone-icon">☁️</div>
+                                        <div style="font-weight: 700; color: #f8fafc; font-size: 14px; margin-bottom: 4px;">Click to upload or drag & drop image</div>
+                                        <div style="font-size: 11px; color: #94a3b8;">PNG, SVG, WEBP, or JPG • Direct image upload • Transparent background recommended</div>
+                                    </div>
+
+                                    <!-- Active Logo Card (Visible when logo exists) -->
+                                    <div id="brand-active-logo-container" class="active-logo-box" style="display: none;">
+                                        <div style="display: flex; align-items: center; gap: 16px;">
+                                            <div class="logo-thumbnail-preview" id="brand-logo-thumb-wrap">
+                                                <img id="brand-logo-thumbnail" src="" alt="Brand Logo Preview">
+                                            </div>
+                                            <div>
+                                                <div style="font-size: 13px; font-weight: 700; color: #fff;" id="brand-logo-status-text">Custom Logo Active</div>
+                                                <div style="font-size: 11px; color: #38bdf8; margin-top: 2px;">Rendered on top-right header and sidebar</div>
+                                            </div>
+                                        </div>
+                                        <div style="display: flex; gap: 8px;">
+                                            <button type="button" class="btn-sm" onclick="document.getElementById('brand-logo-file-input').click()" title="Upload a different image file">🔄 Replace</button>
+                                            <button type="button" class="btn-danger-sm" onclick="deleteBrandLogo()" title="Delete this logo and revert to company badge">🗑️ Delete Logo</button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Card 3: Color Palette & Dynamic Accent Theming -->
+                                <div class="settings-card" style="margin-bottom: 20px;">
+                                    <div class="settings-card-header">
+                                        <div class="settings-card-title">🎨 Theme Palettes & Accent Colors</div>
+                                        <div class="settings-card-sub">Select curated brand presets or define custom hex accent colors.</div>
+                                    </div>
+
+                                    <!-- Theme Presets Swatches -->
+                                    <div style="margin-bottom: 14px;">
+                                        <label class="form-label">PRESET COLOR PALETTES</label>
+                                        <div class="theme-presets-grid">
+                                            <button type="button" class="preset-pill" onclick="setThemeSwatch('#00f0ff', '#38bdf8')"><span class="swatch-dot" style="background: #00f0ff;"></span> Cyber Cyan</button>
+                                            <button type="button" class="preset-pill" onclick="setThemeSwatch('#10b981', '#34d399')"><span class="swatch-dot" style="background: #10b981;"></span> Emerald Pro</button>
+                                            <button type="button" class="preset-pill" onclick="setThemeSwatch('#a855f7', '#c084fc')"><span class="swatch-dot" style="background: #a855f7;"></span> Neon Purple</button>
+                                            <button type="button" class="preset-pill" onclick="setThemeSwatch('#f59e0b', '#fbbf24')"><span class="swatch-dot" style="background: #f59e0b;"></span> Amber Gold</button>
+                                            <button type="button" class="preset-pill" onclick="setThemeSwatch('#3b82f6', '#60a5fa')"><span class="swatch-dot" style="background: #3b82f6;"></span> Cobalt Blue</button>
+                                            <button type="button" class="preset-pill" onclick="setThemeSwatch('#ec4899', '#f472b6')"><span class="swatch-dot" style="background: #ec4899;"></span> Rose Quartz</button>
+                                            <button type="button" class="preset-pill" onclick="setThemeSwatch('#06b6d4', '#22d3ee')"><span class="swatch-dot" style="background: #06b6d4;"></span> Electric Teal</button>
+                                            <button type="button" class="preset-pill" onclick="setThemeSwatch('#64748b', '#94a3b8')"><span class="swatch-dot" style="background: #64748b;"></span> Stealth Slate</button>
+                                        </div>
+                                    </div>
+
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                                        <div class="form-group">
+                                            <label class="form-label">PRIMARY ACCENT COLOR</label>
+                                            <div style="display: flex; align-items: center; gap: 10px;">
+                                                <input type="color" id="brand-primary-color" value="#00f0ff" class="color-picker-input" oninput="updateLiveBrandingPreview()">
+                                                <input type="text" id="brand-primary-color-text" class="form-input" value="#00f0ff" style="font-family: monospace;" oninput="syncColorInput(this.value, 'brand-primary-color')">
+                                            </div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label class="form-label">GLOW & SECONDARY ACCENT</label>
+                                            <div style="display: flex; align-items: center; gap: 10px;">
+                                                <input type="color" id="brand-accent-color" value="#38bdf8" class="color-picker-input" oninput="updateLiveBrandingPreview()">
+                                                <input type="text" id="brand-accent-color-text" class="form-input" value="#38bdf8" style="font-family: monospace;" oninput="syncColorInput(this.value, 'brand-accent-color')">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Card 4: Support Contact Info -->
+                                <div class="settings-card" style="margin-bottom: 20px;">
+                                    <div class="settings-card-header">
+                                        <div class="settings-card-title">📞 Support & Client Contacts</div>
+                                        <div class="settings-card-sub">Contact information shown to clients on alerts and help pages.</div>
+                                    </div>
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                                        <div class="form-group">
+                                            <label class="form-label">SUPPORT EMAIL</label>
+                                            <input type="email" id="brand-email" class="form-input" placeholder="support@yourcompany.com" oninput="updateLiveBrandingPreview()">
+                                        </div>
+                                        <div class="form-group">
+                                            <label class="form-label">HOTLINE / WHATSAPP</label>
+                                            <input type="text" id="brand-phone" class="form-input" placeholder="+91 98490 12345" oninput="updateLiveBrandingPreview()">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Action Buttons -->
+                                <div style="display: flex; gap: 12px; align-items: center; margin-top: 10px;">
+                                    <button type="submit" class="btn-action" style="padding: 10px 24px; font-size: 13px;">💾 Save Brand Settings</button>
+                                    <button type="button" class="btn-sm" onclick="resetToDefaultBranding()" style="padding: 10px 18px;">↺ Reset to Ecosystem Default</button>
+                                </div>
+                            </form>
+                        </div>
+
+                        <!-- RIGHT COLUMN: Live Multi-Surface Preview Studio -->
+                        <div class="branding-preview-col">
+                            <div class="preview-sticky-wrap">
+                                <div style="font-size: 13px; font-weight: 800; color: #f8fafc; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between;">
+                                    <span>👁️ Live Preview Studio</span>
+                                    <span style="font-size: 10px; color: var(--accent); font-weight: 700; background: rgba(0, 240, 255, 0.1); padding: 2px 8px; border-radius: 6px; border: 1px solid rgba(0, 240, 255, 0.2);">REAL-TIME</span>
+                                </div>
+
+                                <!-- Mockup 1: Top-Right Header Bar -->
+                                <div class="mockup-frame">
+                                    <div class="mockup-header-title">TOP-RIGHT PORTAL HEADER PREVIEW</div>
+                                    <div class="mockup-topbar-sample">
+                                        <div style="font-size: 11px; color: #64748b; font-weight: 600;">HEADER ACTION BAR &rarr;</div>
+                                        <!-- The Top Right Badge Mockup -->
+                                        <div class="preview-header-badge" id="mock-header-container">
+                                            <div id="mock-header-logo-wrap" class="mock-header-logo-wrap"></div>
+                                            <div>
+                                                <div id="mock-header-name" class="mock-header-name">GAVASAH HQ</div>
+                                                <div id="mock-header-tag" class="mock-header-tag">MASTER PLATFORM</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Mockup 2: Left Sidebar Brand Header -->
+                                <div class="mockup-frame" style="margin-top: 16px;">
+                                    <div class="mockup-header-title">PORTAL NAVIGATION SIDEBAR BRAND PREVIEW</div>
+                                    <div class="mockup-sidebar-sample">
+                                        <div class="mock-sidebar-brand-box">
+                                            <div id="mock-sidebar-logo" class="mock-sidebar-logo">G</div>
+                                            <div>
+                                                <div id="mock-sidebar-title" class="mock-sidebar-title">GAVASAH</div>
+                                                <div id="mock-sidebar-sub" class="mock-sidebar-sub">CLOUD COMMAND</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Card 3: Live Fleet Metrics & Themed Card -->
+                                <div class="mockup-frame" style="margin-top: 16px;">
+                                    <div class="mockup-header-title" style="display: flex; justify-content: space-between; align-items: center;">
+                                        <span>LIVE FLEET STATUS & SYSTEM HEALTH</span>
+                                        <span style="font-size: 9px; color: var(--accent); font-weight: 700; letter-spacing: 0.5px;">REAL-TIME TELEMETRY</span>
+                                    </div>
+                                    <div class="mock-ui-card" id="mock-ui-card">
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                            <span style="font-size: 11px; font-weight: 700; color: #94a3b8; text-transform: uppercase;">Supervised Fleet Health</span>
+                                            <span class="mock-status-pill" id="mock-status-pill">CHECKING...</span>
+                                        </div>
+                                        <div style="font-size: 22px; font-weight: 800; color: #fff; margin-bottom: 4px;" id="mock-card-val">Loading...</div>
+                                        <div style="font-size: 11px; color: #94a3b8; margin-bottom: 10px;" id="mock-card-sub">Fetching live gateway heartbeats...</div>
+                                        <div style="font-size: 11px; color: #94a3b8; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px;" id="mock-card-footer">
+                                            Support Desk: <span id="mock-card-email" style="color: var(--accent); font-weight: 600;">support@gavasah.com</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
             </div>
         </div>
     </div>
@@ -3305,96 +4155,6 @@ HTML_PAGE = """<!DOCTYPE html>
     <!-- ======================================================================
          MODALS
          ====================================================================== -->
-
-
-                <!-- ==============================================================
-                     TAB 5: DEALER WHITE-LABEL & BRANDING (DEALER LOGIN)
-                     ============================================================== -->
-                <div class="tab-pane" id="tab-branding">
-                    <div class="section-header">
-                        <div class="section-title">🎨 Custom Branding & White-Label Configuration</div>
-                        <button class="btn-action" onclick="saveDealerBranding()">💾 Save Brand Settings</button>
-                    </div>
-
-                    <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 24px; max-width: 820px;">
-                        <div style="font-size: 13px; color: #94a3b8; margin-bottom: 20px;">
-                            Customize your dealer portal appearance. If fields are left blank, your portal will automatically use the default <strong>GAVASAH</strong> ecosystem theme.
-                        </div>
-
-                        <form id="branding-form" onsubmit="handleBrandingFormSubmit(event)">
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-                                <div class="form-group">
-                                    <label class="form-label">DEALER BUSINESS / BRAND NAME</label>
-                                    <input type="text" id="brand-company-name" class="form-input" placeholder="e.g. Apex Smart Automation" oninput="updateLiveBrandingPreview()">
-                                </div>
-                                <div class="form-group">
-                                    <label class="form-label">PORTAL TAGLINE / SUB-HEADER</label>
-                                    <input type="text" id="brand-tagline" class="form-input" placeholder="e.g. Luxury Automation Systems" oninput="updateLiveBrandingPreview()">
-                                </div>
-                            </div>
-
-                            <div class="form-group">
-                                <label class="form-label">CUSTOM LOGO IMAGE URL (PNG / SVG / WEBP)</label>
-                                <input type="url" id="brand-logo-url" class="form-input" placeholder="https://yourdomain.com/logo.png" oninput="updateLiveBrandingPreview()">
-                                <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Recommended: Transparent background PNG/SVG (Height: 32px to 48px).</div>
-                            </div>
-
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-                                <div class="form-group">
-                                    <label class="form-label">PRIMARY ACCENT THEME COLOR</label>
-                                    <div style="display: flex; align-items: center; gap: 10px;">
-                                        <input type="color" id="brand-primary-color" value="#00f0ff" style="width: 44px; height: 38px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: transparent; cursor: pointer;" oninput="updateLiveBrandingPreview()">
-                                        <input type="text" id="brand-primary-color-text" class="form-input" value="#00f0ff" style="font-family: monospace;" oninput="syncColorInput(this.value, 'brand-primary-color')">
-                                    </div>
-                                    <div class="color-swatch-picker">
-                                        <div class="color-swatch-btn" style="background: #00f0ff;" onclick="setThemeSwatch('#00f0ff', '#38bdf8')"></div>
-                                        <div class="color-swatch-btn" style="background: #10b981;" onclick="setThemeSwatch('#10b981', '#34d399')"></div>
-                                        <div class="color-swatch-btn" style="background: #a855f7;" onclick="setThemeSwatch('#a855f7', '#c084fc')"></div>
-                                        <div class="color-swatch-btn" style="background: #f59e0b;" onclick="setThemeSwatch('#f59e0b', '#fbbf24')"></div>
-                                        <div class="color-swatch-btn" style="background: #3b82f6;" onclick="setThemeSwatch('#3b82f6', '#60a5fa')"></div>
-                                    </div>
-                                </div>
-                                <div class="form-group">
-                                    <label class="form-label">SECONDARY ACCENT GLOW</label>
-                                    <div style="display: flex; align-items: center; gap: 10px;">
-                                        <input type="color" id="brand-accent-color" value="#38bdf8" style="width: 44px; height: 38px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); background: transparent; cursor: pointer;" oninput="updateLiveBrandingPreview()">
-                                        <input type="text" id="brand-accent-color-text" class="form-input" value="#38bdf8" style="font-family: monospace;" oninput="syncColorInput(this.value, 'brand-accent-color')">
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-                                <div class="form-group">
-                                    <label class="form-label">SUPPORT EMAIL</label>
-                                    <input type="email" id="brand-email" class="form-input" placeholder="support@yourcompany.com">
-                                </div>
-                                <div class="form-group">
-                                    <label class="form-label">SUPPORT HOTLINE / WHATSAPP</label>
-                                    <input type="text" id="brand-phone" class="form-input" placeholder="+91 98490 12345">
-                                </div>
-                            </div>
-
-                            <!-- Live Branding Preview Box -->
-                            <div style="margin-top: 16px;">
-                                <label class="form-label">LIVE HEADER PREVIEW</label>
-                                <div class="branding-preview-card" id="brand-preview-box">
-                                    <div id="brand-preview-logo-wrap">
-                                        <div class="brand-logo" style="width: 38px; height: 38px; font-size: 18px;" id="brand-preview-fallback-logo">G</div>
-                                    </div>
-                                    <div>
-                                        <div style="font-size: 16px; font-weight: 800; color: #fff; letter-spacing: 0.5px;" id="brand-preview-title">GAVASAH</div>
-                                        <div style="font-size: 11px; color: var(--accent); letter-spacing: 0.5px;" id="brand-preview-sub">CLOUD COMMAND & FLEET</div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div style="display: flex; gap: 12px; margin-top: 24px;">
-                                <button type="submit" class="btn-action">💾 Save Custom Branding</button>
-                                <button type="button" class="btn-sm" onclick="resetToDefaultBranding()">↺ Reset to GAVASAH Default</button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
 
                 <!-- Snapshot Manager Modal -->
                 <div class="modal" id="snapshot-modal">
@@ -3886,9 +4646,39 @@ HTML_PAGE = """<!DOCTYPE html>
         // ======================================================================
         // AUTHENTICATION & SESSION LIFECYCLE
         // ======================================================================
+        function getAuthToken() {
+            try {
+                return localStorage.getItem('gavasah_session') || '';
+            } catch (e) {
+                return '';
+            }
+        }
+
+        function setAuthToken(token) {
+            try {
+                if (token) {
+                    localStorage.setItem('gavasah_session', token);
+                } else {
+                    localStorage.removeItem('gavasah_session');
+                }
+            } catch (e) {}
+        }
+
+        async function apiFetch(url, options = {}) {
+            options = options || {};
+            const headers = options.headers || {};
+            const token = getAuthToken();
+            if (token && !headers['Authorization']) {
+                headers['Authorization'] = 'Bearer ' + token;
+            }
+            options.headers = headers;
+            options.credentials = 'same-origin';
+            return fetch(url, options);
+        }
+
         async function checkAuth() {
             try {
-                const res = await fetch('/api/me?t=' + Date.now());
+                const res = await apiFetch('/api/me?t=' + Date.now());
                 const data = await res.json();
                 if (data.authenticated && data.user) {
                     currentUser = data.user;
@@ -3906,6 +4696,8 @@ HTML_PAGE = """<!DOCTYPE html>
         function showLoginScreen() {
             document.getElementById('login-view').style.display = 'flex';
             document.getElementById('app-view').style.display = 'none';
+            const hdrBrand = document.getElementById('header-brand-container');
+            if (hdrBrand) hdrBrand.style.display = 'none';
         }
 
         function initAuthenticatedUI() {
@@ -3946,8 +4738,9 @@ HTML_PAGE = """<!DOCTYPE html>
                 const ovCardDealers = document.getElementById('ov-card-dealers');
                 if (ovCardDealers) ovCardDealers.style.display = '';
 
-                const navBrandMfg = document.getElementById('nav-branding'); if (navBrandMfg) navBrandMfg.style.display = 'none';
-                applyDealerBranding({});
+                const navBrandMfg = document.getElementById('nav-branding');
+                if (navBrandMfg) navBrandMfg.style.display = 'flex';
+                applyDealerBranding(currentUser.branding);
                 switchTab('overview');
                 fetchDealers();
                 fetchIntegrators();
@@ -4011,6 +4804,8 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('nav-integrators').style.display = 'none';
                 document.getElementById('nav-fleet').style.display = 'flex';
                 document.getElementById('nav-account').style.display = 'none';
+                const navBrandInt = document.getElementById('nav-branding');
+                if (navBrandInt) navBrandInt.style.display = 'none';
                 document.getElementById('th-dealer-col').style.display = 'none';
                 document.getElementById('th-integrator-col').style.display = 'none';
 
@@ -4034,10 +4829,14 @@ HTML_PAGE = """<!DOCTYPE html>
                 const res = await fetch('/api/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username: u, password: p })
+                    body: JSON.stringify({ username: u, password: p }),
+                    credentials: 'same-origin'
                 });
                 const data = await res.json();
                 if (res.ok && data.ok) {
+                    if (data.token) {
+                        setAuthToken(data.token);
+                    }
                     currentUser = data.user;
                     initAuthenticatedUI();
                     showToast(`Welcome back, ${currentUser.name}!`, 'success');
@@ -4056,8 +4855,9 @@ HTML_PAGE = """<!DOCTYPE html>
 
         async function handleLogout() {
             try {
-                await fetch('/api/logout', { method: 'POST' });
+                await apiFetch('/api/logout', { method: 'POST' });
             } catch (e) {}
+            setAuthToken(null);
             currentUser = null;
             showLoginScreen();
             showToast("Signed out successfully.");
@@ -4140,6 +4940,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 fetchIntegrators();
             } else if (tabId === 'branding') {
                 populateBrandingForm();
+                fetchFleet();
             } else if (tabId === 'fleet') {
                 fetchFleet();
             }
@@ -4151,7 +4952,7 @@ HTML_PAGE = """<!DOCTYPE html>
         async function fetchDealers() {
             if (!currentUser || currentUser.role !== 'manufacturer') return;
             try {
-                const res = await fetch('/api/dealers?t=' + Date.now());
+                const res = await apiFetch('/api/dealers?t=' + Date.now());
                 if (res.ok) {
                     dealersList = await res.json();
                     renderDealersUI();
@@ -4405,7 +5206,7 @@ HTML_PAGE = """<!DOCTYPE html>
             }
 
             try {
-                const res = await fetch(endpoint, {
+                const res = await apiFetch(endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
@@ -4440,7 +5241,7 @@ HTML_PAGE = """<!DOCTYPE html>
         async function fetchIntegrators() {
             if (!currentUser || currentUser.role === 'integrator') return;
             try {
-                const res = await fetch('/api/integrators?t=' + Date.now());
+                const res = await apiFetch('/api/integrators?t=' + Date.now());
                 if (res.ok) {
                     integratorsList = await res.json();
                     renderIntegratorsUI();
@@ -4737,7 +5538,7 @@ HTML_PAGE = """<!DOCTYPE html>
             }
 
             try {
-                const res = await fetch(endpoint, {
+                const res = await apiFetch(endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
@@ -4829,7 +5630,7 @@ HTML_PAGE = """<!DOCTYPE html>
             payload.integrator_id = (intVal === 'none' || !intVal) ? null : intVal;
 
             try {
-                const res = await fetch('/api/reassign_client', {
+                const res = await apiFetch('/api/reassign_client', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
@@ -4853,7 +5654,7 @@ HTML_PAGE = """<!DOCTYPE html>
         // ======================================================================
         async function fetchFleet() {
             try {
-                const res = await fetch('/api/fleet?t=' + Date.now());
+                const res = await apiFetch('/api/fleet?t=' + Date.now());
                 if (!res.ok) {
                     if (res.status === 401) checkAuth();
                     return;
@@ -4863,6 +5664,9 @@ HTML_PAGE = """<!DOCTYPE html>
                 const badgeFleet = document.getElementById('badge-fleet-count');
                 if (badgeFleet) badgeFleet.innerText = data.length;
                 renderTable(data);
+                if (activeTab === 'branding') {
+                    updateLiveBrandingPreview();
+                }
             } catch (err) {
                 console.error("Error fetching fleet:", err);
             }
@@ -4944,25 +5748,40 @@ HTML_PAGE = """<!DOCTYPE html>
             renderTable(currentFleetData);
         }
 
+        let activeActionMenuClientId = null;
+
         function toggleRowActionMenu(clientId, event) {
-            if (event) event.stopPropagation();
+            if (event) {
+                event.stopPropagation();
+                event.preventDefault();
+            }
             const menu = document.getElementById(`action-menu-${clientId}`);
             const btn = document.getElementById(`btn-action-toggle-${clientId}`);
             const td = btn ? btn.closest('td') : null;
             if (!menu) return;
             const isOpen = menu.style.display === 'flex';
-            closeAllActionMenus();
+            closeAllActionMenus(true); // close any other menu without triggering re-render
             if (!isOpen) {
                 menu.style.display = 'flex';
+                activeActionMenuClientId = clientId;
                 if (btn) btn.classList.add('active');
                 if (td) td.classList.add('is-open');
+            } else {
+                activeActionMenuClientId = null;
             }
         }
 
-        function closeAllActionMenus() {
+        function closeAllActionMenus(preventReRender = false) {
+            const hadOpenMenu = activeActionMenuClientId !== null;
+            activeActionMenuClientId = null;
             document.querySelectorAll('.action-menu-popover').forEach(el => el.style.display = 'none');
             document.querySelectorAll('.btn-actions-toggle').forEach(el => el.classList.remove('active'));
             document.querySelectorAll('.col-actions-menu').forEach(el => el.classList.remove('is-open'));
+
+            if (!preventReRender && hadOpenMenu && Array.isArray(currentFleetData)) {
+                // If a background update was deferred while the menu was open, update table now
+                renderTable(currentFleetData);
+            }
         }
 
         document.addEventListener('click', (e) => {
@@ -5066,6 +5885,12 @@ HTML_PAGE = """<!DOCTYPE html>
             const tbody = document.getElementById('fleet-table-body');
             if (!tbody) return;
 
+            // If an action dropdown menu is currently open, DO NOT recreate the table DOM rows under the user's cursor!
+            // This prevents the action menu from disappearing after a few seconds during background polling!
+            if (activeActionMenuClientId && document.getElementById(`action-menu-${activeActionMenuClientId}`)) {
+                return;
+            }
+
             tbody.innerHTML = pageData.map(c => {
                 const isPending = !c.last_heartbeat || c.last_heartbeat === 0 || c.status === 'pending';
                 const diff = isPending ? -1 : now - (c.last_heartbeat || 0);
@@ -5155,7 +5980,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                     `;
                                 } else {
                                     return `
-                                        <div class="heartbeat-status-wrap" title="Gateway connected and streaming telemetry (Last pulse ${humanDiff})">
+                                        <div class="heartbeat-status-wrap" title="Gavasah Server/Hub connected and streaming telemetry (Last pulse ${humanDiff})">
                                             <span class="heartbeat-pill-badge hb-pill-online">
                                                 <span class="hb-ball hb-ball-online"></span>
                                                 <span>ONLINE</span>
@@ -5178,8 +6003,12 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </td>
                         <td>
-                            <span class="badge-slot slot-${slot.toLowerCase()}">SLOT ${slot}</span>
-                            ${isRecovery ? '<span class="badge-slot" style="background: rgba(239, 68, 68, 0.2); color: #ef4444; margin-left: 4px;">RECOVERY</span>' : ''}
+                            ${isPending || !sys.boot_slot ? `
+                                <span class="badge-slot" style="background: rgba(148, 163, 184, 0.12); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.2);">SLOT —</span>
+                            ` : `
+                                <span class="badge-slot slot-${slot.toLowerCase()}">SLOT ${slot}</span>
+                                ${isRecovery ? '<span class="badge-slot" style="background: rgba(239, 68, 68, 0.2); color: #ef4444; margin-left: 4px;">RECOVERY</span>' : ''}
+                            `}
                         </td>
                         <td style="font-size: 12px;">
                             <div style="color: #94a3b8; font-family: monospace; font-size: 11px; margin-bottom: 4px;">IP: ${escapeHtml(net.local_ipv4 || '—')}</div>
@@ -5192,42 +6021,94 @@ HTML_PAGE = """<!DOCTYPE html>
                                     const matter = tech.matter || {};
                                     const badges = [];
 
-                                    // KNX
-                                    if (knx.configured || knx.reachable || (c.knx_ip && c.knx_ip !== '—' && c.knx_ip !== 'none' && c.knx_ip !== '')) {
+                                    // 1. KNX (Strict reality check: only show if genuinely configured on the client gateway)
+                                    const hasKnx = Boolean(knx.configured && knx.reason !== 'no_knx_integration' && ((knx.gateway_ip && knx.gateway_ip !== '192.168.1.100' && knx.gateway_ip !== '192.168.1.111' && knx.gateway_ip !== '—' && knx.gateway_ip !== 'none' && (knx.connection_type !== 'addon_options' || knx.reachable)) || (c.knx_ip && c.knx_ip !== '192.168.1.100' && c.knx_ip !== '192.168.1.111' && c.knx_ip !== '—' && c.knx_ip !== 'none' && c.knx_ip !== '')));
+                                    if (hasKnx) {
                                         const ep = knx.gateway_ip ? `${knx.gateway_ip}:${knx.gateway_port || 3671}` : (c.knx_ip ? `${c.knx_ip}:${c.knx_port || 3671}` : 'Bus');
-                                        badges.push(`<span class="tech-badge tech-knx" title="KNXnet/IP Gateway: ${escapeHtml(ep)}"><span class="tech-dot" style="background:#38bdf8;"></span>KNX ${escapeHtml(ep)}</span>`);
+                                        const isKnxOnline = Boolean(knx.reachable || knx.state === 'connected' || knx.status === 'online');
+                                        if (isKnxOnline) {
+                                            const latStr = knx.latency_ms ? ` (${knx.latency_ms}ms)` : '';
+                                            badges.push(`<span class="tech-badge tech-knx tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'knx', event)" style="cursor: pointer;" title="KNXnet/IP Online • Endpoint: ${escapeHtml(ep)}${latStr} • Click for full diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>KNX ${escapeHtml(ep)}${escapeHtml(latStr)}</span>`);
+                                        } else {
+                                            const errReason = knx.error ? (knx.error === 'timeout' ? 'Gateway Unreachable (Timeout)' : knx.error) : (knx.offline_reason || 'Gateway Unreachable');
+                                            badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'knx', event)" style="cursor: pointer;" title="KNXnet/IP Offline • Reason: ${escapeHtml(errReason)} • Click for full diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>KNX Offline (${escapeHtml(errReason)})</span>`);
+                                        }
                                     }
 
-                                    // Zigbee (Multiple Zigbee2MQTT Add-ons supported)
-                                    if (zigbee.detected) {
-                                        const zc = zigbee.count || (zigbee.instances ? zigbee.instances.length : 1);
-                                        const zTitle = zigbee.instances && zigbee.instances.length > 0 ? zigbee.instances.map(i => `${i.name} (${i.state})`).join(', ') : 'Zigbee Mesh';
-                                        const zLbl = zc > 1 ? `Zigbee (${zc}x Z2M)` : 'Zigbee (Z2M)';
-                                        badges.push(`<span class="tech-badge tech-zigbee" title="${escapeHtml(zTitle)}"><span class="tech-dot" style="background:#fbbf24;"></span>${escapeHtml(zLbl)}</span>`);
+                                    // 2. Remote ETS Interface Badge (Only show if client actually has genuine KNX and an allocated port)
+                                    if (c.ets_port && hasKnx) {
+                                        const etsTargetDesc = c.ets_target_type === 'onboard' ? 'Onboard NCN5120' : (c.ets_target_ip ? `LAN: ${c.ets_target_ip}` : 'Remote KNX');
+                                        badges.push(`<span class="tech-badge tech-ets" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.35); cursor: pointer;" onclick="copyEtsRemoteUrl('${c.domain}', ${c.ets_port}, event)" title="Remote ETS Interface (${escapeHtml(etsTargetDesc)}) - Click to copy URL & Port"><span class="tech-dot" style="background:#c084fc;"></span>🔌 ETS :${c.ets_port}</span>`);
                                     }
 
-                                    // Lutron
-                                    if (lutron.detected) {
+                                    // 3. Zigbee (Detects Zigbee2MQTT instances and ZHA with online/offline state)
+                                    if (zigbee.detected || (zigbee.instances && zigbee.instances.length > 0) || zigbee.zha_detected) {
+                                        const insts = zigbee.instances || [];
+                                        const runningInsts = insts.filter(i => i.running || i.state === 'started');
+                                        const failedInsts = insts.filter(i => !i.running && i.state !== 'started');
+                                        const isZha = Boolean(zigbee.zha_detected);
+
+                                        if (insts.length > 0) {
+                                            if (failedInsts.length === 0) {
+                                                const zLbl = insts.length > 1 ? `Zigbee (${insts.length}x Z2M Online)` : 'Zigbee (Z2M Online)';
+                                                badges.push(`<span class="tech-badge tech-zigbee tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'zigbee', event)" style="cursor: pointer;" title="Zigbee2MQTT Online (${insts.map(i => i.name).join(', ')}) • Click for diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>${escapeHtml(zLbl)}</span>`);
+                                            } else if (runningInsts.length > 0) {
+                                                const errSummary = failedInsts.map(i => `${i.name}: ${i.state}`).join(', ');
+                                                badges.push(`<span class="tech-badge tech-status-degraded" onclick="openIntegrationDiagnostics('${c.client_id}', 'zigbee', event)" style="cursor: pointer;" title="Zigbee Degraded • ${escapeHtml(errSummary)} • Click for diagnostics"><span class="tech-dot" style="background:#f59e0b; box-shadow: 0 0 6px #f59e0b;"></span>Zigbee (${runningInsts.length}/${insts.length} Online)</span>`);
+                                            } else {
+                                                const errSummary = failedInsts.map(i => `${i.name} (${i.state})`).join(', ');
+                                                badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'zigbee', event)" style="cursor: pointer;" title="Zigbee2MQTT Offline • Reason: ${escapeHtml(errSummary)} • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>Zigbee Offline (${escapeHtml(failedInsts[0].state || 'stopped')})</span>`);
+                                            }
+                                        } else if (isZha) {
+                                            badges.push(`<span class="tech-badge tech-zigbee tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'zigbee', event)" style="cursor: pointer;" title="Zigbee Home Automation (ZHA) Online • Click for diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>Zigbee (ZHA Online)</span>`);
+                                        }
+                                    }
+
+                                    // 4. Lutron
+                                    if (lutron.detected || (lutron.entries && lutron.entries.length > 0)) {
+                                        const isLutronOffline = Boolean(lutron.status === 'offline' || lutron.offline_reason);
                                         const lTitle = lutron.entries && lutron.entries.length > 0 ? lutron.entries.map(e => e.title || e.domain).join(', ') : 'Lutron Repeater';
-                                        badges.push(`<span class="tech-badge tech-lutron" title="${escapeHtml(lTitle)}"><span class="tech-dot" style="background:#c084fc;"></span>Lutron (${escapeHtml(lutron.type || 'Caséta')})</span>`);
+                                        if (isLutronOffline) {
+                                            badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'lutron', event)" style="cursor: pointer;" title="Lutron Offline • Reason: ${escapeHtml(lutron.offline_reason || 'Repeater unreachable')} • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>Lutron Offline</span>`);
+                                        } else {
+                                            badges.push(`<span class="tech-badge tech-lutron tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'lutron', event)" style="cursor: pointer;" title="Lutron Online (${escapeHtml(lTitle)}) • Click for diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>Lutron (${escapeHtml(lutron.type || 'Caséta')})</span>`);
+                                        }
                                     }
 
-                                    // Matter
+                                    // 5. Matter
                                     if (matter.detected) {
-                                        badges.push(`<span class="tech-badge tech-matter" title="Matter Server: ${escapeHtml(matter.state || 'running')}"><span class="tech-dot" style="background:#34d399;"></span>Matter</span>`);
+                                        const isMatterOnline = Boolean(matter.state === 'started' || matter.state === 'running' || matter.status === 'online');
+                                        if (isMatterOnline) {
+                                            badges.push(`<span class="tech-badge tech-matter tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'matter', event)" style="cursor: pointer;" title="Matter Server Online • Click for diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>Matter Online</span>`);
+                                        } else {
+                                            badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'matter', event)" style="cursor: pointer;" title="Matter Server Offline • Reason: ${escapeHtml(matter.state || 'stopped')} • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>Matter Offline (${escapeHtml(matter.state || 'stopped')})</span>`);
+                                        }
+                                    }
+
+                                    // 6. Generic Failed Integrations
+                                    if (tech.failed_core_entries && tech.failed_core_entries.length > 0) {
+                                        for (const fentry of tech.failed_core_entries) {
+                                            badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'core_${fentry.domain}', event)" style="cursor: pointer;" title="${escapeHtml(fentry.title)}: ${escapeHtml(fentry.reason)}"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444;"></span>${escapeHtml(fentry.domain)} Failed</span>`);
+                                        }
                                     }
 
                                     if (badges.length === 0) {
-                                        badges.push(`<span class="tech-badge tech-default" title="Standard Core Gateway"><span class="tech-dot" style="background:#64748b;"></span>HA Core</span>`);
+                                        badges.push(`<span class="tech-badge tech-default" title="Standard Gavasah Home Assistant Hub"><span class="tech-dot" style="background:#64748b;"></span>HA Core</span>`);
                                     }
                                     return badges.join('');
                                 })()}
                             </div>
                         </td>
                         <td style="font-size: 12px;">
-                            <div style="color: #cbd5e1; font-weight: 500;">CPU: ${sys.cpu_percent !== undefined && sys.cpu_percent !== null ? sys.cpu_percent : 0}% &bull; RAM: ${sys.memory_percent !== undefined && sys.memory_percent !== null ? sys.memory_percent : 0}%</div>
-                            <div style="color: #94a3b8; font-size: 11px; margin-top: 2px;">💾 Storage: ${sys.disk_total_gb ? `${(sys.disk_total_gb - (sys.disk_free_gb || 0)).toFixed(1)} / ${Number(sys.disk_total_gb).toFixed(1)} GB (${Math.round(((sys.disk_total_gb - (sys.disk_free_gb || 0)) / sys.disk_total_gb) * 100)}%)` : (sys.disk_free_gb ? `${Number(sys.disk_free_gb).toFixed(1)} GB Free` : '—')}</div>
-                            <div style="color: #64748b; font-size: 10px; margin-top: 1px;">HAOS ${escapeHtml(sys.haos_version || '13.2')}${sys.core_version ? ` &bull; Core ${escapeHtml(sys.core_version)}` : ''}</div>
+                            ${isPending || sys.cpu_percent === undefined || sys.cpu_percent === null ? `
+                                <div style="color: #64748b; font-weight: 500;">CPU: — &bull; RAM: —</div>
+                                <div style="color: #475569; font-size: 11px; margin-top: 2px;">💾 Storage: —</div>
+                                <div style="color: #475569; font-size: 10px; margin-top: 1px;">${sys.haos_version ? `HAOS ${escapeHtml(sys.haos_version)}` : 'Awaiting pulse'}</div>
+                            ` : `
+                                <div style="color: #cbd5e1; font-weight: 500;">CPU: ${sys.cpu_percent}% &bull; RAM: ${sys.memory_percent}%</div>
+                                <div style="color: #94a3b8; font-size: 11px; margin-top: 2px;">💾 Storage: ${sys.disk_total_gb ? `${(sys.disk_total_gb - (sys.disk_free_gb || 0)).toFixed(1)} / ${Number(sys.disk_total_gb).toFixed(1)} GB (${Math.round(((sys.disk_total_gb - (sys.disk_free_gb || 0)) / sys.disk_total_gb) * 100)}%)` : (sys.disk_free_gb ? `${Number(sys.disk_free_gb).toFixed(1)} GB Free` : '—')}</div>
+                                <div style="color: #64748b; font-size: 10px; margin-top: 1px;">HAOS ${escapeHtml(sys.haos_version || '—')}${sys.core_version ? ` &bull; Core ${escapeHtml(sys.core_version)}` : ''}</div>
+                            `}
                         </td>
                         <td class="col-actions-menu">
                             <div class="action-dropdown-wrap" id="action-wrap-${c.client_id}">
@@ -5250,6 +6131,11 @@ HTML_PAGE = """<!DOCTYPE html>
                                             <span>🔒</span> Restricted Notice ↗
                                         </a>
                                     `}
+                                    ${c.ets_port ? `
+                                        <button type="button" class="action-menu-item" style="color: #c084fc;" onclick="copyEtsRemoteUrl('${c.domain}', ${c.ets_port}, event); closeAllActionMenus();">
+                                            <span>🔌</span> Copy Remote ETS (: ${c.ets_port})
+                                        </button>
+                                    ` : ''}
                                     <button type="button" class="action-menu-item" style="color: #38bdf8;" onclick="openSnapshotModal('${c.client_id}', '${escapeHtml(c.name)}'); closeAllActionMenus();">
                                         <span>📸</span> Snapshots & Backups
                                     </button>
@@ -5274,8 +6160,56 @@ HTML_PAGE = """<!DOCTYPE html>
                 `;
             }).join('') || `<tr><td colspan="${currentUser.role === 'manufacturer' ? 9 : (currentUser.role === 'dealer' ? 8 : 7)}" style="text-align: center; color: #64748b; padding: 32px;">No gateways match the selected filter.</td></tr>`;
 
+            // Restore open action menu if table was re-rendered
+            if (activeActionMenuClientId) {
+                const restoredMenu = document.getElementById(`action-menu-${activeActionMenuClientId}`);
+                const restoredBtn = document.getElementById(`btn-action-toggle-${activeActionMenuClientId}`);
+                const restoredTd = restoredBtn ? restoredBtn.closest('td') : null;
+                if (restoredMenu) restoredMenu.style.display = 'flex';
+                if (restoredBtn) restoredBtn.classList.add('active');
+                if (restoredTd) restoredTd.classList.add('is-open');
+            }
+
             // Initialize / sync top and bottom horizontal scrollbars
             setTimeout(initAllTableScrollbars, 40);
+        }
+
+        // ======================================================================
+        // REMOTE ETS CLIPBOARD & INTEGRATOR UTILITIES
+        // ======================================================================
+        function copyEtsRemoteUrl(domain, port, event) {
+            if (event) {
+                event.stopPropagation();
+                event.preventDefault();
+            }
+            const cleanDomain = domain || window.location.hostname;
+            const fullUrl = `${cleanDomain}:${port}`;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(fullUrl).then(() => {
+                    showToast(`Copied Remote ETS Interface: ${fullUrl} (UDP Port: ${port})`, "success");
+                }).catch(() => {
+                    fallbackCopyEts(fullUrl, port);
+                });
+            } else {
+                fallbackCopyEts(fullUrl, port);
+            }
+        }
+
+        function fallbackCopyEts(text, port) {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            try {
+                document.execCommand('copy');
+                showToast(`Copied Remote ETS Interface: ${text} (UDP Port: ${port})`, "success");
+            } catch (e) {
+                prompt("Copy Remote ETS Interface URL:", text);
+            }
+            document.body.removeChild(ta);
         }
 
         // ======================================================================
@@ -5285,81 +6219,372 @@ HTML_PAGE = """<!DOCTYPE html>
         // ======================================================================
         // DEALER BRANDING & WHITE-LABEL UTILITIES
         // ======================================================================
+        let currentUploadedLogoData = '';
+
         function applyDealerBranding(branding) {
             const b = branding || {};
-            const brandTitle = document.getElementById('side-brand-title') || document.querySelector('.brand-text .title');
-            const brandSub = document.getElementById('side-brand-sub') || document.querySelector('.brand-text .sub');
-            const brandLogo = document.getElementById('side-brand-logo') || document.querySelector('.brand-logo');
+            const role = currentUser ? currentUser.role : 'manufacturer';
+            const isMfg = role === 'manufacturer';
 
-            if (brandTitle) brandTitle.innerText = b.company_name || 'GAVASAH';
-            if (brandSub) brandSub.innerText = b.tagline || 'CLOUD FLEET';
+            // 1. Sidebar Brand Elements
+            const sideTitle = document.getElementById('side-brand-title') || document.querySelector('.brand-text .title');
+            const sideSub = document.getElementById('side-brand-sub') || document.querySelector('.brand-text .sub');
+            const sideLogo = document.getElementById('side-brand-logo') || document.querySelector('.brand-logo');
 
-            if (b.primary_color) {
-                document.documentElement.style.setProperty('--accent', b.primary_color);
-            } else {
-                document.documentElement.style.setProperty('--accent', '#00f0ff');
+            const defaultTitle = isMfg ? 'GAVASAH' : (currentUser ? (currentUser.name || currentUser.username) : 'GAVASAH');
+            const defaultSub = isMfg ? 'CLOUD COMMAND' : 'DEALER PORTAL';
+
+            if (sideTitle) sideTitle.innerText = b.company_name || defaultTitle;
+            if (sideSub) sideSub.innerText = b.tagline || defaultSub;
+
+            if (sideLogo) {
+                if (b.logo_url) {
+                    sideLogo.innerHTML = `<img src="${escapeHtml(b.logo_url)}" style="width: 100%; height: 100%; object-fit: contain; border-radius: 8px;">`;
+                } else {
+                    const initial = (b.company_name || defaultTitle || 'G').charAt(0).toUpperCase();
+                    sideLogo.innerHTML = escapeHtml(initial);
+                }
             }
-            if (b.accent_color) {
-                document.documentElement.style.setProperty('--accent-glow', b.accent_color);
-            } else {
-                document.documentElement.style.setProperty('--accent-glow', '#38bdf8');
+
+            // 2. Dynamic Accent Theme Tokens
+            const primaryColor = b.primary_color || '#00f0ff';
+            const accentColor = b.accent_color || '#38bdf8';
+            document.documentElement.style.setProperty('--accent', primaryColor);
+            document.documentElement.style.setProperty('--accent-glow', accentColor);
+
+            // 3. Top-Right Portal Header Brand Container
+            const headerContainer = document.getElementById('header-brand-container');
+            const headerLogoWrap = document.getElementById('header-brand-logo-wrap');
+            const headerName = document.getElementById('header-brand-name');
+            const headerTag = document.getElementById('header-brand-tag');
+
+            if (headerContainer) {
+                headerContainer.style.display = 'flex';
+                if (headerLogoWrap) {
+                    if (b.logo_url) {
+                        headerLogoWrap.innerHTML = `<img src="${escapeHtml(b.logo_url)}" style="max-height: 28px; max-width: 110px; object-fit: contain;">`;
+                    } else {
+                        const initial = (b.company_name || defaultTitle || 'G').charAt(0).toUpperCase();
+                        headerLogoWrap.innerHTML = `<div style="width: 26px; height: 26px; border-radius: 6px; background: ${escapeHtml(primaryColor)}; color: #000; font-weight: 800; font-size: 13px; display: flex; align-items: center; justify-content: center;">${escapeHtml(initial)}</div>`;
+                    }
+                }
+                if (headerName) headerName.innerText = b.company_name || defaultTitle;
+                if (headerTag) {
+                    headerTag.innerText = b.tagline || (isMfg ? 'MASTER PLATFORM' : 'AUTHORIZED DEALER');
+                    headerTag.style.color = primaryColor;
+                }
             }
 
-            if (b.logo_url && brandLogo) {
-                brandLogo.innerHTML = `<img src="${escapeHtml(b.logo_url)}" style="width: 100%; height: 100%; object-fit: contain; border-radius: 8px;">`;
-            } else if (brandLogo) {
-                brandLogo.innerHTML = 'G';
-            }
-
+            // 4. Browser Document Title
             if (b.company_name) {
                 document.title = `${b.company_name} | Operations Portal`;
             } else {
-                document.title = 'GAVASAH Cloud Ecosystem | Operations Hub';
+                document.title = isMfg ? 'GAVASAH Master Ecosystem | Cloud Hub' : 'GAVASAH Cloud Ecosystem | Operations Hub';
+            }
+        }
+
+        // --- Direct Logo Upload & Image Optimization Handlers ---
+        function handleLogoFileSelect(e) {
+            const file = e.target.files && e.target.files[0];
+            if (file) processLogoFile(file);
+        }
+
+        function handleDragOver(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const el = document.getElementById('brand-logo-dropzone');
+            if (el) el.classList.add('drag-active');
+        }
+
+        function handleDragLeave(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const el = document.getElementById('brand-logo-dropzone');
+            if (el) el.classList.remove('drag-active');
+        }
+
+        function handleFileDrop(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const el = document.getElementById('brand-logo-dropzone');
+            if (el) el.classList.remove('drag-active');
+            const file = e.dataTransfer.files && e.dataTransfer.files[0];
+            if (file) processLogoFile(file);
+        }
+
+        function processLogoFile(file) {
+            if (!file.type || !file.type.startsWith('image/')) {
+                showToast("Please select a valid image file (PNG, SVG, JPG, WEBP).", "error");
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(evt) {
+                const rawData = evt.target.result;
+                if (file.type === 'image/svg+xml') {
+                    currentUploadedLogoData = rawData;
+                    renderLogoUploadUI();
+                    updateLiveBrandingPreview();
+                    showToast("SVG Logo loaded successfully.", "info");
+                    return;
+                }
+
+                // Rescale & compress bitmap images using Canvas to optimize payload size
+                const img = new Image();
+                img.onload = function() {
+                    const maxWidth = 400;
+                    const maxHeight = 120;
+                    let width = img.width;
+                    let height = img.height;
+
+                    if (width > maxWidth || height > maxHeight) {
+                        const ratio = Math.min(maxWidth / width, maxHeight / height);
+                        width = Math.round(width * ratio);
+                        height = Math.round(height * ratio);
+                    }
+
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, width, height);
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    currentUploadedLogoData = canvas.toDataURL('image/png');
+                    renderLogoUploadUI();
+                    updateLiveBrandingPreview();
+                    showToast("Logo optimized & ready to save.", "info");
+                };
+                img.onerror = function() {
+                    showToast("Could not process image file.", "error");
+                };
+                img.src = rawData;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function renderLogoUploadUI() {
+            const dropzone = document.getElementById('brand-logo-dropzone');
+            const activeBox = document.getElementById('brand-active-logo-container');
+            const thumb = document.getElementById('brand-logo-thumbnail');
+
+            if (currentUploadedLogoData) {
+                if (dropzone) dropzone.style.display = 'none';
+                if (activeBox) activeBox.style.display = 'flex';
+                if (thumb) thumb.src = currentUploadedLogoData;
+            } else {
+                if (dropzone) dropzone.style.display = 'block';
+                if (activeBox) activeBox.style.display = 'none';
+                if (thumb) thumb.src = '';
+            }
+        }
+
+        async function deleteBrandLogo() {
+            currentUploadedLogoData = '';
+            const fileInput = document.getElementById('brand-logo-file-input');
+            if (fileInput) fileInput.value = '';
+
+            renderLogoUploadUI();
+            updateLiveBrandingPreview();
+
+            // Persist logo deletion immediately to the backend
+            try {
+                const res = await apiFetch('/api/delete_dealer_logo', { method: 'POST' });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    if (currentUser && currentUser.branding) {
+                        currentUser.branding.logo_url = '';
+                    }
+                    applyDealerBranding(currentUser ? currentUser.branding : {});
+                    showToast("Logo deleted successfully.", "success");
+                } else {
+                    showToast(data.error || "Logo cleared locally. Click Save to commit.", "info");
+                }
+            } catch (e) {
+                showToast("Logo cleared locally. Click Save to commit.", "info");
+            }
+        }
+
+        function updateLiveBrandingPreview() {
+            const isMfg = currentUser && currentUser.role === 'manufacturer';
+            const defaultName = isMfg ? 'GAVASAH' : (currentUser ? (currentUser.name || currentUser.username) : 'GAVASAH');
+            const defaultTag = isMfg ? 'MASTER PLATFORM' : 'AUTHORIZED DEALER';
+
+            const name = document.getElementById('brand-company-name')?.value.trim() || defaultName;
+            const tagline = document.getElementById('brand-tagline')?.value.trim() || defaultTag;
+            const logo = currentUploadedLogoData;
+            const pColor = document.getElementById('brand-primary-color')?.value || '#00f0ff';
+            const aColor = document.getElementById('brand-accent-color')?.value || '#38bdf8';
+            const email = document.getElementById('brand-email')?.value.trim() || 'support@gavasah.com';
+
+            // 1. Mockup Header Top-Right Preview
+            const mHeadLogoWrap = document.getElementById('mock-header-logo-wrap');
+            const mHeadName = document.getElementById('mock-header-name');
+            const mHeadTag = document.getElementById('mock-header-tag');
+            const mHeadContainer = document.getElementById('mock-header-container');
+
+            if (mHeadContainer) mHeadContainer.style.borderColor = 'rgba(255,255,255,0.14)';
+            if (mHeadName) mHeadName.innerText = name;
+            if (mHeadTag) {
+                mHeadTag.innerText = tagline;
+                mHeadTag.style.color = pColor;
+            }
+            if (mHeadLogoWrap) {
+                if (logo) {
+                    mHeadLogoWrap.innerHTML = `<img src="${escapeHtml(logo)}" style="max-height: 28px; max-width: 110px; object-fit: contain;">`;
+                } else {
+                    const initial = (name || 'G').charAt(0).toUpperCase();
+                    mHeadLogoWrap.innerHTML = `<div style="width: 26px; height: 26px; border-radius: 6px; background: ${pColor}; color: #000; font-weight: 800; font-size: 13px; display: flex; align-items: center; justify-content: center;">${escapeHtml(initial)}</div>`;
+                }
+            }
+
+            // 2. Mockup Sidebar Brand Preview
+            const mSideLogo = document.getElementById('mock-sidebar-logo');
+            const mSideTitle = document.getElementById('mock-sidebar-title');
+            const mSideSub = document.getElementById('mock-sidebar-sub');
+
+            if (mSideTitle) mSideTitle.innerText = name;
+            if (mSideSub) {
+                mSideSub.innerText = tagline;
+                mSideSub.style.color = pColor;
+            }
+            if (mSideLogo) {
+                mSideLogo.style.borderColor = pColor;
+                mSideLogo.style.color = pColor;
+                if (logo) {
+                    mSideLogo.innerHTML = `<img src="${escapeHtml(logo)}" style="width: 100%; height: 100%; object-fit: contain; border-radius: 8px;">`;
+                } else {
+                    const initial = (name || 'G').charAt(0).toUpperCase();
+                    mSideLogo.innerHTML = escapeHtml(initial);
+                }
+            }
+
+            // 3. Themed UI Card - 100% REAL LIVE FLEET DATA
+            const mCard = document.getElementById('mock-ui-card');
+            const mCardEmail = document.getElementById('mock-card-email');
+            const mCardVal = document.getElementById('mock-card-val');
+            const mCardSub = document.getElementById('mock-card-sub');
+            const mStatusPill = document.getElementById('mock-status-pill');
+
+            if (mCard) {
+                mCard.style.borderColor = aColor;
+                mCard.style.boxShadow = `0 0 15px ${aColor}22`;
+            }
+            if (mCardEmail) {
+                mCardEmail.innerText = email || 'support@gavasah.com';
+                mCardEmail.style.color = pColor;
+            }
+
+            if (mCardVal) {
+                if (Array.isArray(currentFleetData) && currentFleetData.length > 0) {
+                    const total = currentFleetData.length;
+                    const nowSec = Math.floor(Date.now() / 1000);
+                    let online = 0, warning = 0, offline = 0;
+
+                    currentFleetData.forEach(c => {
+                        const isPending = !c.last_heartbeat || c.last_heartbeat === 0 || c.status === 'pending';
+                        const diff = isPending ? -1 : nowSec - (c.last_heartbeat || 0);
+                        if (isPending || diff > 240) offline++;
+                        else if (diff > 135) warning++;
+                        else online++;
+                    });
+
+                    mCardVal.innerText = `${online} of ${total} Sites Online`;
+                    if (mCardSub) {
+                        mCardSub.innerText = `${online} Online • ${warning > 0 ? warning + ' Warning • ' : ''}${offline} Offline / Lost`;
+                    }
+                    if (mStatusPill) {
+                        const healthPct = ((online / total) * 100).toFixed(1);
+                        if (online === total) {
+                            mStatusPill.innerText = `100% OPERATIONAL`;
+                            mStatusPill.style.color = '#10b981';
+                            mStatusPill.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+                            mStatusPill.style.background = 'rgba(16, 185, 129, 0.12)';
+                        } else {
+                            mStatusPill.innerText = `${healthPct}% HEALTHY`;
+                            mStatusPill.style.color = '#38bdf8';
+                            mStatusPill.style.borderColor = 'rgba(56, 189, 248, 0.3)';
+                            mStatusPill.style.background = 'rgba(56, 189, 248, 0.12)';
+                        }
+                    }
+                } else if (Array.isArray(currentFleetData) && currentFleetData.length === 0) {
+                    mCardVal.innerText = '0 Provisioned Gateways';
+                    if (mCardSub) mCardSub.innerText = 'No client gateways assigned to this account';
+                    if (mStatusPill) {
+                        mStatusPill.innerText = 'FLEET READY';
+                        mStatusPill.style.color = '#38bdf8';
+                        mStatusPill.style.borderColor = 'rgba(56, 189, 248, 0.3)';
+                        mStatusPill.style.background = 'rgba(56, 189, 248, 0.12)';
+                    }
+                } else {
+                    mCardVal.innerText = 'Checking Gateways...';
+                    if (mCardSub) mCardSub.innerText = 'Fetching live gateway heartbeats...';
+                    if (mStatusPill) {
+                        mStatusPill.innerText = 'CONNECTING...';
+                        mStatusPill.style.color = '#94a3b8';
+                        mStatusPill.style.borderColor = 'rgba(148, 163, 184, 0.3)';
+                        mStatusPill.style.background = 'rgba(148, 163, 184, 0.12)';
+                    }
+                }
+            }
+
+            // 4. Live update actual portal top-right header & CSS tokens in real-time
+            document.documentElement.style.setProperty('--accent', pColor);
+            document.documentElement.style.setProperty('--accent-glow', aColor);
+
+            const hContainer = document.getElementById('header-brand-container');
+            const hLogoWrap = document.getElementById('header-brand-logo-wrap');
+            const hName = document.getElementById('header-brand-name');
+            const hTag = document.getElementById('header-brand-tag');
+
+            if (hContainer) {
+                hContainer.style.display = 'flex';
+                if (hName) hName.innerText = name;
+                if (hTag) {
+                    hTag.innerText = tagline;
+                    hTag.style.color = pColor;
+                }
+                if (hLogoWrap) {
+                    if (logo) {
+                        hLogoWrap.innerHTML = `<img src="${escapeHtml(logo)}" style="max-height: 28px; max-width: 110px; object-fit: contain;">`;
+                    } else {
+                        const initial = (name || 'G').charAt(0).toUpperCase();
+                        hLogoWrap.innerHTML = `<div style="width: 26px; height: 26px; border-radius: 6px; background: ${pColor}; color: #000; font-weight: 800; font-size: 13px; display: flex; align-items: center; justify-content: center;">${escapeHtml(initial)}</div>`;
+                    }
+                }
             }
         }
 
         function populateBrandingForm() {
-            if (!currentUser || !currentUser.branding) return;
-            const b = currentUser.branding;
+            if (!currentUser) return;
+            const b = currentUser.branding || {};
+            const isMfg = currentUser.role === 'manufacturer';
+
+            // Dynamic Titles & Subtitles for Manufacturer vs Dealer
+            const paneTitle = document.getElementById('branding-pane-title');
+            const paneSub = document.getElementById('branding-pane-subtitle');
+            if (paneTitle) {
+                paneTitle.innerText = isMfg ? '🎨 Ecosystem Master Branding & White-Label' : '🎨 Dealer Custom Branding & White-Label';
+            }
+            if (paneSub) {
+                paneSub.innerText = isMfg 
+                    ? 'Configure the master platform branding, default logos, and ecosystem accent colors.'
+                    : 'Personalize your dealer portal, header logo, and client interface appearance.';
+            }
+
             const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
             setVal('brand-company-name', b.company_name);
             setVal('brand-tagline', b.tagline);
-            setVal('brand-logo-url', b.logo_url);
             setVal('brand-primary-color', b.primary_color || '#00f0ff');
             setVal('brand-primary-color-text', b.primary_color || '#00f0ff');
             setVal('brand-accent-color', b.accent_color || '#38bdf8');
             setVal('brand-accent-color-text', b.accent_color || '#38bdf8');
             setVal('brand-email', b.support_email);
             setVal('brand-phone', b.support_phone);
+
+            currentUploadedLogoData = b.logo_url || '';
+            renderLogoUploadUI();
             updateLiveBrandingPreview();
-        }
-
-        function updateLiveBrandingPreview() {
-            const name = document.getElementById('brand-company-name')?.value.trim() || 'GAVASAH';
-            const tagline = document.getElementById('brand-tagline')?.value.trim() || 'CLOUD COMMAND & FLEET';
-            const logo = document.getElementById('brand-logo-url')?.value.trim();
-            const pColor = document.getElementById('brand-primary-color')?.value || '#00f0ff';
-            const aColor = document.getElementById('brand-accent-color')?.value || '#38bdf8';
-
-            const pTitle = document.getElementById('brand-preview-title');
-            const pSub = document.getElementById('brand-preview-sub');
-            const pBox = document.getElementById('brand-preview-box');
-            const pLogoWrap = document.getElementById('brand-preview-logo-wrap');
-
-            if (pTitle) pTitle.innerText = name;
-            if (pSub) {
-                pSub.innerText = tagline;
-                pSub.style.color = pColor;
-            }
-            if (pBox) pBox.style.borderColor = aColor;
-
-            if (pLogoWrap) {
-                if (logo) {
-                    pLogoWrap.innerHTML = `<img src="${escapeHtml(logo)}" class="branding-preview-logo" onerror="this.src=''; this.style.display='none';">`;
-                } else {
-                    pLogoWrap.innerHTML = `<div class="brand-logo" style="width: 38px; height: 38px; font-size: 18px; background: ${pColor}; color: #000;">${name.charAt(0).toUpperCase()}</div>`;
-                }
-            }
         }
 
         function setThemeSwatch(primary, accent) {
@@ -5389,26 +6614,27 @@ HTML_PAGE = """<!DOCTYPE html>
 
         async function saveDealerBranding() {
             const payload = {
-                company_name: document.getElementById('brand-company-name').value.trim(),
-                tagline: document.getElementById('brand-tagline').value.trim(),
-                logo_url: document.getElementById('brand-logo-url').value.trim(),
-                primary_color: document.getElementById('brand-primary-color').value,
-                accent_color: document.getElementById('brand-accent-color').value,
-                support_email: document.getElementById('brand-email').value.trim(),
-                support_phone: document.getElementById('brand-phone').value.trim()
+                company_name: document.getElementById('brand-company-name')?.value.trim() || '',
+                tagline: document.getElementById('brand-tagline')?.value.trim() || '',
+                logo_url: currentUploadedLogoData,
+                primary_color: document.getElementById('brand-primary-color')?.value || '#00f0ff',
+                accent_color: document.getElementById('brand-accent-color')?.value || '#38bdf8',
+                support_email: document.getElementById('brand-email')?.value.trim() || '',
+                support_phone: document.getElementById('brand-phone')?.value.trim() || ''
             };
 
             try {
-                const res = await fetch('/api/update_dealer_branding', {
+                const res = await apiFetch('/api/update_dealer_branding', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
                 const data = await res.json();
                 if (res.ok && data.ok) {
-                    showToast(data.message || 'Branding saved successfully', 'success');
+                    showToast(data.message || 'Branding saved successfully!', 'success');
                     if (currentUser) currentUser.branding = data.branding;
                     applyDealerBranding(data.branding);
+                    updateLiveBrandingPreview();
                 } else {
                     showToast(data.error || 'Failed to save branding', 'error');
                 }
@@ -5420,13 +6646,16 @@ HTML_PAGE = """<!DOCTYPE html>
         async function resetToDefaultBranding() {
             if (!confirm("Reset to default GAVASAH branding?")) return;
             try {
-                const res = await fetch('/api/reset_dealer_branding', { method: 'POST' });
+                const res = await apiFetch('/api/reset_dealer_branding', { method: 'POST' });
                 const data = await res.json();
                 if (res.ok && data.ok) {
                     showToast("Reset to default GAVASAH branding.", "success");
+                    currentUploadedLogoData = '';
                     if (currentUser) currentUser.branding = {};
                     populateBrandingForm();
                     applyDealerBranding({});
+                } else {
+                    showToast(data.error || "Failed to reset branding", "error");
                 }
             } catch (err) {
                 showToast("Failed to reset branding", "error");
@@ -5456,7 +6685,7 @@ HTML_PAGE = """<!DOCTYPE html>
         async function fetchAndRenderSnapshots(clientId) {
             const tbody = document.getElementById('snapshot-table-body');
             try {
-                const res = await fetch(`/api/client_backups?client_id=${encodeURIComponent(clientId)}&t=${Date.now()}`);
+                const res = await apiFetch(`/api/client_backups?client_id=${encodeURIComponent(clientId)}&t=${Date.now()}`);
                 const data = await res.json();
                 if (res.ok && data.ok && Array.isArray(data.backups) && data.backups.length > 0) {
                     tbody.innerHTML = data.backups.map(b => {
@@ -5495,7 +6724,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
             showToast("Dispatching backup snapshot trigger to gateway...", "info");
             try {
-                const res = await fetch('/api/client_backup_trigger', {
+                const res = await apiFetch('/api/client_backup_trigger', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ client_id: clientId, name: bName })
@@ -5680,8 +6909,8 @@ function formatHeartbeatTime(diff) {
             setVal('onb-name', '');
             setVal('onb-slug', '');
             setVal('onb-secret', generateSecretStr());
-            setVal('onb-knx-ip', '192.168.1.100');
-            setVal('onb-knx-port', '3671');
+            setVal('onb-knx-ip', '');
+            setVal('onb-knx-port', '');
             setVal('onb-ssh-key', '');
             updateOnboardDomainPreview();
 
@@ -5780,7 +7009,7 @@ function formatHeartbeatTime(diff) {
                 client_id: autoSlug.toLowerCase(),
                 auth_secret: secretVal,
                 knx_ip: '',
-                knx_port: 3671,
+                knx_port: null,
                 ssh_public_key: (document.getElementById('onb-ssh-key') ? document.getElementById('onb-ssh-key').value.trim() : ''),
                 remote_enabled: remoteToggle ? remoteToggle.checked : true
             };
@@ -5793,14 +7022,14 @@ function formatHeartbeatTime(diff) {
             }
 
             try {
-                const res = await fetch('/api/onboard', {
+                const res = await apiFetch('/api/onboard', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
                 const data = await res.json();
                 if (res.ok && data.ok) {
-                    showToast(`Gateway '${payload.name}' onboarded successfully! Opening client configuration...`, 'success');
+                    showToast(`Gavasah Server/Hub '${payload.name}' onboarded successfully! Opening client configuration...`, 'success');
                     closeOnboardModal();
                     await fetchFleet();
                     if (data.client && data.client.client_id) {
@@ -5927,8 +7156,8 @@ auto_update_external_url: true`;
             const payload = {
                 client_id: clientId,
                 name: (document.getElementById('edit-name') ? document.getElementById('edit-name').value.trim() : ''),
-                knx_ip: (client ? client.knx_ip : ''),
-                knx_port: (client && client.knx_port ? client.knx_port : 3671),
+                knx_ip: (client && client.knx_ip && client.knx_ip !== '192.168.1.100' ? client.knx_ip : ''),
+                knx_port: (client && client.knx_port && client.knx_ip && client.knx_ip !== '192.168.1.100' ? client.knx_port : null),
                 auth_secret: (document.getElementById('edit-secret') ? document.getElementById('edit-secret').value.trim() : ''),
                 remote_enabled: remoteToggle ? remoteToggle.checked : true
             };
@@ -5943,14 +7172,14 @@ auto_update_external_url: true`;
             }
 
             try {
-                const res = await fetch('/api/update_client', {
+                const res = await apiFetch('/api/update_client', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
                 const data = await res.json();
                 if (res.ok && data.ok) {
-                    showToast('Gateway configuration updated', 'success');
+                    showToast('Gavasah Server/Hub configuration updated', 'success');
                     closeEditModal();
                     fetchFleet();
                 } else {
@@ -5963,7 +7192,7 @@ auto_update_external_url: true`;
 
         async function toggleRemoteAccess(clientId, isEnabled) {
             try {
-                const res = await fetch('/api/toggle_remote', {
+                const res = await apiFetch('/api/toggle_remote', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ client_id: clientId, enabled: isEnabled })
@@ -6019,7 +7248,7 @@ auto_update_external_url: true`;
             }
 
             try {
-                const res = await fetch(endpoint, {
+                const res = await apiFetch(endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
@@ -6055,7 +7284,7 @@ auto_update_external_url: true`;
             }
 
             try {
-                const res = await fetch('/api/change_owner_credentials', {
+                const res = await apiFetch('/api/change_owner_credentials', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -6102,7 +7331,7 @@ auto_update_external_url: true`;
             }
 
             try {
-                const res = await fetch('/api/change_dealer_password', {
+                const res = await apiFetch('/api/change_dealer_password', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -6147,7 +7376,7 @@ auto_update_external_url: true`;
             body.innerHTML = '<div style="color: #64748b; font-size: 13px;">Streaming operational telemetry...</div>';
 
             try {
-                const res = await fetch(`/api/logs?client_id=${encodeURIComponent(currentLogsClient)}&t=${Date.now()}`);
+                const res = await apiFetch(`/api/logs?client_id=${encodeURIComponent(currentLogsClient)}&t=${Date.now()}`);
                 if (!res.ok) {
                     body.innerHTML = '<div style="color: #ef4444;">Failed to load logs.</div>';
                     return;
@@ -6195,7 +7424,7 @@ auto_update_external_url: true`;
             tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: #64748b;">Validating TLS certificates...</td></tr>';
 
             try {
-                const res = await fetch('/api/ssl_status?t=' + Date.now());
+                const res = await apiFetch('/api/ssl_status?t=' + Date.now());
                 const certs = await res.json();
                 tbody.innerHTML = certs.map(c => `
                     <tr>
@@ -6260,7 +7489,7 @@ All active sessions for this dealer and their integrators will be terminated imm
                 return;
             }
             try {
-                const res = await fetch('/api/toggle_dealer_status', {
+                const res = await apiFetch('/api/toggle_dealer_status', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ dealer_id: dealerId, status: newStatus })
@@ -6286,7 +7515,7 @@ All active sessions for this integrator will be terminated immediately.` : '';
                 return;
             }
             try {
-                const res = await fetch('/api/toggle_integrator_status', {
+                const res = await apiFetch('/api/toggle_integrator_status', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ integrator_id: intId, status: newStatus })
@@ -6347,7 +7576,169 @@ All active sessions for this integrator will be terminated immediately.` : '';
             updateOnboardIntegratorDropdown('');
         }
 
-    </script>
+    
+        function openIntegrationDiagnostics(clientId, techKey, event) {
+            if (event) event.stopPropagation();
+            const client = currentFleetData.find(c => c.client_id === clientId);
+            if (!client) return;
+
+            const tech = client.technologies || {};
+            const knx = tech.knx || client.knx_status || {};
+            const zigbee = tech.zigbee || {};
+            const lutron = tech.lutron || {};
+            const matter = tech.matter || {};
+
+            let title = `${client.name} — Subsystem Diagnostics`;
+            let isOnline = false;
+            let statusText = 'OFFLINE';
+            let techName = 'Integration';
+            let reason = '';
+            let endpoint = '—';
+            let latency = '—';
+            let details = '';
+            let fixAction = '';
+
+            if (techKey === 'knx') {
+                techName = 'KNXnet/IP Bus Integration';
+                isOnline = Boolean(knx.reachable || knx.state === 'connected' || knx.status === 'online');
+                endpoint = knx.gateway_ip ? `${knx.gateway_ip}:${knx.gateway_port || 3671}` : (client.knx_ip ? `${client.knx_ip}:${client.knx_port || 3671}` : 'Local Bus');
+                latency = knx.latency_ms ? `${knx.latency_ms} ms` : '—';
+                details = knx.connection_type ? `Connection Type: ${knx.connection_type}` : 'Native Tunneling';
+                if (!isOnline) {
+                    reason = knx.error === 'timeout' ? 'Gateway Unreachable (UDP Ping Timed Out)' : (knx.error || knx.offline_reason || 'Connection Failed');
+                    fixAction = 'Verify that the KNXnet/IP Router or Interface is powered on, connected to the local network, and UDP port 3671 is accessible from the Gavasah Server/Hub.';
+                } else {
+                    fixAction = 'KNXnet/IP interface is actively communicating with Telegram exchange verified.';
+                }
+            } else if (techKey === 'zigbee') {
+                techName = 'Zigbee Automation Subsystem';
+                const insts = zigbee.instances || [];
+                const runningInsts = insts.filter(i => i.running || i.state === 'started');
+                const failedInsts = insts.filter(i => !i.running && i.state !== 'started');
+                if (insts.length > 0) {
+                    isOnline = failedInsts.length === 0;
+                    statusText = isOnline ? 'ONLINE (OPERATIONAL)' : (runningInsts.length > 0 ? 'DEGRADED' : 'OFFLINE');
+                    endpoint = insts.map(i => `${i.name} (v${i.version || '?'})`).join(', ');
+                    if (!isOnline) {
+                        reason = failedInsts.map(i => `${i.name} container state: ${i.state}`).join('; ');
+                        fixAction = 'Verify that the Zigbee USB coordinator dongle is firmly inserted into the Gavasah Server/Hub USB port, and restart the Zigbee2MQTT add-on.';
+                    } else {
+                        fixAction = 'All Zigbee2MQTT container instances are running with healthy coordinator communication.';
+                    }
+                } else if (zigbee.zha_detected) {
+                    isOnline = true;
+                    statusText = 'ONLINE (ZHA)';
+                    endpoint = 'Zigbee Home Automation (ZHA Native)';
+                    fixAction = 'ZHA native Zigbee stack is loaded and managing the mesh network.';
+                }
+            } else if (techKey === 'lutron') {
+                techName = 'Lutron Subsystem';
+                isOnline = !(lutron.status === 'offline' || lutron.offline_reason);
+                endpoint = lutron.entries && lutron.entries.length > 0 ? lutron.entries.map(e => e.title || e.domain).join(', ') : 'Lutron Smart Bridge';
+                if (!isOnline) {
+                    reason = lutron.offline_reason || 'Lutron Smart Bridge / Repeater unreachable';
+                    fixAction = 'Verify the IP address of the Lutron Smart Bridge/Repeater and ensure ethernet cabling to the router is active.';
+                } else {
+                    fixAction = 'Lutron bridge integration is loaded and responding to Home Assistant commands.';
+                }
+            } else if (techKey === 'matter') {
+                techName = 'Matter & Thread Subsystem';
+                isOnline = Boolean(matter.state === 'started' || matter.state === 'running' || matter.status === 'online');
+                endpoint = `Matter Server (${matter.state || 'not_installed'})`;
+                if (!isOnline) {
+                    reason = `Matter Server add-on container is ${matter.state || 'stopped'}`;
+                    fixAction = 'Start the Matter Server add-on from Settings > Add-ons on the Gavasah Server/Hub.';
+                } else {
+                    fixAction = 'Matter Server daemon is running and listening for IPv6 Thread/Matter commissioning.';
+                }
+            }
+
+            const modalTitleEl = document.getElementById('diag-modal-title');
+            if (modalTitleEl) modalTitleEl.innerHTML = `<span>🔍</span> ${escapeHtml(client.name)} — ${escapeHtml(techName)}`;
+
+            const bodyEl = document.getElementById('diag-modal-body');
+            if (bodyEl) {
+                bodyEl.innerHTML = `
+                    <div class="diag-banner ${isOnline ? 'diag-banner-online' : 'diag-banner-offline'}">
+                        <div style="font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 8px;">
+                            <span>${isOnline ? '🟢' : '🔴'}</span>
+                            <span>${escapeHtml(techName)} is ${isOnline ? 'ONLINE & HEALTHY' : 'OFFLINE (NOT WORKING PROPERLY)'}</span>
+                        </div>
+                        ${!isOnline && reason ? `<div style="margin-top: 6px; font-size: 12px; color: #fecaca;"><strong>Failure Reason:</strong> ${escapeHtml(reason)}</div>` : ''}
+                    </div>
+
+                    <table class="diag-table">
+                        <tr>
+                            <th>Gavasah Server/Hub</th>
+                            <td>${escapeHtml(client.name)} (${escapeHtml(client.client_id)})</td>
+                        </tr>
+                        <tr>
+                            <th>Integration Type</th>
+                            <td>${escapeHtml(techName)}</td>
+                        </tr>
+                        <tr>
+                            <th>Hardware / IP Endpoint</th>
+                            <td>${escapeHtml(endpoint)}</td>
+                        </tr>
+                        ${latency !== '—' ? `
+                            <tr>
+                                <th>Round-Trip Latency</th>
+                                <td>${escapeHtml(latency)}</td>
+                            </tr>
+                        ` : ''}
+                        ${details ? `
+                            <tr>
+                                <th>Configuration Details</th>
+                                <td>${escapeHtml(details)}</td>
+                            </tr>
+                        ` : ''}
+                        <tr>
+                            <th>Operational State</th>
+                            <td><strong style="color: ${isOnline ? '#34d399' : '#f87171'};">${isOnline ? 'ONLINE' : 'OFFLINE / FAILED'}</strong></td>
+                        </tr>
+                        ${!isOnline && reason ? `
+                            <tr>
+                                <th>Diagnostic Error</th>
+                                <td style="color: #f87171;">${escapeHtml(reason)}</td>
+                            </tr>
+                        ` : ''}
+                        <tr>
+                            <th>Recommended Action</th>
+                            <td style="color: #94a3b8; font-family: sans-serif; font-size: 11px; line-height: 1.4;">${escapeHtml(fixAction)}</td>
+                        </tr>
+                    </table>
+                `;
+            }
+
+            const modal = document.getElementById('integration-diag-modal');
+            if (modal) modal.classList.add('active');
+        }
+
+        function closeIntegrationDiagnostics() {
+            const modal = document.getElementById('integration-diag-modal');
+            if (modal) modal.classList.remove('active');
+        }
+
+</script>
+
+    <!-- Integration Diagnostics Modal -->
+    <div class="modal" id="integration-diag-modal">
+        <div class="modal-content" style="max-width: 620px;">
+            <div class="modal-header">
+                <div id="diag-modal-title" style="display: flex; align-items: center; gap: 8px;">
+                    <span>🔍</span> Subsystem Integration Diagnostics
+                </div>
+                <div style="cursor: pointer;" onclick="closeIntegrationDiagnostics()">&times;</div>
+            </div>
+            <div class="modal-body" id="diag-modal-body">
+                <!-- Dynamically populated -->
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-sm" onclick="closeIntegrationDiagnostics()">Close</button>
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>
 """
@@ -6461,74 +7852,94 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
         if not token:
             return None
 
-        auth = load_auth_state()
-        sessions = auth.get('sessions', {})
-        session = sessions.get(token)
+        session = get_session(token)
         if not session:
             return None
 
         now = int(time.time())
         if now > session.get('expires_at', 0):
-            with AUTH_LOCK:
-                auth = load_auth_state()
-                if token in auth.get('sessions', {}):
-                    del auth['sessions'][token]
-                    save_auth_state(auth)
+            delete_session(token)
             return None
 
         user_id = session.get('user_id')
         role = session.get('role')
 
-        if role == 'manufacturer' and user_id == 'owner_master':
-            owner = auth.get('owner', {})
-            return {
-                'id': 'owner_master',
-                'username': owner.get('username', 'admin'),
-                'name': owner.get('name', 'Master Manufacturer'),
-                'role': 'manufacturer',
-                'session_token': token
-            }
-        elif role == 'dealer':
-            dealers = auth.get('dealers', {})
-            d = dealers.get(user_id)
-            if d:
-                if d.get('status') == 'suspended':
+        with DB_LOCK:
+            conn = get_db_connection()
+            try:
+                cur = conn.cursor()
+                if role == 'manufacturer' and user_id == 'owner_master':
+                    cur.execute("SELECT * FROM owner WHERE id = ? LIMIT 1", (user_id,))
+                    row = cur.fetchone()
+                    conn.close()
+                    owner = dict(row) if row else {}
+                    try: mfg_branding = json.loads(owner.get('branding_json') or '{}')
+                    except: mfg_branding = {}
+                    return {
+                        'id': 'owner_master',
+                        'username': owner.get('username', 'admin'),
+                        'name': owner.get('name', 'Master Manufacturer'),
+                        'role': 'manufacturer',
+                        'branding': mfg_branding,
+                        'session_token': token
+                    }
+                elif role == 'dealer':
+                    cur.execute("SELECT * FROM dealers WHERE id = ? LIMIT 1", (user_id,))
+                    row = cur.fetchone()
+                    conn.close()
+                    if not row:
+                        return None
+                    d = dict(row)
+                    if d.get('status') == 'suspended':
+                        return None
+                    try: branding = json.loads(d.get('branding_json') or '{}')
+                    except: branding = {}
+                    return {
+                        'id': d['id'],
+                        'username': d.get('username', ''),
+                        'name': d.get('name', ''),
+                        'email': d.get('email', ''),
+                        'phone': d.get('phone', ''),
+                        'role': 'dealer',
+                        'status': d.get('status', 'active'),
+                        'branding': branding,
+                        'session_token': token
+                    }
+                elif role == 'integrator':
+                    cur.execute("SELECT * FROM integrators WHERE id = ? LIMIT 1", (user_id,))
+                    row = cur.fetchone()
+                    if not row:
+                        conn.close()
+                        return None
+                    it = dict(row)
+                    if it.get('status') == 'suspended':
+                        conn.close()
+                        return None
+                    # Check parent dealer status
+                    cur.execute("SELECT status FROM dealers WHERE id = ? LIMIT 1", (it.get('dealer_id'),))
+                    d_row = cur.fetchone()
+                    conn.close()
+                    if d_row and dict(d_row).get('status') == 'suspended':
+                        return None
+                    return {
+                        'id': it['id'],
+                        'dealer_id': it.get('dealer_id', ''),
+                        'dealer_name': it.get('dealer_name', ''),
+                        'username': it.get('username', ''),
+                        'name': it.get('name', ''),
+                        'email': it.get('email', ''),
+                        'phone': it.get('phone', ''),
+                        'role': 'integrator',
+                        'status': it.get('status', 'active'),
+                        'session_token': token
+                    }
+                else:
+                    conn.close()
                     return None
-                return {
-                    'id': d['id'],
-                    'username': d.get('username', ''),
-                    'name': d.get('name', ''),
-                    'email': d.get('email', ''),
-                    'phone': d.get('phone', ''),
-                    'role': 'dealer',
-                    'status': d.get('status', 'active'),
-                    'session_token': token
-                }
-        elif role == 'integrator':
-            integrators = auth.get('integrators', {})
-            it = integrators.get(user_id)
-            if it:
-                if it.get('status') == 'suspended':
-                    return None
-                # Check if parent dealership is suspended
-                dealers = auth.get('dealers', {})
-                parent_dealer = dealers.get(it.get('dealer_id'))
-                if parent_dealer and parent_dealer.get('status') == 'suspended':
-                    return None
-                return {
-                    'id': it['id'],
-                    'dealer_id': it.get('dealer_id', ''),
-                    'dealer_name': it.get('dealer_name', ''),
-                    'username': it.get('username', ''),
-                    'name': it.get('name', ''),
-                    'email': it.get('email', ''),
-                    'phone': it.get('phone', ''),
-                    'role': 'integrator',
-                    'status': it.get('status', 'active'),
-                    'session_token': token
-                }
-
-        return None
+            except Exception as e:
+                print(f"[!] Error in get_authenticated_user: {e}")
+                conn.close()
+                return None
 
     def send_json(self, status_code, data, extra_headers=None):
         """Send formatted JSON HTTP response with optional custom headers."""
@@ -6628,7 +8039,8 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                 'id': user['id'],
                 'username': user['username'],
                 'name': user['name'],
-                'role': user['role']
+                'role': user['role'],
+                'branding': user.get('branding') or {}
             }
             if user['role'] == 'integrator':
                 resp_user['dealer_id'] = user.get('dealer_id')
@@ -7107,11 +8519,14 @@ PersistentKeepalive = 25
             authenticated_user = None
             if username.lower() == owner.get('username', '').lower():
                 if verify_password(password, owner.get('salt', ''), owner.get('password_hash', '')):
+                    try: mfg_branding = json.loads(owner.get('branding_json') or '{}')
+                    except: mfg_branding = owner.get('branding') or {}
                     authenticated_user = {
                         'id': 'owner_master',
                         'username': owner['username'],
                         'name': owner.get('name', 'Master Manufacturer'),
-                        'role': 'manufacturer'
+                        'role': 'manufacturer',
+                        'branding': mfg_branding
                     }
 
             # Check Dealers
@@ -7158,17 +8573,7 @@ PersistentKeepalive = 25
             now = int(time.time())
             expires_at = now + 86400 * 7  # 7 days
 
-            with AUTH_LOCK:
-                auth = load_auth_state()
-                if 'sessions' not in auth:
-                    auth['sessions'] = {}
-                auth['sessions'][session_token] = {
-                    'user_id': authenticated_user['id'],
-                    'role': authenticated_user['role'],
-                    'created_at': now,
-                    'expires_at': expires_at
-                }
-                save_auth_state(auth)
+            save_session(session_token, authenticated_user['id'], authenticated_user['role'], now, expires_at)
 
             cookie_str = f"gavasah_session={session_token}; Path=/; Max-Age={86400*7}; HttpOnly; SameSite=Lax"
             self.send_json(200, {
@@ -7184,11 +8589,20 @@ PersistentKeepalive = 25
             if user:
                 token = user.get('session_token')
                 if token:
-                    with AUTH_LOCK:
-                        auth = load_auth_state()
-                        if token in auth.get('sessions', {}):
-                            del auth['sessions'][token]
-                            save_auth_state(auth)
+                    delete_session(token)
+            else:
+                cookie_header = self.headers.get('Cookie', '')
+                tok = None
+                if cookie_header:
+                    for part in cookie_header.split(';'):
+                        if part.strip().startswith('gavasah_session='):
+                            tok = part.strip().split('=', 1)[1].strip()
+                if not tok:
+                    auth_h = self.headers.get('Authorization', '')
+                    if auth_h.startswith('Bearer '):
+                        tok = auth_h.split('Bearer ', 1)[1].strip()
+                if tok:
+                    delete_session(tok)
 
             cookie_str = "gavasah_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
             self.send_json(200, {'ok': True}, extra_headers={'Set-Cookie': cookie_str})
@@ -7373,16 +8787,15 @@ PersistentKeepalive = 25
             self.send_json(200, {'ok': True, 'slug': slug, 'size_mb': size_mb})
             return
 
-        # --- DEALER CUSTOM BRANDING UPDATE ---
+        # --- DEALER & MANUFACTURER CUSTOM BRANDING UPDATE ---
         elif parsed.path == '/api/update_dealer_branding':
             user = self.get_authenticated_user()
             if not user or user['role'] not in ['dealer', 'manufacturer']:
-                self.send_json(403, {'error': 'Dealer privilege required'})
+                self.send_json(403, {'error': 'Privilege required'})
                 return
 
             content_length = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(content_length).decode('utf-8'))
-            dealer_id = user['id'] if user['role'] == 'dealer' else body.get('dealer_id', '').strip()
 
             branding = {
                 'company_name': body.get('company_name', '').strip(),
@@ -7397,12 +8810,20 @@ PersistentKeepalive = 25
 
             with AUTH_LOCK:
                 auth = load_auth_state()
-                if dealer_id not in auth.get('dealers', {}):
-                    self.send_json(404, {'error': 'Dealer record not found'})
-                    return
-                auth['dealers'][dealer_id]['branding'] = branding
-                auth['dealers'][dealer_id]['branding_json'] = json.dumps(branding)
-                save_auth_state(auth)
+                if user['role'] == 'manufacturer' and (not body.get('dealer_id') or body.get('dealer_id') in ['owner_master', 'owner', 'manufacturer']):
+                    if 'owner' not in auth:
+                        auth['owner'] = {}
+                    auth['owner']['branding'] = branding
+                    auth['owner']['branding_json'] = json.dumps(branding)
+                    save_auth_state(auth)
+                else:
+                    dealer_id = user['id'] if user['role'] == 'dealer' else body.get('dealer_id', '').strip()
+                    if dealer_id not in auth.get('dealers', {}):
+                        self.send_json(404, {'error': 'Dealer record not found'})
+                        return
+                    auth['dealers'][dealer_id]['branding'] = branding
+                    auth['dealers'][dealer_id]['branding_json'] = json.dumps(branding)
+                    save_auth_state(auth)
 
             self.send_json(200, {'ok': True, 'message': 'Custom branding updated successfully!', 'branding': branding})
             return
@@ -7410,18 +8831,69 @@ PersistentKeepalive = 25
         elif parsed.path == '/api/reset_dealer_branding':
             user = self.get_authenticated_user()
             if not user or user['role'] not in ['dealer', 'manufacturer']:
-                self.send_json(403, {'error': 'Dealer privilege required'})
+                self.send_json(403, {'error': 'Privilege required'})
                 return
 
-            dealer_id = user['id'] if user['role'] == 'dealer' else body.get('dealer_id', '').strip()
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = {}
+            if content_length > 0:
+                try: body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+                except: body = {}
+
             with AUTH_LOCK:
                 auth = load_auth_state()
-                if dealer_id in auth.get('dealers', {}):
-                    auth['dealers'][dealer_id]['branding'] = {}
-                    auth['dealers'][dealer_id]['branding_json'] = ''
-                    save_auth_state(auth)
+                if user['role'] == 'manufacturer' and (not body.get('dealer_id') or body.get('dealer_id') in ['owner_master', 'owner', 'manufacturer']):
+                    if 'owner' in auth:
+                        auth['owner']['branding'] = {}
+                        auth['owner']['branding_json'] = ''
+                        save_auth_state(auth)
+                else:
+                    dealer_id = user['id'] if user['role'] == 'dealer' else body.get('dealer_id', '').strip()
+                    if dealer_id in auth.get('dealers', {}):
+                        auth['dealers'][dealer_id]['branding'] = {}
+                        auth['dealers'][dealer_id]['branding_json'] = ''
+                        save_auth_state(auth)
 
             self.send_json(200, {'ok': True, 'message': 'Reset to default GAVASAH branding.'})
+            return
+
+        elif parsed.path == '/api/delete_dealer_logo':
+            user = self.get_authenticated_user()
+            if not user or user['role'] not in ['dealer', 'manufacturer']:
+                self.send_json(403, {'error': 'Privilege required'})
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = {}
+            if content_length > 0:
+                try: body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+                except: body = {}
+
+            new_branding = {}
+            with AUTH_LOCK:
+                auth = load_auth_state()
+                if user['role'] == 'manufacturer' and (not body.get('dealer_id') or body.get('dealer_id') in ['owner_master', 'owner', 'manufacturer']):
+                    b = auth.get('owner', {}).get('branding') or {}
+                    b['logo_url'] = ''
+                    if 'owner' not in auth:
+                        auth['owner'] = {}
+                    auth['owner']['branding'] = b
+                    auth['owner']['branding_json'] = json.dumps(b)
+                    save_auth_state(auth)
+                    new_branding = b
+                else:
+                    dealer_id = user['id'] if user['role'] == 'dealer' else body.get('dealer_id', '').strip()
+                    if dealer_id not in auth.get('dealers', {}):
+                        self.send_json(404, {'error': 'Dealer record not found'})
+                        return
+                    b = auth['dealers'][dealer_id].get('branding') or {}
+                    b['logo_url'] = ''
+                    auth['dealers'][dealer_id]['branding'] = b
+                    auth['dealers'][dealer_id]['branding_json'] = json.dumps(b)
+                    save_auth_state(auth)
+                    new_branding = b
+
+            self.send_json(200, {'ok': True, 'message': 'Logo deleted successfully', 'branding': new_branding})
             return
 
         elif parsed.path == '/api/toggle_dealer_status':
@@ -8028,8 +9500,10 @@ PersistentKeepalive = 25
             client_id = body.get('client_id', '').strip().lower()
             ssh_key = body.get('ssh_public_key', '').strip()
             auth_secret = body.get('auth_secret', '').strip()
-            knx_ip = body.get('knx_ip', '192.168.1.100').strip()
-            knx_port = int(body.get('knx_port', 3671))
+            raw_kip = body.get('knx_ip', '').strip()
+            knx_ip = raw_kip if raw_kip and raw_kip not in ['—', 'none', 'null', '192.168.1.100'] else None
+            raw_kport = body.get('knx_port')
+            knx_port = int(raw_kport) if raw_kport and knx_ip else None
 
             if not client_name:
                 self.send_json(400, {'error': 'Client site name is required'})
@@ -8166,26 +9640,9 @@ PersistentKeepalive = 25
                 'last_heartbeat': 0,
                 'status': 'pending',
                 'remote_enabled': bool(body.get('remote_enabled', True)),
-                'system': {
-                    'haos_version': '13.2',
-                    'core_version': '2026.9.3',
-                    'boot_slot': 'A',
-                    'is_recovery_mode': False,
-                    'slot_a_status': 'good',
-                    'slot_b_status': 'standby',
-                    'cpu_percent': 5.0,
-                    'memory_percent': 28.0,
-                    'disk_free_gb': 120.0
-                },
-                'network': {
-                    'local_ipv4': '192.168.1.150',
-                    'gateway': '192.168.1.1',
-                    'mac_address': 'E4:5F:01:FF:AA:BB'
-                },
-                'knx_status': {
-                    'reachable': True,
-                    'latency_ms': 1.8
-                }
+                'system': {},
+                'network': {},
+                'knx_status': {'configured': False, 'reachable': False, 'reason': 'no_knx_integration'} if not knx_ip else {}
             }
 
             c_data[clean_id] = new_client
@@ -8237,10 +9694,18 @@ PersistentKeepalive = 25
 
             if body.get('name'):
                 client['name'] = body['name'].strip()
-            if body.get('knx_ip'):
-                client['knx_ip'] = body['knx_ip'].strip()
-            if body.get('knx_port'):
-                client['knx_port'] = int(body['knx_port'])
+            if 'knx_ip' in body:
+                raw_kip = str(body.get('knx_ip') or '').strip()
+                client['knx_ip'] = raw_kip if raw_kip and raw_kip not in ['—', 'none', 'null', '192.168.1.100'] else None
+            if 'knx_port' in body:
+                raw_kport = body.get('knx_port')
+                client['knx_port'] = int(raw_kport) if raw_kport and client.get('knx_ip') else None
+            if not client.get('knx_ip') and client.get('ets_port'):
+                try:
+                    release_ets_port(client_id)
+                    sync_ets_nat_rules()
+                except Exception as ex:
+                    print(f"[!] Error releasing ETS port on client update: {ex}")
             if body.get('auth_secret'):
                 client['auth_secret'] = body['auth_secret'].strip()
 
@@ -8374,6 +9839,10 @@ PersistentKeepalive = 25
             if wg_pub:
                 remove_wireguard_peer(wg_pub)
 
+            # 1b. Immediately release remote ETS port if assigned and sync NAT
+            release_ets_port(client_id)
+            sync_ets_nat_rules()
+
             # 2. Terminate reverse SSH tunnels, kill TCP listening ports, delete Linux user & authorized_keys
             teardown_client_tunnel(
                 client_id=client_id,
@@ -8403,16 +9872,36 @@ PersistentKeepalive = 25
         # 16. Gateway Telemetry Heartbeat (KNX-IP Controller Ingestion)
         elif parsed.path == '/api/heartbeat':
             content_length = int(self.headers.get('Content-Length', 0))
-            raw_body = self.rfile.read(content_length).decode('utf-8')
-            try:
-                body = json.loads(raw_body)
-            except Exception:
-                self.send_json(400, {'error': 'Invalid JSON body'})
-                return
+            raw_body = self.rfile.read(content_length).decode('utf-8', errors='replace') if content_length > 0 else ''
+            body = {}
+            if raw_body and raw_body.strip():
+                try:
+                    body = json.loads(raw_body)
+                except Exception:
+                    try:
+                        import urllib.parse
+                        parsed_form = urllib.parse.parse_qs(raw_body)
+                        body = {k: v[0] for k, v in parsed_form.items()}
+                    except Exception:
+                        body = {}
+
+            # Query parameter fallback (e.g. POST with ?client_id=...)
+            if parsed.query:
+                import urllib.parse
+                qs = urllib.parse.parse_qs(parsed.query)
+                for k, v in qs.items():
+                    if k not in body:
+                        body[k] = v[0]
 
             client_id = body.get('client_id', '').strip()
             auth_hdr = self.headers.get('Authorization', '').replace('Bearer ', '').strip()
             secret = (body.get('auth_key') or body.get('auth_secret') or body.get('secret') or auth_hdr or '').strip()
+
+            if not client_id:
+                client_ip = self.headers.get('X-Forwarded-For') or self.client_address[0]
+                print(f"[HB_EMPTY_BODY_400] from {client_ip} headers={dict(self.headers)} raw={raw_body!r} query={parsed.query}", flush=True)
+                self.send_json(400, {'error': 'Missing client_id in heartbeat payload'})
+                return
 
             # Targeted client lookup (§3.D.2)
             with DB_LOCK:
@@ -8468,26 +9957,39 @@ PersistentKeepalive = 25
                 try: net_dict = json.loads(client.get('network_json') or '{}')
                 except: net_dict = {}
 
-            knx_ip_val = client.get('knx_ip', '')
-            knx_port_val = client.get('knx_port', 3671)
-            knx_dict = {}
-            if 'knx_status' in body:
-                knx_st = body.get('knx_status') or {}
-                knx_dict = knx_st
-                if knx_st.get('configured') and knx_st.get('gateway_ip'):
-                    knx_ip_val = knx_st['gateway_ip']
-                    knx_port_val = int(knx_st.get('gateway_port', 3671))
-                elif knx_st.get('reason') == 'no_knx_integration' or not knx_st.get('configured'):
-                    knx_ip_val = ''
-                    knx_port_val = None
+            knx_dict = body.get('knx_status') or {}
+            tech_dict = body.get('technologies') or {}
+
+            raw_gw_ip = str(knx_dict.get('gateway_ip') or '').strip()
+            is_knx_configured = bool(
+                knx_dict.get('configured') and
+                raw_gw_ip and
+                raw_gw_ip not in ['', '192.168.1.100', 'none', 'null', '—', '0.0.0.0'] and
+                knx_dict.get('reason') != 'no_knx_integration'
+            )
+
+            if is_knx_configured:
+                knx_ip_val = raw_gw_ip
+                try: knx_port_val = int(knx_dict.get('gateway_port', 3671))
+                except: knx_port_val = 3671
             else:
-                try: knx_dict = json.loads(client.get('knx_json') or '{}')
-                except: knx_dict = {}
+                knx_ip_val = None
+                knx_port_val = None
+                # Explicitly sanitize knx_dict and technologies dict to prevent any phantom values in JSON fields
+                knx_dict = {'configured': False, 'reachable': False, 'reason': 'no_knx_integration', 'gateway_ip': None, 'gateway_port': None}
+                if isinstance(tech_dict, dict) and 'knx' in tech_dict:
+                    tech_dict['knx'] = knx_dict
+                # If non-KNX client had an ets_port allocated, release it immediately!
+                if client.get('ets_port'):
+                    try:
+                        release_ets_port(client_id)
+                        sync_ets_nat_rules()
+                    except Exception as ex:
+                        print(f"[!] Error releasing phantom ETS port for {client_id}: {ex}")
 
             if 'ssh_public_key' in body and body['ssh_public_key']:
                 sync_client_ssh_user(client_id, body['ssh_public_key'])
 
-            tech_dict = body.get('technologies')
             if tech_dict is None:
                 try: tech_dict = json.loads(client.get('technologies_json') or '{}')
                 except: tech_dict = {}
@@ -8532,8 +10034,8 @@ PersistentKeepalive = 25
                             json.dumps(sys_dict),
                             json.dumps(net_dict),
                             json.dumps(knx_dict),
-                            knx_ip_val or '',
-                            knx_port_val if knx_port_val is not None else 3671,
+                            knx_ip_val,
+                            knx_port_val,
                             json.dumps(tech_dict),
                             json.dumps(backups_list),
                             pending_bk,
@@ -8541,6 +10043,20 @@ PersistentKeepalive = 25
                         ))
                 finally:
                     conn.close()
+
+            # Auto-allocate or update remote ETS port ONLY if client has genuine KNX integration
+            current_ets_port = client.get('ets_port')
+            if is_knx_configured:
+                ttype = 'onboard' if knx_ip_val in ['127.0.0.1', 'localhost', ''] else 'lan_device'
+                tip = knx_ip_val or '127.0.0.1'
+                tport = knx_port_val or 3671
+                if not current_ets_port or client.get('ets_target_ip') != tip or client.get('ets_target_port') != tport:
+                    try:
+                        allocated_p = allocate_ets_port(client_id, target_ip=tip, target_port=tport, target_type=ttype)
+                        sync_ets_nat_rules()
+                        resp_payload['ets_port'] = allocated_p
+                    except Exception as e:
+                        print(f"[!] Error auto-allocating ETS port for {client_id}: {e}")
 
             self.send_json(200, resp_payload)
             return
