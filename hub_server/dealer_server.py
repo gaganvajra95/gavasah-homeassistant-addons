@@ -413,6 +413,8 @@ def init_sqlite_database():
             conn.execute("ALTER TABLE clients ADD COLUMN backups_json TEXT")
         if 'pending_backup' not in cols:
             conn.execute("ALTER TABLE clients ADD COLUMN pending_backup TEXT")
+        if 'pending_command' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN pending_command TEXT")
 
         # Ensure Remote ETS UDP Port Forwarding columns exist
         if 'ets_port' not in cols:
@@ -7952,7 +7954,10 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             for k, v in extra_headers.items():
                 self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def do_HEAD(self):
         self.send_response(200)
@@ -8728,6 +8733,46 @@ PersistentKeepalive = 25
             self.send_json(200, {
                 'ok': True,
                 'message': f"Snapshot trigger '{b_name}' dispatched to gateway. The system will create and synchronize the archive within 30-60 seconds."
+            })
+            return
+
+        # --- REMOTE COMMAND DISPATCH (UNBAN & FIX, RESTART CORE, UPDATE AGENT) ---
+        elif parsed.path == '/api/client_command_trigger':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length > 0 else {}
+            client_id = body.get('client_id', '').strip()
+            action = body.get('action', '').strip()
+            params = body.get('params', {})
+
+            if not client_id or not action:
+                self.send_json(400, {'error': 'client_id and action required'})
+                return
+
+            clients = load_clients_state()
+            if client_id not in clients:
+                self.send_json(404, {'error': 'Client site not found'})
+                return
+            c = clients[client_id]
+            if user['role'] == 'dealer' and c.get('dealer_id') != user['id']:
+                self.send_json(403, {'error': 'Unauthorized for this client site'})
+                return
+
+            cmd_payload = json.dumps({'action': action, 'params': params, 'queued_at': int(time.time()), 'queued_by': user.get('username')})
+            with DB_LOCK:
+                conn = get_db_connection()
+                with conn:
+                    conn.execute("UPDATE clients SET pending_command = ? WHERE client_id = ?", (cmd_payload, client_id))
+                conn.close()
+
+            print(f"[CMD_TRIGGER] Queued command '{action}' for client '{client_id}'", flush=True)
+            self.send_json(200, {
+                'ok': True,
+                'message': f"Autonomous command '{action}' queued for gateway. It will execute on the next heartbeat pulse."
             })
             return
 
@@ -10000,6 +10045,7 @@ PersistentKeepalive = 25
                 except: backups_list = []
 
             pending_bk = client.get('pending_backup')
+            pending_cmd = client.get('pending_command')
             resp_payload = {
                 'ok': True,
                 'server_time': now,
@@ -10010,6 +10056,11 @@ PersistentKeepalive = 25
                     'action': 'create_backup',
                     'name': pending_bk
                 }
+            if pending_cmd:
+                try:
+                    resp_payload['command'] = json.loads(pending_cmd) if isinstance(pending_cmd, str) else pending_cmd
+                except Exception:
+                    resp_payload['command'] = {'action': pending_cmd}
 
             # Targeted single-row SQL update (§3.D.2)
             with DB_LOCK:
@@ -10027,7 +10078,8 @@ PersistentKeepalive = 25
                                 knx_port = ?,
                                 technologies_json = ?,
                                 backups_json = ?,
-                                pending_backup = CASE WHEN ? IS NOT NULL THEN NULL ELSE pending_backup END
+                                pending_backup = CASE WHEN ? IS NOT NULL THEN NULL ELSE pending_backup END,
+                                pending_command = CASE WHEN ? IS NOT NULL THEN NULL ELSE pending_command END
                             WHERE client_id = ?
                         """, (
                             now,
@@ -10039,6 +10091,7 @@ PersistentKeepalive = 25
                             json.dumps(tech_dict),
                             json.dumps(backups_list),
                             pending_bk,
+                            pending_cmd,
                             client_id
                         ))
                 finally:

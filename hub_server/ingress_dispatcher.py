@@ -10,6 +10,7 @@ import time
 import os
 import html
 import re
+import json
 
 DB_PATH = '/srv/gavasah-cloud/fleet.db'
 
@@ -238,6 +239,157 @@ OFFLINE_HTML_TEMPLATE = """<!DOCTYPE html>
 </body>
 </html>"""
 
+IP_BAN_HEALING_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Autonomous Self-Healing Active | GAVASAH Cloud</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{
+            background: #060913;
+            color: #f1f5f9;
+            font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }}
+        .card {{
+            background: radial-gradient(circle at top right, rgba(16, 185, 129, 0.12), transparent 50%),
+                        linear-gradient(180deg, #0e172a 0%, #090e1b 100%);
+            border: 1px solid rgba(16, 185, 129, 0.35);
+            border-radius: 20px;
+            max-width: 520px;
+            width: 100%;
+            padding: 44px 36px;
+            text-align: center;
+            box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.7), 0 0 35px rgba(16, 185, 129, 0.12);
+        }}
+        .icon-halo {{
+            width: 76px;
+            height: 76px;
+            margin: 0 auto 22px;
+            border-radius: 50%;
+            background: rgba(16, 185, 129, 0.15);
+            border: 2px solid rgba(16, 185, 129, 0.4);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 0 30px rgba(16, 185, 129, 0.25);
+            animation: pulse 2s infinite ease-in-out;
+        }}
+        @keyframes pulse {{
+            0%, 100% {{ transform: scale(1); opacity: 1; }}
+            50% {{ transform: scale(1.06); opacity: 0.85; }}
+        }}
+        .icon-halo svg {{ width: 38px; height: 38px; stroke: #10b981; }}
+        .badge-status {{
+            display: inline-block;
+            background: rgba(16, 185, 129, 0.2);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.4);
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 1.2px;
+            padding: 6px 14px;
+            border-radius: 9999px;
+            text-transform: uppercase;
+            margin-bottom: 16px;
+        }}
+        h1 {{ font-size: 23px; font-weight: 800; color: #ffffff; margin-bottom: 10px; }}
+        .gateway-tag {{
+            font-size: 13px;
+            color: #94a3b8;
+            margin-bottom: 18px;
+            font-family: monospace;
+            background: rgba(15, 23, 42, 0.6);
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }}
+        p {{ font-size: 14px; line-height: 1.6; color: #94a3b8; margin-bottom: 22px; }}
+        .note {{
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 14px;
+            padding: 18px 20px;
+            font-size: 13.5px;
+            color: #e2e8f0;
+            line-height: 1.55;
+            text-align: left;
+            margin-bottom: 24px;
+        }}
+        .progress-bar {{
+            height: 6px;
+            width: 100%;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 3px;
+            overflow: hidden;
+            margin-bottom: 12px;
+        }}
+        .progress-fill {{
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #10b981, #06b6d4);
+            transition: width 0.25s linear;
+        }}
+        .timer-text {{
+            font-size: 12.5px;
+            color: #64748b;
+        }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon-halo">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                <path d="m9 12 2 2 4-4"></path>
+            </svg>
+        </div>
+        <div class="badge-status">IP Ban Detected • Autonomous Self-Healing Active</div>
+        <h1>Restoring Home Assistant Access</h1>
+        <div class="gateway-tag">{client_display}</div>
+        <p>
+            Home Assistant Core temporarily restricted reverse tunnel connections (IP Ban 403). GAVASAH Cloud has automatically dispatched an unban & trusted-proxy self-healing command to the gateway.
+        </p>
+        <div class="note">
+            ⚡ <strong>Autonomous Recovery in Progress</strong><br>
+            The gateway is flushing the IP ban table and re-establishing authenticated ingress. Your browser will automatically reconnect once cleared.
+        </div>
+        <div class="progress-bar">
+            <div class="progress-fill" id="pfill"></div>
+        </div>
+        <div class="timer-text">
+            Reconnecting in <span id="countdown">20</span> seconds...
+        </div>
+    </div>
+    <script>
+        var total = 20;
+        var left = total;
+        var pfill = document.getElementById('pfill');
+        var cd = document.getElementById('countdown');
+        var timer = setInterval(function() {
+            left -= 1;
+            if (left <= 0) {
+                clearInterval(timer);
+                pfill.style.width = '100%';
+                cd.innerText = '0';
+                window.location.reload();
+            } else {
+                cd.innerText = left;
+                pfill.style.width = ((total - left) / total * 100) + '%';
+            }
+        }, 1000);
+    </script>
+</body>
+</html>"""
+
 _CLIENT_CACHE = {}
 _CACHE_TTL = 3.0  # 3-second in-memory lookup cache to eliminate SQLite churn
 
@@ -340,6 +492,20 @@ def get_client_info(slug):
     except Exception as e:
         print(f"[!] Dispatcher DB lookup error for {slug}: {e}", flush=True)
         return {'status': 'ERROR', 'error': str(e), 'slug': slug}
+
+def queue_client_command(client_id, cmd_dict):
+    """Queues an autonomous recovery command for the client to execute on its next pulse."""
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=5.0)
+        conn.execute(
+            "UPDATE clients SET pending_command = ? WHERE (client_id = ? OR domain LIKE ?) AND (pending_command IS NULL OR pending_command = '')",
+            (json.dumps(cmd_dict), client_id, f"{client_id}%")
+        )
+        conn.commit()
+        conn.close()
+        print(f"[*] Autonomous Self-Healer queued '{cmd_dict.get('action')}' for client '{client_id}'", flush=True)
+    except Exception as e:
+        print(f"[!] Dispatcher error queuing command for {client_id}: {e}", flush=True)
 
 def build_http_response(status_code, status_text, body_html):
     crlf = b"\r\n"
@@ -541,9 +707,34 @@ async def handle_connection(reader, writer):
             writer.close()
             return
 
-        # Send primed chunk if one was read during protocol auto-sensing
-        if primed_chunk:
-            writer.write(primed_chunk)
+        # Check the first upstream response buffer for 403 Forbidden (Home Assistant loopback IP Ban)
+        first_resp_chunk = primed_chunk
+        if not first_resp_chunk:
+            try:
+                first_resp_chunk = await asyncio.wait_for(up_reader.read(65536), timeout=2.5)
+            except Exception:
+                first_resp_chunk = b""
+
+        if first_resp_chunk and (b"403 Forbidden" in first_resp_chunk or b"403: Forbidden" in first_resp_chunk):
+            cid = client_info.get('client_id') or slug
+            queue_client_command(cid, {"action": "unban_and_fix", "reason": "ingress_403_detected"})
+            
+            client_display = html.escape(client_info.get('name') or slug)
+            resp_html = IP_BAN_HEALING_HTML_TEMPLATE.replace("{client_display}", client_display)
+            resp = build_http_response(200, "OK", resp_html)
+            writer.write(resp)
+            await writer.drain()
+            writer.close()
+            try:
+                up_writer.close()
+                await up_writer.wait_closed()
+            except Exception:
+                pass
+            return
+
+        # Pass through normal response chunk if one was read
+        if first_resp_chunk:
+            writer.write(first_resp_chunk)
             await writer.drain()
 
         async def pipe(src, dst):
