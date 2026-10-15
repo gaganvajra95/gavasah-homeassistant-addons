@@ -4025,7 +4025,12 @@ HTML_PAGE = """<!DOCTYPE html>
 
                     <div class="section-header">
                         <div class="section-title">🌐 Client Fleet Gateways & Hardware Telemetry</div>
-                        <button class="btn-action" onclick="openOnboardModal()">+ Onboard New Client</button>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <button class="btn-action" id="btn-fleet-update-center" style="display: none; background: linear-gradient(135deg, #0284c7, #0369a1); border: 1px solid #38bdf8;" onclick="openFleetUpdateModal()">
+                                🚀 Manufacturer Fleet Updates
+                            </button>
+                            <button class="btn-action" onclick="openOnboardModal()">+ Onboard New Client</button>
+                        </div>
                     </div>
 
                     <!-- Filter & Pagination Bar -->
@@ -7037,10 +7042,30 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                             ` : `
                                 <div style="color: #cbd5e1; font-weight: 500;">CPU: ${sys.cpu_percent}% &bull; RAM: ${sys.memory_percent}%</div>
                                 <div style="color: #94a3b8; font-size: 11px; margin-top: 2px;">💾 Storage: ${sys.disk_total_gb ? `${(sys.disk_total_gb - (sys.disk_free_gb || 0)).toFixed(1)} / ${Number(sys.disk_total_gb).toFixed(1)} GB (${Math.round(((sys.disk_total_gb - (sys.disk_free_gb || 0)) / sys.disk_total_gb) * 100)}%)` : (sys.disk_free_gb ? `${Number(sys.disk_free_gb).toFixed(1)} GB Free` : '—')}</div>
-                                <div style="color: #64748b; font-size: 10px; margin-top: 1px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap;">
-                                    <span>HAOS ${escapeHtml(sys.haos_version || '—')}${sys.core_version ? ` &bull; Core ${escapeHtml(sys.core_version)}` : ''}</span>
-                                    ${sys.addon_version ? `<span style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 3px; padding: 0 4px; font-size: 9px; font-weight: 600;" title="Gavasah Cloud Agent Version">v${escapeHtml(sys.addon_version)}</span>` : '<span style="background: rgba(148, 163, 184, 0.15); color: #94a3b8; border-radius: 3px; padding: 0 4px; font-size: 9px;" title="Older Cloud Agent (Update Recommended)">v1.1.x</span>'}
+                                <div style="color: #64748b; font-size: 10px; margin-top: 2px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap;">
+                                    <span>HAOS ${escapeHtml(sys.haos_version || '—')}</span>
+                                    ${sys.haos_update_available && currentUser.role === 'manufacturer' ? `<span style="color: #fbbf24; font-size: 9px;" title="HAOS update available (${escapeHtml(sys.haos_latest_version)})">⬆️</span>` : ''}
                                 </div>
+                                <div style="margin-top: 3px; display: flex; gap: 3px; flex-wrap: wrap; font-size: 9px; font-family: monospace;">
+                                    <span class="v-pill" style="background: rgba(148, 163, 184, 0.12); border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 3px; padding: 1px 4px; color: #cbd5e1;" title="Home Assistant Core: ${escapeHtml(sys.core_version || '—')} ${sys.core_latest_version ? `(Latest: ${escapeHtml(sys.core_latest_version)})` : ''}">
+                                        Core: ${escapeHtml(sys.core_version || '—')}
+                                        ${currentUser.role === 'manufacturer' && sys.core_update_available ? `<span style="color: #38bdf8; cursor: pointer; font-weight: bold; margin-left: 2px;" onclick="triggerClientUpdate('${c.client_id}', 'update_core', '${escapeHtml(c.name)}')" title="Update Core to ${escapeHtml(sys.core_latest_version)}">⬆️</span>` : ''}
+                                    </span>
+                                    <span class="v-pill" style="background: rgba(148, 163, 184, 0.12); border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 3px; padding: 1px 4px; color: #cbd5e1;" title="Supervisor: ${escapeHtml(sys.supervisor_version || '—')} ${sys.supervisor_latest_version ? `(Latest: ${escapeHtml(sys.supervisor_latest_version)})` : ''}">
+                                        Sup: ${escapeHtml(sys.supervisor_version || '—')}
+                                        ${currentUser.role === 'manufacturer' && sys.supervisor_update_available ? `<span style="color: #818cf8; cursor: pointer; font-weight: bold; margin-left: 2px;" onclick="triggerClientUpdate('${c.client_id}', 'update_supervisor', '${escapeHtml(c.name)}')" title="Update Supervisor to ${escapeHtml(sys.supervisor_latest_version)}">⬆️</span>` : ''}
+                                    </span>
+                                    <span class="v-pill" style="background: rgba(34, 211, 238, 0.12); border: 1px solid rgba(34, 211, 238, 0.3); border-radius: 3px; padding: 1px 4px; color: #22d3ee;" title="Gavasah Cloud Agent: v${escapeHtml(sys.addon_version || '1.1.x')} ${sys.addon_latest_version ? `(Latest: v${escapeHtml(sys.addon_latest_version)})` : ''}">
+                                        Agent: v${escapeHtml(sys.addon_version || '1.1.x')}
+                                        ${currentUser.role === 'manufacturer' && (sys.addon_version !== '1.2.0' || sys.addon_update_available) ? `<span style="color: #22d3ee; cursor: pointer; font-weight: bold; margin-left: 2px;" onclick="triggerClientUpdate('${c.client_id}', 'update_addon', '${escapeHtml(c.name)}')" title="Update Agent to v1.2.0">⬆️</span>` : ''}
+                                    </span>
+                                </div>
+                                ${sys.last_error ? `
+                                    <div style="margin-top: 3px; background: rgba(239, 68, 68, 0.18); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 3px; padding: 2px 5px; color: #f87171; font-size: 9px; display: flex; align-items: center; justify-content: space-between; cursor: pointer;" onclick="alert('⚠️ Gateway Command Error\n\nCommand: ${escapeHtml(sys.last_error.command || 'unknown')}\nTime: ${escapeHtml(sys.last_error.timestamp || '')}\n\nDetails:\n${escapeHtml(sys.last_error.error || '')}')" title="${escapeHtml(sys.last_error.error)}">
+                                        <span>⚠️ ${escapeHtml(sys.last_error.command || 'Error')}: ${escapeHtml((sys.last_error.error || '').slice(0, 24))}...</span>
+                                        <span style="font-weight: bold;">ℹ️</span>
+                                    </div>
+                                ` : ''}
                             `}
                         </td>
                         <td class="col-actions-menu">
@@ -7084,9 +7109,23 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                     <button type="button" class="action-menu-item" style="color: #38bdf8;" onclick="openSnapshotModal('${c.client_id}', '${escapeHtml(c.name)}'); closeAllActionMenus();">
                                         <span>📸</span> Snapshots & Backups
                                     </button>
-                                    <button type="button" class="action-menu-item" style="color: #22d3ee;" onclick="triggerAddonUpdate('${c.client_id}', '${escapeHtml(c.name)}'); closeAllActionMenus();" title="Dispatch over-the-air update to latest Gavasah Cloud Agent v1.2.0">
-                                        <span>🚀</span> Update Cloud Agent (v1.2.0)
+                                    <!-- Remote Reboot: Accessible to Manufacturer, Dealer, and Integrator -->
+                                    <button type="button" class="action-menu-item" style="color: #fb7185;" onclick="triggerClientReboot('${c.client_id}', '${escapeHtml(c.name)}'); closeAllActionMenus();" title="Remotely reboot this client gateway controller hardware">
+                                        <span>🔄</span> Remote Reboot Gateway
                                     </button>
+
+                                    <!-- Individual System Updates: Restricted to Manufacturer ONLY -->
+                                    ${currentUser.role === 'manufacturer' ? `
+                                        <button type="button" class="action-menu-item" style="color: #38bdf8;" onclick="triggerClientUpdate('${c.client_id}', 'update_core', '${escapeHtml(c.name)}'); closeAllActionMenus();" title="Update Home Assistant Core on this gateway">
+                                            <span>📦</span> Update HA Core ${sys.core_latest_version ? `(${escapeHtml(sys.core_latest_version)})` : ''}
+                                        </button>
+                                        <button type="button" class="action-menu-item" style="color: #818cf8;" onclick="triggerClientUpdate('${c.client_id}', 'update_supervisor', '${escapeHtml(c.name)}'); closeAllActionMenus();" title="Update Home Assistant Supervisor on this gateway">
+                                            <span>🛡️</span> Update HA Supervisor ${sys.supervisor_latest_version ? `(${escapeHtml(sys.supervisor_latest_version)})` : ''}
+                                        </button>
+                                        <button type="button" class="action-menu-item" style="color: #22d3ee;" onclick="triggerClientUpdate('${c.client_id}', 'update_addon', '${escapeHtml(c.name)}'); closeAllActionMenus();" title="Update Gavasah Cloud Agent add-on on this gateway">
+                                            <span>🚀</span> Update Gavasah Add-on (v1.2.0)
+                                        </button>
+                                    ` : ''}
                                     <button type="button" class="action-menu-item" onclick="openLogsModal('${c.client_id}'); closeAllActionMenus();">
                                         <span>📋</span> Telemetry Logs
                                     </button>
@@ -7108,6 +7147,12 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                 `;
             }).join('') || `<tr><td colspan="${currentUser.role === 'manufacturer' ? 9 : (currentUser.role === 'dealer' ? 8 : 7)}" style="text-align: center; color: #64748b; padding: 32px;">No gateways match the selected filter.</td></tr>`;
 
+            // Display Manufacturer Fleet Update button if role is manufacturer
+            const fleetUpdateBtn = document.getElementById('btn-fleet-update-center');
+            if (fleetUpdateBtn) {
+                fleetUpdateBtn.style.display = (currentUser.role === 'manufacturer') ? 'inline-flex' : 'none';
+            }
+
             // Restore open action menu if table was re-rendered
             if (activeActionMenuClientId) {
                 const restoredMenu = document.getElementById(`action-menu-${activeActionMenuClientId}`);
@@ -7127,26 +7172,93 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
         // ======================================================================
         
         // ======================================================================
-        // OVER-THE-AIR ADD-ON UPDATE DISPATCHER
+        // REMOTE REBOOT & OTA UPDATES DISPATCHERS
         // ======================================================================
-        async function triggerAddonUpdate(clientId, clientName) {
-            if (!confirm(`Dispatch Over-The-Air add-on update for '${clientName}'?\n\nThe gateway will reload the supervisor repository and upgrade to the latest Gavasah Cloud Agent release (v1.2.0) on its next heartbeat.`)) {
+        async function triggerClientReboot(clientId, clientName) {
+            if (!confirm(`⚠️ CONFIRM GATEWAY REBOOT\n\nAre you sure you want to remotely reboot Gavasah Gateway '${clientName}'?\n\nThe controller hardware will perform a safe host reboot and reconnect within 60-90 seconds.`)) {
                 return;
             }
             try {
                 const resp = await fetch('/api/client_command_trigger', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ client_id: clientId, action: 'update_addon' })
+                    body: JSON.stringify({ client_id: clientId, action: 'reboot_gateway' })
                 });
                 const res = await resp.json();
                 if (res.ok) {
-                    showToast(`OTA Add-on update dispatched for ${clientName}!`, 'success');
+                    showToast(`Host reboot dispatched for '${clientName}'! Reconnecting shortly.`, 'success');
                 } else {
-                    showToast(res.error || 'Failed to dispatch add-on update', 'error');
+                    showToast(res.error || 'Failed to dispatch reboot command', 'error');
                 }
             } catch (err) {
-                showToast(`Error dispatching update: ${err.message}`, 'error');
+                showToast(`Reboot error: ${err.message}`, 'error');
+            }
+        }
+
+        async function triggerClientUpdate(clientId, updateType, clientName) {
+            const titles = {
+                'update_core': 'Home Assistant Core',
+                'update_supervisor': 'Home Assistant Supervisor',
+                'update_addon': 'Gavasah Cloud Agent Add-on (v1.2.0)',
+                'update_all': 'Full System (Core + Supervisor + Add-on)'
+            };
+            const desc = titles[updateType] || updateType;
+            if (!confirm(`Dispatch Over-The-Air update for '${clientName}'?\n\nTarget: ${desc}\n\nThe gateway will execute the update on its next heartbeat pulse.`)) {
+                return;
+            }
+            try {
+                const resp = await fetch('/api/client_command_trigger', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ client_id: clientId, action: updateType })
+                });
+                const res = await resp.json();
+                if (res.ok) {
+                    showToast(`${desc} update dispatched for '${clientName}'!`, 'success');
+                } else {
+                    showToast(res.error || 'Failed to dispatch update', 'error');
+                }
+            } catch (err) {
+                showToast(`Update error: ${err.message}`, 'error');
+            }
+        }
+
+        function openFleetUpdateModal() {
+            const modal = document.getElementById('fleet-update-modal');
+            if (modal) modal.classList.add('active');
+        }
+
+        function closeFleetUpdateModal() {
+            const modal = document.getElementById('fleet-update-modal');
+            if (modal) modal.classList.remove('active');
+        }
+
+        async function triggerFleetBatchUpdate(updateType) {
+            const titles = {
+                'update_addon': 'Gavasah Cloud Agent Add-on (v1.2.0)',
+                'update_core': 'Home Assistant Core',
+                'update_supervisor': 'Home Assistant Supervisor',
+                'update_all': 'Master Full Fleet Update (All Subsystems)'
+            };
+            const desc = titles[updateType] || updateType;
+            if (!confirm(`⚠️ CONFIRM FLEET-WIDE BATCH UPDATE\n\nComponent: ${desc}\n\nThis will dispatch update commands across ALL client gateways in the fleet. Proceed?`)) {
+                return;
+            }
+            try {
+                const resp = await fetch('/api/fleet_command_trigger', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: updateType })
+                });
+                const res = await resp.json();
+                if (res.ok) {
+                    showToast(`Successfully queued ${desc} across ${res.count} gateways!`, 'success');
+                    closeFleetUpdateModal();
+                } else {
+                    showToast(res.error || 'Failed to dispatch fleet update', 'error');
+                }
+            } catch (err) {
+                showToast(`Fleet update error: ${err.message}`, 'error');
             }
         }
     
@@ -8855,6 +8967,68 @@ All active sessions for this integrator will be terminated immediately.` : '';
 
 </script>
 
+    <!-- Manufacturer Fleet Update Center Modal -->
+    <div class="modal" id="fleet-update-modal">
+        <div class="modal-content" style="max-width: 580px;">
+            <div class="modal-header">
+                <div style="display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 15px; color: #fff;">
+                    <span>🚀</span> Manufacturer Fleet Update Center (OTA)
+                </div>
+                <div style="cursor: pointer; font-size: 18px;" onclick="closeFleetUpdateModal()">&times;</div>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px;">
+                <p style="color: #94a3b8; font-size: 12px; margin-bottom: 16px;">
+                    Dispatch synchronized Over-The-Air updates across all active client gateways in the fleet. Each gateway will receive and execute the update instruction upon its next heartbeat pulse (within 60 seconds).
+                </p>
+
+                <div style="display: flex; flex-direction: column; gap: 10px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: rgba(34, 211, 238, 0.08); border: 1px solid rgba(34, 211, 238, 0.25); border-radius: 8px;">
+                        <div>
+                            <div style="font-size: 13px; font-weight: 700; color: #22d3ee;">Gavasah Cloud Agent Add-on</div>
+                            <div style="font-size: 11px; color: #94a3b8;">Updates agent container to latest release (v1.2.0 with Self-Healing Engine)</div>
+                        </div>
+                        <button class="btn-sm" style="background: #0284c7; color: #fff; font-weight: 700; border: none; padding: 6px 12px;" onclick="triggerFleetBatchUpdate('update_addon')">
+                            Update All Add-ons
+                        </button>
+                    </div>
+
+                    <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px;">
+                        <div>
+                            <div style="font-size: 13px; font-weight: 700; color: #38bdf8;">Home Assistant Core</div>
+                            <div style="font-size: 11px; color: #94a3b8;">Triggers Core engine update to latest available release across fleet</div>
+                        </div>
+                        <button class="btn-sm" style="background: #0369a1; color: #fff; font-weight: 700; border: none; padding: 6px 12px;" onclick="triggerFleetBatchUpdate('update_core')">
+                            Update All Core
+                        </button>
+                    </div>
+
+                    <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: rgba(129, 140, 248, 0.08); border: 1px solid rgba(129, 140, 248, 0.25); border-radius: 8px;">
+                        <div>
+                            <div style="font-size: 13px; font-weight: 700; color: #818cf8;">Home Assistant Supervisor</div>
+                            <div style="font-size: 11px; color: #94a3b8;">Updates Supervisor container to latest release across fleet</div>
+                        </div>
+                        <button class="btn-sm" style="background: #4f46e5; color: #fff; font-weight: 700; border: none; padding: 6px 12px;" onclick="triggerFleetBatchUpdate('update_supervisor')">
+                            Update All Supervisor
+                        </button>
+                    </div>
+
+                    <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: rgba(168, 85, 247, 0.08); border: 1px solid rgba(168, 85, 247, 0.25); border-radius: 8px;">
+                        <div>
+                            <div style="font-size: 13px; font-weight: 700; color: #c084fc;">Master Full Fleet Update</div>
+                            <div style="font-size: 11px; color: #94a3b8;">Sequential update: Store reload &rarr; Add-on &rarr; Core &rarr; Supervisor</div>
+                        </div>
+                        <button class="btn-sm" style="background: #9333ea; color: #fff; font-weight: 700; border: none; padding: 6px 12px;" onclick="triggerFleetBatchUpdate('update_all')">
+                            ⚡ Master Update All
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 12px 20px;">
+                <button type="button" class="btn-sm" onclick="closeFleetUpdateModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Integration Diagnostics Modal -->
     <div class="modal" id="integration-diag-modal">
         <div class="modal-content" style="max-width: 620px;">
@@ -9967,9 +10141,23 @@ PersistentKeepalive = 25
                 self.send_json(404, {'error': 'Client site not found'})
                 return
             c = clients[client_id]
-            if user['role'] == 'dealer' and c.get('dealer_id') != user['id']:
-                self.send_json(403, {'error': 'Unauthorized for this client site'})
-                return
+
+            # Role Authorization:
+            # 1. Updates (Core, Supervisor, Add-on, Master) restricted to Manufacturer ONLY
+            if action in ['update_core', 'update_supervisor', 'update_addon', 'update_all']:
+                if user.get('role') != 'manufacturer':
+                    self.send_json(403, {'error': 'Updating Home Assistant Core, Supervisor, and Add-ons is restricted to Manufacturer HQ only'})
+                    return
+
+            # 2. Remote Reboot & Diagnostics: Available to Manufacturer, Dealer, and Integrator
+            elif action in ['reboot_gateway', 'reboot_host', 'restart_core', 'unban_and_fix']:
+                if user.get('role') == 'dealer' and c.get('dealer_id') != user.get('id'):
+                    self.send_json(403, {'error': 'Unauthorized for this client site'})
+                    return
+                elif user.get('role') == 'integrator':
+                    if c.get('integrator_id') != user.get('id') and c.get('dealer_id') != user.get('dealer_id'):
+                        self.send_json(403, {'error': 'Unauthorized for this client site'})
+                        return
 
             with DB_LOCK:
                 conn = get_db_connection()
@@ -10017,10 +10205,49 @@ PersistentKeepalive = 25
                     conn.execute("UPDATE clients SET pending_command = ? WHERE client_id = ?", (cmd_payload, client_id))
                 conn.close()
 
-            print(f"[CMD_TRIGGER] Queued command '{action}' for client '{client_id}'", flush=True)
+            print(f"[CMD_TRIGGER] Queued command '{action}' for client '{client_id}' by {user.get('role')} '{user.get('username')}'", flush=True)
             self.send_json(200, {
                 'ok': True,
                 'message': f"Autonomous command '{action}' queued for gateway. It will execute on the next heartbeat pulse."
+            })
+            return
+
+        # --- BATCH FLEET COMMAND DISPATCH (MANUFACTURER ONLY) ---
+        elif parsed.path == '/api/fleet_command_trigger':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+            if user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Batch Fleet Commands are restricted to Manufacturer HQ only'})
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length > 0 else {}
+            action = body.get('action', '').strip()
+            params = body.get('params', {})
+
+            if not action:
+                self.send_json(400, {'error': 'action required'})
+                return
+
+            now = int(time.time())
+            cmd_payload = json.dumps({'action': action, 'params': params, 'queued_at': now, 'queued_by': 'manufacturer_hq'})
+
+            count = 0
+            with DB_LOCK:
+                conn = get_db_connection()
+                with conn:
+                    cur = conn.cursor()
+                    cur.execute("UPDATE clients SET pending_command = ?", (cmd_payload,))
+                    count = cur.rowcount
+                conn.close()
+
+            print(f"[FLEET_CMD_TRIGGER] Queued batch '{action}' across {count} client gateways", flush=True)
+            self.send_json(200, {
+                'ok': True,
+                'count': count,
+                'message': f"Batch command '{action}' queued for all {count} fleet gateways."
             })
             return
 
