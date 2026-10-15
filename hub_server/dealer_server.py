@@ -2489,6 +2489,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .modal-body {
             padding: 24px;
             overflow-y: auto;
+            overflow-x: hidden;
             flex: 1;
         }
 
@@ -4664,26 +4665,28 @@ HTML_PAGE = """<!DOCTYPE html>
 
     <!-- Edit Client Modal -->
     <div class="modal" id="edit-modal">
-        <div class="modal-content">
+        <div class="modal-content" style="max-width: 620px; width: 100%; box-sizing: border-box;">
             <div class="modal-header">
-                <div>Edit Client Site Configuration</div>
-                <div style="cursor: pointer;" onclick="closeEditModal()">&times;</div>
+                <div style="font-size: 15px; font-weight: 700; color: #fff;">Edit Client Site Configuration</div>
+                <div style="cursor: pointer; font-size: 20px; color: #94a3b8;" onclick="closeEditModal()">&times;</div>
             </div>
             <form onsubmit="handleClientEditSubmit(event)">
-                <div class="modal-body">
+                <div class="modal-body" style="overflow-x: hidden; overflow-y: auto; max-height: 78vh; padding: 20px 24px;">
                     <input type="hidden" id="edit-client-id">
                     <input type="hidden" id="edit-id">
                     
-                    <div class="form-group" id="edit-dealer-group">
-                        <label class="form-label">ASSIGNED DEALER</label>
-                        <select id="edit-dealer-select" class="form-input" onchange="onEditDealerChange()">
-                        </select>
-                    </div>
-                    <div class="form-group" id="edit-integrator-group">
-                        <label class="form-label">ASSIGNED INTEGRATOR</label>
-                        <select id="edit-integrator-select" class="form-input">
-                            <!-- Populated with integrators -->
-                        </select>
+                    <div id="edit-assignment-row" style="display: flex; gap: 12px; margin-bottom: 14px; flex-wrap: wrap;">
+                        <div class="form-group" id="edit-dealer-group" style="flex: 1; min-width: 220px; margin-bottom: 0;">
+                            <label class="form-label">ASSIGNED DEALER</label>
+                            <select id="edit-dealer-select" class="form-input" onchange="onEditDealerChange()">
+                            </select>
+                        </div>
+                        <div class="form-group" id="edit-integrator-group" style="flex: 1; min-width: 220px; margin-bottom: 0;">
+                            <label class="form-label">ASSIGNED INTEGRATOR</label>
+                            <select id="edit-integrator-select" class="form-input">
+                                <!-- Populated with integrators -->
+                            </select>
+                        </div>
                     </div>
 
                     <div class="form-group">
@@ -4694,12 +4697,10 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="form-group">
                         <label class="form-label">AUTHENTICATION SECRET (AUTH_KEY)</label>
                         <div class="form-input-wrap">
-                            <input type="text" id="edit-secret" class="form-input">
-                            <button type="button" class="btn-sm" style="position: absolute; right: 6px;" onclick="generateEditSecret()">🎲</button>
+                            <input type="text" id="edit-secret" class="form-input" style="font-family: 'JetBrains Mono', monospace; font-size: 13px; padding-right: 110px;">
+                            <button type="button" class="btn-sm" style="position: absolute; right: 6px; padding: 6px 12px; font-size: 12px;" onclick="generateEditSecret()" title="Regenerate Secret Key">🎲 Generate</button>
                         </div>
                     </div>
-
-
 
                     <div class="form-group" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 10px; padding: 14px 16px; margin-top: 14px;">
                         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
@@ -4712,53 +4713,60 @@ HTML_PAGE = """<!DOCTYPE html>
                             Configure threshold escalation (in minutes or hours) triggered by missed heartbeats or subsystem/integration failures:
                         </div>
 
-                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+                        <!-- Optimized vertical stack layout with zero horizontal scrolling -->
+                        <div style="display: flex; flex-direction: column; gap: 10px;">
                             <!-- Tier 1: Delayed Pulse / Minor Issues (Yellow) -->
-                            <div style="background: rgba(250, 204, 21, 0.05); border: 1px solid rgba(250, 204, 21, 0.25); border-radius: 8px; padding: 12px;">
-                                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
-                                    <span style="font-size: 11px; font-weight: 700; color: #facc15;">🟡 DELAYED / DEGRADED</span>
-                                </div>
-                                <div style="font-size: 10px; color: #94a3b8; margin-bottom: 8px;">
-                                    Warns <strong>Integrator</strong>
+                            <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(250, 204, 21, 0.05); border: 1px solid rgba(250, 204, 21, 0.25); border-radius: 8px; padding: 10px 14px; gap: 12px; flex-wrap: wrap;">
+                                <div style="flex: 1; min-width: 180px;">
+                                    <div style="font-size: 12px; font-weight: 700; color: #facc15; display: flex; align-items: center; gap: 6px;">
+                                        🟡 DELAYED / DEGRADED
+                                    </div>
+                                    <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">
+                                        Warns <strong>Integrator</strong>
+                                    </div>
                                 </div>
                                 <div style="display: flex; gap: 8px; align-items: center;">
-                                    <input type="number" id="edit-hb-delayed-val" class="form-input" min="1" max="720" step="1" placeholder="3" style="padding: 9px 12px; font-size: 14px; font-family: 'JetBrains Mono', monospace; font-weight: 700; text-align: center; flex: 1.8; min-width: 85px;" required>
-                                    <select id="edit-hb-delayed-unit" class="form-input" style="padding: 9px 8px; font-size: 12px; font-weight: 600; width: 85px; flex-shrink: 0;">
-                                        <option value="m">Min</option>
+                                    <input type="number" id="edit-hb-delayed-val" class="form-input" min="1" max="720" step="1" placeholder="3" style="width: 85px; font-size: 14px; font-family: 'JetBrains Mono', monospace; font-weight: 700; text-align: center; padding: 8px 10px;" required>
+                                    <select id="edit-hb-delayed-unit" class="form-input" style="width: 100px; font-size: 12px; font-weight: 600; padding: 8px 10px;">
+                                        <option value="m">Minutes</option>
                                         <option value="h">Hours</option>
                                     </select>
                                 </div>
                             </div>
 
                             <!-- Tier 2: Warning (Orange) -->
-                            <div style="background: rgba(251, 146, 60, 0.05); border: 1px solid rgba(251, 146, 60, 0.25); border-radius: 8px; padding: 12px;">
-                                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
-                                    <span style="font-size: 11px; font-weight: 700; color: #fb923c;">🟠 WARNING</span>
-                                </div>
-                                <div style="font-size: 10px; color: #94a3b8; margin-bottom: 8px;">
-                                    Warns <strong>Integrator + Dealer</strong>
+                            <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(251, 146, 60, 0.05); border: 1px solid rgba(251, 146, 60, 0.25); border-radius: 8px; padding: 10px 14px; gap: 12px; flex-wrap: wrap;">
+                                <div style="flex: 1; min-width: 180px;">
+                                    <div style="font-size: 12px; font-weight: 700; color: #fb923c; display: flex; align-items: center; gap: 6px;">
+                                        🟠 WARNING LEVEL
+                                    </div>
+                                    <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">
+                                        Warns <strong>Integrator + Dealer</strong>
+                                    </div>
                                 </div>
                                 <div style="display: flex; gap: 8px; align-items: center;">
-                                    <input type="number" id="edit-hb-warning-val" class="form-input" min="1" max="720" step="1" placeholder="5" style="padding: 9px 12px; font-size: 14px; font-family: 'JetBrains Mono', monospace; font-weight: 700; text-align: center; flex: 1.8; min-width: 85px;" required>
-                                    <select id="edit-hb-warning-unit" class="form-input" style="padding: 9px 8px; font-size: 12px; font-weight: 600; width: 85px; flex-shrink: 0;">
-                                        <option value="m">Min</option>
+                                    <input type="number" id="edit-hb-warning-val" class="form-input" min="1" max="720" step="1" placeholder="5" style="width: 85px; font-size: 14px; font-family: 'JetBrains Mono', monospace; font-weight: 700; text-align: center; padding: 8px 10px;" required>
+                                    <select id="edit-hb-warning-unit" class="form-input" style="width: 100px; font-size: 12px; font-weight: 600; padding: 8px 10px;">
+                                        <option value="m">Minutes</option>
                                         <option value="h">Hours</option>
                                     </select>
                                 </div>
                             </div>
 
                             <!-- Tier 3: Offline (Red) -->
-                            <div style="background: rgba(239, 68, 68, 0.05); border: 1px solid rgba(239, 68, 68, 0.25); border-radius: 8px; padding: 12px;">
-                                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
-                                    <span style="font-size: 11px; font-weight: 700; color: #f87171;">🔴 OFFLINE / CRITICAL</span>
-                                </div>
-                                <div style="font-size: 10px; color: #94a3b8; margin-bottom: 8px;">
-                                    Warns <strong>All + Manufacturer</strong>
+                            <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(239, 68, 68, 0.05); border: 1px solid rgba(239, 68, 68, 0.25); border-radius: 8px; padding: 10px 14px; gap: 12px; flex-wrap: wrap;">
+                                <div style="flex: 1; min-width: 180px;">
+                                    <div style="font-size: 12px; font-weight: 700; color: #f87171; display: flex; align-items: center; gap: 6px;">
+                                        🔴 OFFLINE / CRITICAL
+                                    </div>
+                                    <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">
+                                        Warns <strong>All + Manufacturer HQ</strong>
+                                    </div>
                                 </div>
                                 <div style="display: flex; gap: 8px; align-items: center;">
-                                    <input type="number" id="edit-hb-offline-val" class="form-input" min="1" max="720" step="1" placeholder="10" style="padding: 9px 12px; font-size: 14px; font-family: 'JetBrains Mono', monospace; font-weight: 700; text-align: center; flex: 1.8; min-width: 85px;" required>
-                                    <select id="edit-hb-offline-unit" class="form-input" style="padding: 9px 8px; font-size: 12px; font-weight: 600; width: 85px; flex-shrink: 0;">
-                                        <option value="m">Min</option>
+                                    <input type="number" id="edit-hb-offline-val" class="form-input" min="1" max="720" step="1" placeholder="10" style="width: 85px; font-size: 14px; font-family: 'JetBrains Mono', monospace; font-weight: 700; text-align: center; padding: 8px 10px;" required>
+                                    <select id="edit-hb-offline-unit" class="form-input" style="width: 100px; font-size: 12px; font-weight: 600; padding: 8px 10px;">
+                                        <option value="m">Minutes</option>
                                         <option value="h">Hours</option>
                                     </select>
                                 </div>
@@ -4767,8 +4775,8 @@ HTML_PAGE = """<!DOCTYPE html>
                     </div>
 
                     <div class="form-group" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(0, 240, 255, 0.25); border-radius: 10px; padding: 12px 16px; margin-top: 14px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                            <div style="flex: 1; min-width: 200px;">
                                 <label class="form-label" style="margin-bottom: 2px; color: #fff; font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
                                     🌐 CLIENT REMOTE ACCESS (INGRESS)
                                 </label>
@@ -4781,18 +4789,18 @@ HTML_PAGE = """<!DOCTYPE html>
                                     <input type="checkbox" id="edit-remote-toggle" onchange="onEditRemoteToggleChange(this.checked)">
                                     <span class="toggle-slider"></span>
                                 </label>
-                                <span id="edit-remote-status-text" class="toggle-pill-badge pill-live" style="min-width: 65px; text-align: center;">🟢 LIVE</span>
+                                <span id="edit-remote-status-text" class="toggle-pill-badge pill-live" style="min-width: 75px; text-align: center;">🟢 LIVE</span>
                             </div>
                         </div>
                     </div>
 
                     <div class="form-group" style="margin-top: 14px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 12px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
                             <label class="form-label" style="margin-bottom: 0; color: #38bdf8; font-weight: 600;">📋 CLIENT ADD-ON CONFIGURATION (YAML)</label>
                             <button type="button" class="btn-sm" style="padding: 4px 10px; font-size: 11px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4);" onclick="copyAddonConfig()">📋 Copy Config</button>
                         </div>
                         <div style="font-size: 11px; color: #94a3b8; margin-bottom: 6px;">Paste into your Home Assistant <strong>Gavasah Cloud Agent</strong> Add-on configuration:</div>
-                        <pre class="config-box" id="edit-config-snippet" style="background: #030610; border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 12px 14px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #38bdf8; white-space: pre-wrap; line-height: 1.5; user-select: all; margin: 0; max-height: 160px; overflow-y: auto;"></pre>
+                        <pre class="config-box" id="edit-config-snippet" style="background: #030610; border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 12px 14px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #38bdf8; white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; line-height: 1.5; user-select: all; margin: 0; max-height: 160px; overflow-y: auto; overflow-x: hidden;"></pre>
                     </div>
                 </div>
                 <div class="modal-footer">
