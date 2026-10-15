@@ -872,11 +872,73 @@ def detect_all_technologies(opts):
         "offline_reason": matter_offline_reason
     }
 
+    # 5. CoolMaster Subsystem Detection (CoolMasterNet / CoolAutomation HVAC)
+    coolmaster_entries = []
+    for spath in ['/homeassistant/.storage/core.config_entries', '/config/.storage/core.config_entries']:
+        if os.path.exists(spath):
+            try:
+                with open(spath, 'r', encoding='utf-8') as f:
+                    entries = json.load(f).get('data', {}).get('entries', [])
+                    for e in entries:
+                        domain = e.get('domain', '')
+                        if domain in ['coolmaster', 'coolmasternet', 'coolautomation']:
+                            data = e.get('data', {})
+                            host = data.get('host') or ''
+                            port = data.get('port') or 10102
+                            coolmaster_entries.append({
+                                "domain": domain,
+                                "title": e.get('title', 'CoolMasterNet HVAC'),
+                                "host": host,
+                                "port": port,
+                                "state": e.get('state', 'loaded')
+                            })
+            except Exception:
+                pass
+
+    coolmaster_status = "not_configured"
+    coolmaster_offline_reason = ""
+    if coolmaster_entries:
+        unreachable_cms = []
+        for ent in coolmaster_entries:
+            ent_host = ent.get("host")
+            if not ent_host:
+                m = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', ent.get("title", ""))
+                if m: ent_host = m.group(0)
+            if ent_host:
+                is_ok = False
+                for probe_port in [ent.get("port", 10102), 10102, 4321, 23]:
+                    try:
+                        with socket.create_connection((ent_host, probe_port), timeout=1.0):
+                            is_ok = True
+                            break
+                    except Exception:
+                        pass
+                ent["online"] = is_ok
+                if not is_ok:
+                    unreachable_cms.append(f"{ent_host}:{ent.get('port', 10102)} (unreachable)")
+            else:
+                ent["online"] = (ent.get("state") == "loaded")
+
+        if unreachable_cms:
+            coolmaster_status = "offline" if len(unreachable_cms) == len(coolmaster_entries) else "degraded"
+            coolmaster_offline_reason = f"CoolMaster unreachable: {', '.join(unreachable_cms)}"
+        else:
+            coolmaster_status = "online"
+
+    coolmaster_info = {
+        "detected": len(coolmaster_entries) > 0,
+        "type": "CoolMasterNet",
+        "entries": coolmaster_entries,
+        "status": coolmaster_status,
+        "offline_reason": coolmaster_offline_reason
+    }
+
     return {
         "knx": knx_info,
         "zigbee": zigbee_info,
         "lutron": lutron_info,
         "matter": matter_info,
+        "coolmaster": coolmaster_info,
         "failed_core_entries": failed_core_entries
     }
 

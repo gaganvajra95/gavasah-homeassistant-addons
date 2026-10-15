@@ -267,7 +267,7 @@ def sync_ets_nat_rules():
         # 5. Fetch all active clients with an ets_port
         with DB_LOCK:
             conn = get_db_connection()
-            rows = conn.execute("SELECT client_id, ets_port, wg_ip FROM clients WHERE ets_port IS NOT NULL AND wg_ip IS NOT NULL").fetchall()
+            rows = conn.execute("SELECT client_id, ets_port, wg_ip FROM clients WHERE ets_port IS NOT NULL AND wg_ip IS NOT NULL AND (knx_remote_enabled IS NULL OR knx_remote_enabled != 0)").fetchall()
             conn.close()
 
         count = 0
@@ -368,7 +368,8 @@ def init_sqlite_database():
             hb_warning_interval INTEGER DEFAULT 300,
             hb_offline_interval INTEGER DEFAULT 600,
             approval_status TEXT DEFAULT 'approved',
-            rejection_reason TEXT
+            rejection_reason TEXT,
+            knx_remote_enabled INTEGER NOT NULL DEFAULT 1
         );
 
         CREATE TABLE IF NOT EXISTS client_logs (
@@ -434,6 +435,8 @@ def init_sqlite_database():
             conn.execute("ALTER TABLE clients ADD COLUMN approval_status TEXT DEFAULT 'approved'")
         if 'rejection_reason' not in cols:
             conn.execute("ALTER TABLE clients ADD COLUMN rejection_reason TEXT")
+        if 'knx_remote_enabled' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN knx_remote_enabled INTEGER NOT NULL DEFAULT 1")
 
         # Ensure Remote ETS UDP Port Forwarding columns exist
         if 'ets_port' not in cols:
@@ -796,6 +799,7 @@ def load_clients_state():
         for r in cur.fetchall():
             c = dict(r)
             c['remote_enabled'] = bool(c.get('remote_enabled', 1))
+            c['knx_remote_enabled'] = bool(c.get('knx_remote_enabled', 1))
             try: c['system'] = json.loads(c.get('system_json') or '{}')
             except: c['system'] = {}
             try: c['network'] = json.loads(c.get('network_json') or '{}')
@@ -864,8 +868,9 @@ def save_clients_state(data):
                         ets_port, ets_target_type, ets_target_ip, ets_target_port, ets_port_assigned_at,
                         onboarded_at,
                         hb_delayed_interval, hb_warning_interval, hb_offline_interval,
-                        approval_status, rejection_reason
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        approval_status, rejection_reason,
+                        knx_remote_enabled
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (c.get('client_id', cid), c.get('name', cid), c.get('dealer_id', 'owner_master'), c.get('dealer_name', 'Master Manufacturer (Direct)'),
                          c.get('integrator_id'), c.get('integrator_name', 'Direct Dealer Supervision'), c.get('domain', f"{cid}.gavasah.com"),
                          c.get('auth_secret', ''), int(c.get('dashboard_port', d_port)), int(c.get('ssh_port', s_port)),
@@ -882,7 +887,8 @@ def save_clients_state(data):
                          int(c.get('hb_warning_interval') or 300),
                          int(c.get('hb_offline_interval') or 600),
                          c.get('approval_status', 'approved'),
-                         c.get('rejection_reason', ''))
+                         c.get('rejection_reason', ''),
+                         1 if c.get('knx_remote_enabled', True) else 0)
                     )
             conn.close()
             return True
@@ -3315,6 +3321,11 @@ HTML_PAGE = """<!DOCTYPE html>
             color: #34d399;
             border: 1px solid rgba(16, 185, 129, 0.3);
         }
+        .tech-coolmaster {
+            background: rgba(6, 182, 212, 0.12);
+            color: #22d3ee;
+            border: 1px solid rgba(6, 182, 212, 0.35);
+        }
         .tech-default {
             background: rgba(100, 116, 139, 0.12);
             color: #94a3b8;
@@ -4631,7 +4642,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <span>⚡ Autonomous Protocol & KNX Discovery</span>
                         </div>
                         <div style="font-size: 11px; color: #94a3b8; margin-top: 3px;">
-                            The GAVASAH add-on automatically inspects Home Assistant to discover whether the site uses KNX, Lutron, Zigbee, or other protocols, retrieving gateway IP & port autonomously without manual entry.
+                            The GAVASAH add-on automatically inspects Home Assistant to discover whether the site uses KNX, Lutron, Zigbee, CoolMaster, or other protocols, retrieving gateway IP & port autonomously without manual entry.
                         </div>
                     </div>
                     <div class="form-group" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(0, 240, 255, 0.25); border-radius: 10px; padding: 12px 16px; margin-top: 14px;">
@@ -4694,13 +4705,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <input type="text" id="edit-name" class="form-input" required>
                     </div>
 
-                    <div class="form-group">
-                        <label class="form-label">AUTHENTICATION SECRET (AUTH_KEY)</label>
-                        <div class="form-input-wrap">
-                            <input type="text" id="edit-secret" class="form-input" style="font-family: 'JetBrains Mono', monospace; font-size: 13px; padding-right: 110px;">
-                            <button type="button" class="btn-sm" style="position: absolute; right: 6px; padding: 6px 12px; font-size: 12px;" onclick="generateEditSecret()" title="Regenerate Secret Key">🎲 Generate</button>
-                        </div>
-                    </div>
+                    <input type="hidden" id="edit-secret">
 
                     <div class="form-group" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 10px; padding: 14px 16px; margin-top: 14px;">
                         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
@@ -4790,6 +4795,26 @@ HTML_PAGE = """<!DOCTYPE html>
                                     <span class="toggle-slider"></span>
                                 </label>
                                 <span id="edit-remote-status-text" class="toggle-pill-badge pill-live" style="min-width: 75px; text-align: center;">🟢 LIVE</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-group" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(192, 132, 252, 0.3); border-radius: 10px; padding: 12px 16px; margin-top: 12px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                            <div style="flex: 1; min-width: 200px;">
+                                <label class="form-label" style="margin-bottom: 2px; color: #c084fc; font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+                                    ⚡ REMOTE KNX ACCESS (DEVICE PROGRAMMING)
+                                </label>
+                                <div style="font-size: 11px; color: #94a3b8;" id="edit-knx-remote-help">
+                                    Enable or suspend remote ETS tunneling and UDP port forwarding for KNX device programming.
+                                </div>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <label class="toggle-switch" title="Toggle Remote KNX Device Programming Access">
+                                    <input type="checkbox" id="edit-knx-remote-toggle" onchange="onEditKnxRemoteToggleChange(this.checked)">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                                <span id="edit-knx-remote-status-text" class="toggle-pill-badge pill-live" style="min-width: 75px; text-align: center;">🟢 LIVE</span>
                             </div>
                         </div>
                     </div>
@@ -6690,7 +6715,7 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                 const warnHuman = formatIntervalHuman(warnLimit);
                                 const offHuman = formatIntervalHuman(offLimit);
 
-                                // Check for integration & subsystem issues (KNX, Zigbee, Lutron, Matter, HA Core)
+                                // Check for integration & subsystem issues (KNX, Zigbee, Lutron, Matter, CoolMaster, HA Core)
                                 let integrationIssues = [];
                                 if (c.knx_ip && c.knx_status) {
                                     if (c.knx_status.configured && (c.knx_status.reachable === false || c.knx_status.state === 'error' || c.knx_status.state === 'disconnected')) {
@@ -6699,8 +6724,11 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                 }
                                 if (c.technologies) {
                                     for (const [techKey, techVal] of Object.entries(c.technologies)) {
-                                        if (techVal && (techVal.status === 'error' || techVal.healthy === false || techVal.state === 'failed')) {
-                                            integrationIssues.push(`${techKey.toUpperCase()} failure`);
+                                        if (techVal && techVal.detected) {
+                                            if (techVal.status === 'error' || techVal.status === 'offline' || techVal.healthy === false || techVal.state === 'failed') {
+                                                const prettyName = techKey === 'coolmaster' ? 'CoolMaster HVAC' : techKey.toUpperCase();
+                                                integrationIssues.push(`${prettyName} failure`);
+                                            }
                                         }
                                     }
                                 }
@@ -6875,6 +6903,18 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                         }
                                     }
 
+                                    // 6. CoolMaster (CoolMasterNet / CoolAutomation VRV/VRF HVAC)
+                                    const coolmaster = tech.coolmaster || {};
+                                    if (coolmaster.detected || (coolmaster.entries && coolmaster.entries.length > 0)) {
+                                        const isCmOffline = Boolean(coolmaster.status === 'offline' || coolmaster.offline_reason);
+                                        const cmTitle = coolmaster.entries && coolmaster.entries.length > 0 ? coolmaster.entries.map(e => e.title || `${e.host || ''}:${e.port || 10102}`).join(', ') : 'CoolMaster Gateway';
+                                        if (isCmOffline) {
+                                            badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="CoolMaster Offline • Reason: ${escapeHtml(coolmaster.offline_reason || 'HVAC Gateway unreachable')} • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>CoolMaster Offline</span>`);
+                                        } else {
+                                            badges.push(`<span class="tech-badge tech-coolmaster tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="CoolMasterNet Online (${escapeHtml(cmTitle)}) • Click for diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>CoolMaster (HVAC Online)</span>`);
+                                        }
+                                    }
+
                                     // 6. Generic Failed Integrations
                                     if (tech.failed_core_entries && tech.failed_core_entries.length > 0) {
                                         for (const fentry of tech.failed_core_entries) {
@@ -6927,11 +6967,17 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                             </a>
                                         `
                                     )}
-                                    ${c.ets_port ? `
-                                        <button type="button" class="action-menu-item" style="color: #c084fc;" onclick="copyEtsRemoteUrl('${c.domain}', ${c.ets_port}, event); closeAllActionMenus();">
+                                    ${c.ets_port ? (
+                                        (c.knx_remote_enabled !== false && c.knx_remote_enabled !== 0) ? `
+                                        <button type="button" class="action-menu-item" style="color: #c084fc;" onclick="copyEtsRemoteUrl('${c.domain}', ${c.ets_port}, event); closeAllActionMenus();" title="Copy Remote ETS URL and UDP Port for KNX device programming">
                                             <span>🔌</span> Copy Remote ETS (: ${c.ets_port})
                                         </button>
-                                    ` : ''}
+                                        ` : `
+                                        <button type="button" class="action-menu-item" style="color: #94a3b8;" onclick="toggleKnxRemoteAccess('${c.client_id}', true); closeAllActionMenus();" title="Remote KNX Programming is currently suspended. Click to enable.">
+                                            <span>🔌</span> Enable Remote ETS (: ${c.ets_port})
+                                        </button>
+                                        `
+                                    ) : ''}
                                     <button type="button" class="action-menu-item" style="color: #38bdf8;" onclick="openSnapshotModal('${c.client_id}', '${escapeHtml(c.name)}'); closeAllActionMenus();">
                                         <span>📸</span> Snapshots & Backups
                                     </button>
@@ -7955,6 +8001,11 @@ auto_update_external_url: true`;
             if (remoteToggle) remoteToggle.checked = isRemoteOn;
             updateEditRemoteStatusText(isRemoteOn);
 
+            const knxRemoteToggle = document.getElementById('edit-knx-remote-toggle');
+            const isKnxRemoteOn = Boolean(client.knx_remote_enabled !== 0 && client.knx_remote_enabled !== false && client.knx_remote_enabled !== '0');
+            if (knxRemoteToggle) knxRemoteToggle.checked = isKnxRemoteOn;
+            updateEditKnxRemoteStatusText(isKnxRemoteOn);
+
             // Real-time update of snippet on input change
             const secEl = document.getElementById('edit-secret');
             if (secEl) secEl.oninput = updateEditConfigSnippet;
@@ -7979,6 +8030,37 @@ auto_update_external_url: true`;
 
         function onEditRemoteToggleChange(isOn) {
             updateEditRemoteStatusText(isOn);
+        }
+
+        function updateEditKnxRemoteStatusText(isOn) {
+            const el = document.getElementById('edit-knx-remote-status-text');
+            if (el) {
+                el.className = `toggle-pill-badge ${isOn ? 'pill-live' : 'pill-off'}`;
+                el.innerText = isOn ? '🟢 LIVE' : '🔴 DISABLED';
+            }
+        }
+
+        function onEditKnxRemoteToggleChange(isOn) {
+            updateEditKnxRemoteStatusText(isOn);
+        }
+
+        async function toggleKnxRemoteAccess(clientId, isEnabled) {
+            try {
+                const res = await apiFetch('/api/toggle_knx_remote', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ client_id: clientId, enabled: isEnabled })
+                });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast(`Remote KNX programming ${isEnabled ? 'enabled' : 'disabled'} for ${clientId}`, 'info');
+                    fetchFleet();
+                } else {
+                    showToast(data.error || 'Failed to toggle remote KNX access', 'error');
+                }
+            } catch (err) {
+                showToast('Network error toggling remote KNX access', 'error');
+            }
         }
 
         function closeEditModal() {
@@ -8011,8 +8093,9 @@ auto_update_external_url: true`;
                 name: (document.getElementById('edit-name') ? document.getElementById('edit-name').value.trim() : ''),
                 knx_ip: (client && client.knx_ip && client.knx_ip !== '192.168.1.100' ? client.knx_ip : ''),
                 knx_port: (client && client.knx_port && client.knx_ip && client.knx_ip !== '192.168.1.100' ? client.knx_port : null),
-                auth_secret: (document.getElementById('edit-secret') ? document.getElementById('edit-secret').value.trim() : ''),
+                auth_secret: (document.getElementById('edit-secret') ? document.getElementById('edit-secret').value.trim() : (client ? client.auth_secret : '')),
                 remote_enabled: remoteToggle ? remoteToggle.checked : true,
+                knx_remote_enabled: (document.getElementById('edit-knx-remote-toggle') ? document.getElementById('edit-knx-remote-toggle').checked : true),
                 hb_delayed_interval: getDurationSec('edit-hb-delayed-val', 'edit-hb-delayed-unit', 180),
                 hb_warning_interval: getDurationSec('edit-hb-warning-val', 'edit-hb-warning-unit', 300),
                 hb_offline_interval: getDurationSec('edit-hb-offline-val', 'edit-hb-offline-unit', 600)
@@ -8514,6 +8597,17 @@ All active sessions for this integrator will be terminated immediately.` : '';
                     fixAction = 'Start the Matter Server add-on from Settings > Add-ons on the Gavasah Gateway.';
                 } else {
                     fixAction = 'Matter Server daemon is running and listening for IPv6 Thread/Matter commissioning.';
+                }
+            } else if (techKey === 'coolmaster') {
+                techName = 'CoolMaster HVAC Subsystem';
+                const coolmaster = tech.coolmaster || {};
+                isOnline = !(coolmaster.status === 'offline' || coolmaster.offline_reason);
+                endpoint = coolmaster.entries && coolmaster.entries.length > 0 ? coolmaster.entries.map(e => e.title || `${e.host || ''}:${e.port || 10102}`).join(', ') : 'CoolMasterNet Bridge';
+                if (!isOnline) {
+                    reason = coolmaster.offline_reason || 'CoolMasterNet HVAC gateway unreachable';
+                    fixAction = 'Verify power to the CoolMasterNet bridge, check RS485 HVAC line connectivity, and ensure the TCP/IP network connection (port 10102) is active.';
+                } else {
+                    fixAction = 'CoolMasterNet HVAC bridge is connected and communicating with VRF/VRV air conditioning units.';
                 }
             }
 
@@ -10801,9 +10895,45 @@ PersistentKeepalive = 25
                     except Exception:
                         pass
 
+            if 'knx_remote_enabled' in body:
+                client['knx_remote_enabled'] = bool(body['knx_remote_enabled'])
+                if client['knx_remote_enabled'] and not client.get('ets_port'):
+                    raw_kip = (client.get('knx_ip') or '').strip()
+                    if raw_kip and raw_kip not in ['192.168.1.100', '—', 'none', 'null', '']:
+                        ttype = 'onboard' if raw_kip in ['127.0.0.1', 'localhost', ''] else 'lan_device'
+                        allocate_ets_port(client_id, target_ip=raw_kip or '127.0.0.1', target_port=client.get('knx_port') or 3671, target_type=ttype)
+                sync_ets_nat_rules()
+
             save_clients_state(c_data)
             append_client_log(client_id, 'INFO', 'CONFIG_UPDATE', f"Configuration updated by {user['name']}.")
             self.send_json(200, {'ok': True, 'client': client})
+            return
+
+        # 14b. Toggle Remote KNX Programming Access
+        elif parsed.path == '/api/toggle_knx_remote':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Unauthorized'})
+                return
+            body = self.read_json_body()
+            client_id = body.get('client_id')
+            enabled = bool(body.get('enabled', True))
+            with DB_LOCK:
+                conn = get_db_connection()
+                conn.execute("UPDATE clients SET knx_remote_enabled = ? WHERE client_id = ?", (1 if enabled else 0, client_id))
+                conn.commit()
+                conn.close()
+            c_data = load_clients_state()
+            if client_id in c_data:
+                c_data[client_id]['knx_remote_enabled'] = enabled
+                if enabled and not c_data[client_id].get('ets_port'):
+                    raw_kip = (c_data[client_id].get('knx_ip') or '').strip()
+                    if raw_kip and raw_kip not in ['192.168.1.100', '—', 'none', 'null', '']:
+                        ttype = 'onboard' if raw_kip in ['127.0.0.1', 'localhost', ''] else 'lan_device'
+                        allocate_ets_port(client_id, target_ip=raw_kip or '127.0.0.1', target_port=c_data[client_id].get('knx_port') or 3671, target_type=ttype)
+                sync_ets_nat_rules()
+                save_clients_state(c_data)
+            self.send_json(200, {'ok': True, 'knx_remote_enabled': enabled})
             return
 
         # 14. Toggle Remote Ingress
