@@ -5,6 +5,14 @@ All notable changes to the **Gavasah Cloud Agent** Home Assistant Add-on will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-10-16
+
+### Fixed
+- **Missing `re` Module Import in Telemetry Engine**: Resolved critical `NameError: name 're' is not defined` crash in `heartbeat.py` triggered when `detect_all_technologies(opts)` and `auto_heal_ip_bans_and_proxy()` executed regular expression scans on config entries and IP patterns.
+- **KNX Socat Forwarder Guard**: Guarded optional UDP/TCP bridge against empty or invalid `KNX_PORT` and `KNX_IP` values (`null`, `none`, `—`) preventing `xioopen_ipdgram_listen(): unknown address family 0` daemon exit.
+
+---
+
 ## [1.2.1] - 2026-10-16
 
 ### Fixed

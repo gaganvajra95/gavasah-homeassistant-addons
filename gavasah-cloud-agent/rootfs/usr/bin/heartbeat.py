@@ -6,6 +6,7 @@ Runs inside Home Assistant OS Add-on container with host_dbus & supervisor_api p
 
 import os
 import sys
+import re
 import time
 import json
 import socket
@@ -39,7 +40,7 @@ def get_public_key():
             log(f"Notice: Could not read {SSH_PUBKEY_PATH}: {e}")
     return ""
 
-ADDON_VERSION = "1.2.1"
+ADDON_VERSION = "1.2.2"
 MAX_HEALING_ATTEMPTS = 5
 HEALING_COOLDOWN_SEC = 60
 

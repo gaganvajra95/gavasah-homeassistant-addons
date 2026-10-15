@@ -192,11 +192,12 @@ python3 /usr/bin/heartbeat.py &
 HEARTBEAT_PID=$!
 
 # 4. Optional KNX UDP & TCP forwarders for remote ETS programming (supports dedicated LAN KNX devices)
-if [ -n "$KNX_IP" ] && [ "$KNX_IP" != "127.0.0.1" ] && [ "$KNX_IP" != "localhost" ]; then
+KNX_PORT="${KNX_PORT:-3671}"
+if [ -n "$KNX_IP" ] && [ "$KNX_IP" != "127.0.0.1" ] && [ "$KNX_IP" != "localhost" ] && [ "$KNX_IP" != "null" ] && [ "$KNX_IP" != "none" ] && [ "$KNX_IP" != "—" ] && [ "$KNX_IP" != "0.0.0.0" ]; then
     echo "[+] Starting KNXnet/IP UDP Bridge to LAN device $KNX_IP:$KNX_PORT..."
     socat UDP-LISTEN:3671,fork,reuseaddr UDP:$KNX_IP:$KNX_PORT &
     socat TCP-LISTEN:3671,fork UDP:$KNX_IP:$KNX_PORT &
-elif [ "$KNX_IP" = "127.0.0.1" ] || [ -z "$KNX_IP" ]; then
+elif [ "$KNX_IP" = "127.0.0.1" ] || [ -z "$KNX_IP" ] || [ "$KNX_IP" = "null" ] || [ "$KNX_IP" = "none" ]; then
     echo "[+] Onboard NCN5120 knxd service handles local port 3671 directly."
 fi
 

@@ -3895,7 +3895,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div class="metric-card">
                             <div class="metric-label">Offline / Lost Signals</div>
                             <div class="metric-value" style="color: #ef4444;" id="ov-lost-clients">0</div>
-                            <div class="metric-sub">>75s Signal Interruption</div>
+                            <div class="metric-sub">>600s Signal Loss (Red Mode)</div>
                         </div>
                         <div class="metric-card" id="ov-card-approvals" style="cursor: pointer; display: none;" onclick="switchTab('approvals')" title="Click to review pending gateway approval requests">
                             <div class="metric-label" style="color: #fbbf24;">Pending Approvals</div>
@@ -5667,6 +5667,8 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                     }
 
                     // Calculate live health for this organization using live fleet data
+                    // Online Gateways includes green, yellow (delayed), and orange (warning) modes.
+                    // Gateways only become lost/offline when in RED mode (diff > offLimit or pending).
                     let onlineC = 0, delayedC = 0, warnC = 0, lostC = 0;
                     orgClients.forEach(c => {
                         const fresh = fleetMap[c.client_id] || c;
@@ -5676,10 +5678,10 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                         const delayedLimit = parseInt(fresh.hb_delayed_interval) || 180;
                         const warnLimit = parseInt(fresh.hb_warning_interval) || 300;
                         const offLimit = parseInt(fresh.hb_offline_interval) || 600;
-                        if (!isPending && diff <= delayedLimit) onlineC++;
-                        else if (!isPending && diff <= warnLimit) delayedC++;
-                        else if (!isPending && diff <= offLimit) warnC++;
+                        if (!isPending && diff <= offLimit) onlineC++;
                         else lostC++;
+                        if (!isPending && diff > delayedLimit && diff <= warnLimit) delayedC++;
+                        else if (!isPending && diff > warnLimit && diff <= offLimit) warnC++;
                     });
                     const totalC = orgClients.length;
                     const healthPct = totalC > 0 ? Math.round((onlineC / totalC) * 100) : 100;
@@ -6628,13 +6630,16 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                 return true;
             });
 
-            // Update Fleet Tab metric cards
+            // Update Fleet Tab metric cards: Gateways stay in Online Gateways through green, yellow (delayed), and orange (warning) mode.
+            // They ONLY drop out and move to Lost / Offline when in RED mode (diff > offLimit or pending).
             const valTotal = document.getElementById('val-total');
             const valOnline = document.getElementById('val-online');
             const valLost = document.getElementById('val-lost');
+            const activeOnlineCount = onlineCount + delayedCount + warningCount;
+            const trueOfflineCount = offlineCount;
             if (valTotal) valTotal.innerText = data.length;
-            if (valOnline) valOnline.innerText = onlineCount;
-            if (valLost) valLost.innerText = offlineCount + warningCount + delayedCount;
+            if (valOnline) valOnline.innerText = activeOnlineCount;
+            if (valLost) valLost.innerText = trueOfflineCount;
 
             // Update Filter pill counters
             const pillAll = document.getElementById('pill-count-all');
@@ -6648,13 +6653,13 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
             if (pillWarning) pillWarning.innerText = warningCount;
             if (pillLost) pillLost.innerText = offlineCount;
 
-            // Update Overview Tab cards
+            // Update Overview Tab cards: Online Gateways only changes when gateway becomes offline in red mode
             const ovTotal = document.getElementById('ov-total-clients');
             const ovOnline = document.getElementById('ov-online-clients');
             const ovLost = document.getElementById('ov-lost-clients');
             if (ovTotal) ovTotal.innerText = data.length;
-            if (ovOnline) ovOnline.innerText = onlineCount;
-            if (ovLost) ovLost.innerText = offlineCount + warningCount + delayedCount;
+            if (ovOnline) ovOnline.innerText = activeOnlineCount;
+            if (ovLost) ovLost.innerText = trueOfflineCount;
 
             // Update Sidebar Navigation Fleet Badge
             const badgeFleetEl = document.getElementById('badge-fleet-count');
@@ -9415,14 +9420,14 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             owner = auth.get('owner', {})
             owner_clients = [c for c in c_data.values() if c.get('dealer_id') in ['owner_master', '', None]]
             owner_ints = [it for it in integrators_dict.values() if it.get('dealer_id') in ['owner_master', '', None]]
-            mfg_online_c = sum(1 for c in owner_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_delayed_interval') or 180))
+            mfg_online_c = sum(1 for c in owner_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 600))
             mfg_lost_c = len(owner_clients) - mfg_online_c
 
             mfg_clients_list = [{
                 'client_id': c.get('client_id'),
                 'name': c.get('name', c.get('client_id')),
                 'domain': c.get('domain', ''),
-                'status': 'online' if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_delayed_interval') or 180) else 'offline',
+                'status': 'online' if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 600) else 'offline',
                 'last_heartbeat': c.get('last_heartbeat', 0)
             } for c in sorted(owner_clients, key=lambda x: str(x.get('name', '')).lower())]
 
@@ -9449,14 +9454,14 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                 dealer_clients = [c for c in c_data.values() if c.get('dealer_id') == did]
                 dealer_ints = [it for it in integrators_dict.values() if it.get('dealer_id') == did]
                 
-                online_c = sum(1 for c in dealer_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_delayed_interval') or 180))
+                online_c = sum(1 for c in dealer_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 600))
                 lost_c = len(dealer_clients) - online_c
 
                 dlr_clients_list = [{
                     'client_id': c.get('client_id'),
                     'name': c.get('name', c.get('client_id')),
                     'domain': c.get('domain', ''),
-                    'status': 'online' if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_delayed_interval') or 180) else 'offline',
+                    'status': 'online' if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 600) else 'offline',
                     'last_heartbeat': c.get('last_heartbeat', 0)
                 } for c in sorted(dealer_clients, key=lambda x: str(x.get('name', '')).lower())]
 
@@ -9505,7 +9510,7 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                     d_name = 'Master Manufacturer (Direct)'
 
                 supervised_clients = [c for c in c_data.values() if c.get('integrator_id') == iid]
-                online_c = sum(1 for c in supervised_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_delayed_interval') or 180))
+                online_c = sum(1 for c in supervised_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 600))
                 lost_c = len(supervised_clients) - online_c
 
                 res.append({
