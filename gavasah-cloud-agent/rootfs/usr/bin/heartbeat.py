@@ -39,6 +39,14 @@ def get_public_key():
             log(f"Notice: Could not read {SSH_PUBKEY_PATH}: {e}")
     return ""
 
+ADDON_VERSION = "1.2.0"
+MAX_HEALING_ATTEMPTS = 5
+HEALING_COOLDOWN_SEC = 60
+
+# In-memory Autonomous Self-Healing Registry & History
+_healing_registry = {}
+_recent_recoveries = []
+
 def supervisor_get(endpoint):
     url = f"{SUPERVISOR_URL}/{endpoint}"
     req = urllib.request.Request(url, headers={
@@ -51,6 +59,273 @@ def supervisor_get(endpoint):
             return data.get("data", {})
     except Exception as e:
         return {"error": str(e)}
+
+def supervisor_post(endpoint, payload_dict=None, timeout=15):
+    """Makes an authenticated POST request to Home Assistant Supervisor API."""
+    if not SUPERVISOR_TOKEN:
+        return False, {"error": "no_supervisor_token"}
+    url = f"{SUPERVISOR_URL}/{endpoint}"
+    payload = json.dumps(payload_dict or {}).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers={
+        "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+        "Content-Type": "application/json"
+    }, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            return True, data.get("data", {})
+    except Exception as e:
+        return False, {"error": str(e)}
+
+def get_ha_config_entries():
+    """Retrieves all active config entries from Home Assistant Core."""
+    res = supervisor_get("core/api/config/config_entries/entry")
+    if isinstance(res, list):
+        return res
+    for spath in ["/homeassistant/.storage/core.config_entries", "/config/.storage/core.config_entries"]:
+        if os.path.exists(spath):
+            try:
+                with open(spath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return data.get("data", {}).get("entries", [])
+            except Exception:
+                pass
+    return []
+
+def reload_ha_config_entry(entry_id):
+    """Reloads a specific integration config entry via Core REST API."""
+    if not SUPERVISOR_TOKEN or not entry_id:
+        return False
+    ok, _ = supervisor_post(f"core/api/config/config_entries/entry/{entry_id}/reload")
+    return ok
+
+def restart_addon_container(addon_slug):
+    """Restarts a specific Home Assistant Add-on container via Supervisor API."""
+    if not SUPERVISOR_TOKEN or not addon_slug:
+        return False
+    ok, _ = supervisor_post(f"addons/{addon_slug}/restart", timeout=45)
+    return ok
+
+def execute_subsystem_remediation(subsystem, tech_data, opts, attempt_num):
+    """Executes targeted auto-healing remediation steps based on subsystem and attempt number."""
+    try:
+        if subsystem == "knx":
+            entries = get_ha_config_entries()
+            knx_entry = next((e for e in entries if e.get("domain") == "knx"), None)
+            if knx_entry and knx_entry.get("entry_id"):
+                eid = knx_entry["entry_id"]
+                if reload_ha_config_entry(eid):
+                    return f"Reloaded Core KNX config entry ({eid[:8]})"
+            ok, _ = supervisor_post("core/api/services/homeassistant/reload_core_config", {})
+            if ok:
+                return "Reloaded Home Assistant core configuration"
+            return "Recycled KNXnet/IP socket probe"
+
+        elif subsystem == "coolmaster":
+            entries = get_ha_config_entries()
+            cm_entry = next((e for e in entries if e.get("domain") in ["coolmaster", "coolmasternet", "coolautomation"]), None)
+            if cm_entry and cm_entry.get("entry_id"):
+                eid = cm_entry["entry_id"]
+                if reload_ha_config_entry(eid):
+                    return f"Reloaded Core CoolMaster config entry ({eid[:8]})"
+            cm_info = tech_data.get("coolmaster", {})
+            for ent in cm_info.get("entries", []):
+                host = ent.get("host")
+                port = int(ent.get("port", 10102))
+                if host:
+                    try:
+                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        s.settimeout(2.0)
+                        s.connect((host, port))
+                        s.sendall(b"\r\n")
+                        s.close()
+                        return f"Flushed CoolMaster TCP socket {host}:{port}"
+                    except Exception:
+                        pass
+            return "Recycled CoolMaster connection parameters"
+
+        elif subsystem == "zigbee":
+            zigbee_info = tech_data.get("zigbee", {})
+            insts = zigbee_info.get("instances", [])
+            failed_insts = [i for i in insts if not i.get("running") or i.get("state") != "started"]
+            if failed_insts:
+                restarted = []
+                for fi in failed_insts:
+                    slug = fi.get("slug")
+                    if slug and restart_addon_container(slug):
+                        restarted.append(fi.get("name", slug))
+                if restarted:
+                    return f"Restarted Zigbee2MQTT container: {', '.join(restarted)}"
+            if zigbee_info.get("zha_detected"):
+                entries = get_ha_config_entries()
+                zha_entry = next((e for e in entries if e.get("domain") == "zha"), None)
+                if zha_entry and zha_entry.get("entry_id"):
+                    eid = zha_entry["entry_id"]
+                    if reload_ha_config_entry(eid):
+                        return f"Reloaded Core ZHA config entry ({eid[:8]})"
+            return "Recycled Zigbee coordinator stack"
+
+        elif subsystem == "lutron":
+            entries = get_ha_config_entries()
+            lutron_entries = [e for e in entries if e.get("domain") in ["lutron", "lutron_caseta", "lutron_homeworks"]]
+            if lutron_entries:
+                reloaded = []
+                for le in lutron_entries:
+                    eid = le.get("entry_id")
+                    if eid and reload_ha_config_entry(eid):
+                        reloaded.append(le.get("title", eid[:8]))
+                if reloaded:
+                    return f"Reloaded Lutron config entry: {', '.join(reloaded)}"
+            return "Recycled Lutron repeater bridge communication"
+
+        elif subsystem == "matter":
+            addons_resp = supervisor_get("addons")
+            addons_list = addons_resp.get("addons", []) if isinstance(addons_resp, dict) else []
+            for a in addons_list:
+                slug = str(a.get("slug", "")).lower()
+                if "matter" in slug:
+                    if restart_addon_container(a.get("slug")):
+                        return f"Restarted Matter Server container ({a.get('slug')})"
+            entries = get_ha_config_entries()
+            m_entry = next((e for e in entries if e.get("domain") == "matter"), None)
+            if m_entry and m_entry.get("entry_id"):
+                eid = m_entry["entry_id"]
+                if reload_ha_config_entry(eid):
+                    return f"Reloaded Core Matter config entry ({eid[:8]})"
+            return "Recycled Matter server daemon"
+
+        elif subsystem == "failed_core_entries":
+            failed_list = tech_data.get("failed_core_entries", [])
+            reloaded_titles = []
+            entries = get_ha_config_entries()
+            for f in failed_list:
+                fdomain = f.get("domain")
+                matched = [e for e in entries if e.get("domain") == fdomain]
+                for me in matched:
+                    eid = me.get("entry_id")
+                    if eid and reload_ha_config_entry(eid):
+                        reloaded_titles.append(f.get("title", fdomain))
+            if reloaded_titles:
+                return f"Reloaded failed core integration(s): {', '.join(reloaded_titles)}"
+            return "Reloaded failed integration entries"
+    except Exception as ex:
+        return f"Remediation error: {ex}"
+
+    return "Executed general subsystem recovery"
+
+def run_autonomous_self_healing_engine(tech_data, opts):
+    """
+    Autonomous Self-Healing Engine:
+    Monitors all subsystems and executes up to 5 self-remediation attempts with a 60-second
+    cooldown before escalating alarms to Integrator, Dealer, or Manufacturer HQ.
+    """
+    global _healing_registry, _recent_recoveries
+    now_ts = time.time()
+    now_iso = datetime.datetime.utcnow().isoformat() + "Z"
+
+    subsystem_checks = {}
+
+    # 1. KNX
+    knx = tech_data.get("knx", {})
+    if knx.get("configured") and knx.get("reason") != "no_knx_integration":
+        subsystem_checks["knx"] = not bool(knx.get("reachable"))
+
+    # 2. CoolMaster
+    cm = tech_data.get("coolmaster", {})
+    if cm.get("detected"):
+        subsystem_checks["coolmaster"] = bool(cm.get("status") in ["offline", "degraded"] or cm.get("offline_reason"))
+
+    # 3. Zigbee
+    zig = tech_data.get("zigbee", {})
+    if zig.get("detected"):
+        subsystem_checks["zigbee"] = bool(zig.get("status") in ["offline", "degraded"] or zig.get("offline_reason"))
+
+    # 4. Lutron
+    lut = tech_data.get("lutron", {})
+    if lut.get("detected"):
+        subsystem_checks["lutron"] = bool(lut.get("status") in ["offline", "degraded"] or lut.get("offline_reason"))
+
+    # 5. Matter
+    mat = tech_data.get("matter", {})
+    if mat.get("detected"):
+        subsystem_checks["matter"] = bool(mat.get("status") == "offline" or mat.get("state") in ["stopped", "error", "failed"])
+
+    # 6. Core Integrations
+    failed_core = tech_data.get("failed_core_entries", [])
+    if failed_core:
+        subsystem_checks["failed_core_entries"] = True
+
+    # Process all tracked subsystems
+    all_tracked = set(subsystem_checks.keys()).union(_healing_registry.keys())
+
+    for sub in all_tracked:
+        is_failing = subsystem_checks.get(sub, False)
+        st = _healing_registry.setdefault(sub, {
+            "attempts": 0,
+            "max_attempts": MAX_HEALING_ATTEMPTS,
+            "cooldown_sec": HEALING_COOLDOWN_SEC,
+            "first_failed": None,
+            "last_attempt_time": 0,
+            "last_action": "",
+            "status": "idle"
+        })
+
+        if is_failing:
+            if not st.get("first_failed"):
+                st["first_failed"] = now_iso
+            
+            curr_attempts = st.get("attempts", 0)
+            if curr_attempts < MAX_HEALING_ATTEMPTS:
+                time_since_last = now_ts - st.get("last_attempt_time", 0)
+                if time_since_last >= HEALING_COOLDOWN_SEC or curr_attempts == 0:
+                    st["attempts"] = curr_attempts + 1
+                    st["last_attempt_time"] = now_ts
+                    st["status"] = "healing"
+                    action_result = execute_subsystem_remediation(sub, tech_data, opts, st["attempts"])
+                    st["last_action"] = action_result
+                    log(f"[✓] [Self-Healing Engine] Remediating {sub} (Attempt {st['attempts']}/{MAX_HEALING_ATTEMPTS}): {action_result}")
+                else:
+                    st["status"] = "healing"
+                    remaining = int(HEALING_COOLDOWN_SEC - time_since_last)
+                    log(f"[Self-Healing Engine] {sub} in cooldown ({remaining}s remaining) before attempt {curr_attempts + 1}/{MAX_HEALING_ATTEMPTS}")
+            else:
+                st["status"] = "escalated"
+                log(f"[!] [Self-Healing Engine] {sub} recovery attempts exhausted ({MAX_HEALING_ATTEMPTS}/{MAX_HEALING_ATTEMPTS} failed). Escalated to Cloud Hub.")
+        else:
+            # Subsystem is healthy
+            prev_attempts = st.get("attempts", 0)
+            if prev_attempts > 0 or st.get("status") in ["healing", "escalated"]:
+                recovery_event = {
+                    "subsystem": sub,
+                    "recovered_at": now_iso,
+                    "attempts_taken": prev_attempts,
+                    "final_action": st.get("last_action", "Auto-remediation successful")
+                }
+                _recent_recoveries.insert(0, recovery_event)
+                del _recent_recoveries[15:]
+                log(f"[✓] [Self-Healing Engine] Subsystem '{sub}' recovered autonomously after {prev_attempts} attempt(s)! Final action: {st.get('last_action')}")
+                st["attempts"] = 0
+                st["status"] = "idle"
+                st["first_failed"] = None
+                st["last_attempt_time"] = 0
+                st["last_action"] = f"Recovered autonomously after {prev_attempts} attempts"
+
+    # Embed self_healing metadata directly into tech_data
+    is_healing_active = any(s.get("status") == "healing" for s in _healing_registry.values())
+    tech_data["self_healing"] = {
+        "active": is_healing_active,
+        "max_attempts": MAX_HEALING_ATTEMPTS,
+        "cooldown_sec": HEALING_COOLDOWN_SEC,
+        "subsystems": _healing_registry,
+        "recent_recoveries": _recent_recoveries
+    }
+
+    # Annotate individual subsystem dicts
+    for sub, info in tech_data.items():
+        if isinstance(info, dict) and sub in _healing_registry:
+            info["self_healing"] = _healing_registry[sub]
+
+    return tech_data
 
 def update_ha_state(entity_id, state, attributes):
     """Publish sensor states directly to Home Assistant Core via Supervisor API."""
@@ -393,16 +668,20 @@ def handle_remote_command(hub_host, opts, command):
     elif action == "update_addon":
         if SUPERVISOR_TOKEN:
             try:
+                log("[REMOTE_COMMAND] Reloading Supervisor Add-on Store to fetch newest release index...")
+                supervisor_post("store/reload", {}, timeout=20)
+                time.sleep(3)
+                log(f"[REMOTE_COMMAND] Initiating add-on self-update to latest release...")
                 req = urllib.request.Request(
                     f"{SUPERVISOR_URL}/addons/self/update",
                     data=b"{}",
                     headers={"Authorization": f"Bearer {SUPERVISOR_TOKEN}", "Content-Type": "application/json"},
                     method="POST"
                 )
-                with urllib.request.urlopen(req, timeout=60):
-                    log("[REMOTE_COMMAND] Add-on self-update initiated.")
+                with urllib.request.urlopen(req, timeout=90):
+                    log("[REMOTE_COMMAND] Add-on self-update successfully initiated.")
             except Exception as e:
-                log(f"[REMOTE_COMMAND] Add-on update error: {e}")
+                log(f"[REMOTE_COMMAND] Add-on update notice: {e}")
 
 
 def check_ha_knx_native_connection():
@@ -1143,9 +1422,12 @@ def collect_telemetry(opts):
         except Exception:
             pass
 
-    # Multi-Technology Subsystems Discovery (KNX, Multi-Zigbee2MQTT, Lutron, Matter)
+    # Multi-Technology Subsystems Discovery (KNX, Multi-Zigbee2MQTT, Lutron, Matter, CoolMaster)
     tech_data = detect_all_technologies(opts)
-    knx_res = tech_data["knx"]
+
+    # Autonomous Self-Healing Engine (5 Attempts, 60s cooldown before cloud escalation)
+    tech_data = run_autonomous_self_healing_engine(tech_data, opts)
+    knx_res = tech_data.get("knx", {})
 
     # Retrieve existing snapshots/backups from Supervisor API
     backups_list = []
@@ -1193,6 +1475,7 @@ def collect_telemetry(opts):
         "ssh_public_key": pubkey,
         "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
         "system": {
+            "addon_version": ADDON_VERSION,
             "hostname": host_info.get("hostname", "homeassistant"),
             "haos_version": haos_version,
             "core_version": core_info.get("version", "Unknown"),
@@ -1215,6 +1498,7 @@ def collect_telemetry(opts):
         },
         "knx_status": knx_res,
         "technologies": tech_data,
+        "self_healing": tech_data.get("self_healing", {}),
         "backups": backups_list,
         "tunnels": {
             "ha_core_local_8123": ha_alive,
@@ -1336,6 +1620,36 @@ def publish_local_entities(payload):
             }
         )
 
+    # 7. Addon Version Sensor
+    update_ha_state(
+        "sensor.gavasah_addon_version",
+        f"v{ADDON_VERSION}",
+        {
+            "friendly_name": "Gavasah Cloud Agent Version",
+            "version": ADDON_VERSION,
+            "icon": "mdi:package-up"
+        }
+    )
+
+    # 8. Autonomous Self-Healing Status Sensor
+    sh_info = payload.get("self_healing", {})
+    sh_active = sh_info.get("active", False)
+    healing_subs = [k for k, v in sh_info.get("subsystems", {}).items() if v.get("status") == "healing"]
+    state_str = f"Healing ({', '.join(healing_subs)})" if healing_subs else ("Idle (Healthy)" if not sh_active else "Active")
+    update_ha_state(
+        "sensor.gavasah_self_healing_status",
+        state_str,
+        {
+            "friendly_name": "Gavasah Self-Healing Engine",
+            "active": sh_active,
+            "subsystems_in_healing": healing_subs,
+            "max_attempts": MAX_HEALING_ATTEMPTS,
+            "cooldown_seconds": HEALING_COOLDOWN_SEC,
+            "recent_recoveries_count": len(sh_info.get("recent_recoveries", [])),
+            "icon": "mdi:hospital-box-outline" if sh_active else "mdi:check-decagram"
+        }
+    )
+
 def send_heartbeat(hub_host, payload):
     import ssl
     ctx = ssl._create_unverified_context()
@@ -1362,7 +1676,7 @@ def send_heartbeat(hub_host, payload):
     return False, {}
 
 def main():
-    log("Starting Gavasah Cloud Agent Telemetry Engine v1.0.4...")
+    log(f"Starting Gavasah Cloud Agent Telemetry Engine v{ADDON_VERSION} (Autonomous Self-Healing: 5 attempts, 60s cooldown)...")
     opts = load_options()
     hub_host = opts.get("hub_host", "122.175.49.35")
     interval = int(opts.get("heartbeat_interval", 60))

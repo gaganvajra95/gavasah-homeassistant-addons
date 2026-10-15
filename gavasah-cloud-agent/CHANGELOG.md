@@ -5,6 +5,16 @@ All notable changes to the **Gavasah Cloud Agent** Home Assistant Add-on will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-10-16
+
+### Added
+- **Autonomous Self-Healing Engine**: Integrated proactive multi-subsystem auto-remediation engine directly into `heartbeat.py`. Autonomously remediates offline/degraded subsystems (KNX, CoolMaster HVAC, Zigbee2MQTT, Lutron, Matter, and failing Core config entries) with up to 5 self-healing attempts and a 60-second cooldown before escalating alarms to Integrator, Dealer, or Manufacturer HQ.
+- **Silent Recovery Telemetry**: Automatically detects successful self-remediations, logs silent recoveries, and reports full telemetry (`self_healing` object with attempt counter, action audit trail, and cooldown state) to the Central Cloud Hub.
+- **Add-on Version & Self-Healing Sensors**: Native Home Assistant Core diagnostic sensors `sensor.gavasah_addon_version` and `sensor.gavasah_self_healing_status` registered directly into HA Core.
+- **Automated Store Reload on Self-Update**: Remote command dispatcher triggers Supervisor add-on store refresh before applying self-updates to ensure latest git releases are immediately available.
+
+---
+
 ## [1.1.3] - 2026-10-15
 
 ### Fixed
