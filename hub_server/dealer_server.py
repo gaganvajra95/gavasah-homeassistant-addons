@@ -5825,16 +5825,9 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
         }
 
         function updateDealerDropdowns() {
-            const actualDealers = dealersList.filter(d => !d.is_manufacturer);
-            // Fleet filter dropdown
-            const filterSel = document.getElementById('fleet-dealer-filter');
-            if (filterSel && currentUser.role === 'manufacturer') {
-                const prev = filterSel.value;
-                filterSel.innerHTML = '<option value="all">All Dealer Networks</option>' +
-                    '<option value="owner_master">Master Manufacturer (Direct Supervision)</option>' +
-                    actualDealers.map(d => `<option value="${d.id}">${escapeHtml(d.name)} (${d.client_count || 0})</option>`).join('');
-                filterSel.value = prev || 'all';
-            }
+            populatePartnerFilter();
+
+            const actualDealers = (dealersList || []).filter(d => !d.is_manufacturer);
 
             // Integrators filter dropdown
             const intDealerFilter = document.getElementById('integrator-dealer-filter');
@@ -5883,10 +5876,16 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
         }
 
         function filterFleetByDealer(dealerId) {
+            selectedFleetPartner = dealerId || 'ALL';
             switchTab('fleet');
-            const sel = document.getElementById('fleet-dealer-filter');
+            const sel = document.getElementById('fleet-partner-select');
             if (sel) {
-                sel.value = dealerId;
+                sel.value = selectedFleetPartner;
+            }
+            fleetCurrentPage = 1;
+            if (Array.isArray(currentFleetData)) {
+                renderTable(currentFleetData);
+            } else {
                 fetchFleet();
             }
         }
@@ -6482,6 +6481,13 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
 
         let selectedFleetPartner = 'ALL';
 
+        function showGatewayLastError(clientId) {
+            const c = (currentFleetData || []).find(item => item.client_id === clientId);
+            if (!c || !c.system || !c.system.last_error) return;
+            const err = c.system.last_error;
+            alert(`⚠️ Gateway Command Error\n\nCommand: ${err.command || 'unknown'}\nTime: ${err.timestamp || 'N/A'}\n\nDetails:\n${err.error || 'No error details reported'}`);
+        }
+
         function populatePartnerFilter() {
             const wrap = document.getElementById('fleet-partner-filter-wrap');
             const sel = document.getElementById('fleet-partner-select');
@@ -6493,10 +6499,14 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                 wrap.style.display = 'inline-flex';
                 if (label) label.innerText = 'Dealer:';
                 if (icon) icon.innerText = '🏢';
-                let html = '<option value="ALL">🏢 All Dealers (All Fleet)</option>';
-                html += '<option value="owner_master">🛡️ Master Direct Supervision</option>';
-                dealersList.filter(d => !d.is_manufacturer).forEach(d => {
-                    html += `<option value="${escapeHtml(d.id)}">${escapeHtml(d.name)} (${d.client_count || 0})</option>`;
+                const ownerItem = (dealersList || []).find(d => d.is_manufacturer) || {};
+                const actualDealers = (dealersList || []).filter(d => !d.is_manufacturer);
+                const totalFleetCount = Array.isArray(currentFleetData) ? currentFleetData.length : 0;
+
+                let html = `<option value="ALL">🏢 All Dealers (All Fleet: ${totalFleetCount})</option>`;
+                html += `<option value="owner_master">🛡️ Master Direct Supervision (${ownerItem.client_count || 0})</option>`;
+                actualDealers.forEach(d => {
+                    html += `<option value="${escapeHtml(d.id)}">🏢 ${escapeHtml(d.name)} (${d.client_count || 0})</option>`;
                 });
                 sel.innerHTML = html;
                 sel.value = selectedFleetPartner || 'ALL';
@@ -6506,8 +6516,8 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                 if (icon) icon.innerText = '🔧';
                 let html = '<option value="ALL">🔧 All Integrators</option>';
                 html += '<option value="DIRECT">🛡️ Direct Dealer Supervision</option>';
-                integratorsList.forEach(it => {
-                    html += `<option value="${escapeHtml(it.id)}">${escapeHtml(it.name)} (${it.client_count || 0})</option>`;
+                (integratorsList || []).forEach(it => {
+                    html += `<option value="${escapeHtml(it.id)}">🔧 ${escapeHtml(it.name)} (${it.client_count || 0})</option>`;
                 });
                 sel.innerHTML = html;
                 sel.value = selectedFleetPartner || 'ALL';
@@ -6698,6 +6708,10 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                 const slot = sys.boot_slot || 'A';
                 const remoteEnabled = Boolean(c.remote_enabled) && c.remote_enabled !== 0 && c.remote_enabled !== '0';
 
+                // Autonomous Self-Healing Engine Inspection (Row scoped)
+                const shData = (c.technologies && c.technologies.self_healing) || {};
+                const shSubsystems = shData.subsystems || {};
+
                 // Dealer cell (only for manufacturer)
                 const dealerCell = currentUser.role === 'manufacturer' ? `
                     <td>
@@ -6788,9 +6802,7 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                 const hasIntegrationIssue = integrationIssues.length > 0;
                                 const integrationIssueText = integrationIssues.join(', ');
 
-                                // Autonomous Self-Healing Engine Inspection
-                                const shData = (c.technologies && c.technologies.self_healing) || {};
-                                const shSubsystems = shData.subsystems || {};
+                                // Autonomous Self-Healing Telemetry Summary
                                 const activeHealing = [];
                                 const exhaustedHealing = [];
 
@@ -7061,7 +7073,7 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                     </span>
                                 </div>
                                 ${sys.last_error ? `
-                                    <div style="margin-top: 3px; background: rgba(239, 68, 68, 0.18); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 3px; padding: 2px 5px; color: #f87171; font-size: 9px; display: flex; align-items: center; justify-content: space-between; cursor: pointer;" onclick="alert('⚠️ Gateway Command Error\n\nCommand: ${escapeHtml(sys.last_error.command || 'unknown')}\nTime: ${escapeHtml(sys.last_error.timestamp || '')}\n\nDetails:\n${escapeHtml(sys.last_error.error || '')}')" title="${escapeHtml(sys.last_error.error)}">
+                                    <div style="margin-top: 3px; background: rgba(239, 68, 68, 0.18); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 3px; padding: 2px 5px; color: #f87171; font-size: 9px; display: flex; align-items: center; justify-content: space-between; cursor: pointer;" onclick="showGatewayLastError('${c.client_id}')" title="${escapeHtml(sys.last_error.error || '')}">
                                         <span>⚠️ ${escapeHtml(sys.last_error.command || 'Error')}: ${escapeHtml((sys.last_error.error || '').slice(0, 24))}...</span>
                                         <span style="font-weight: bold;">ℹ️</span>
                                     </div>
