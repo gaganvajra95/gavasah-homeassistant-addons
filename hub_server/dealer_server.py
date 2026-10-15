@@ -2147,6 +2147,38 @@ HTML_PAGE = """<!DOCTYPE html>
             min-width: 140px;
         }
 
+        .ov-clients-container {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 155px;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+        .ov-clients-container::-webkit-scrollbar {
+            width: 4px;
+        }
+        .ov-clients-container::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 4px;
+        }
+        .ov-client-chip {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(15, 23, 42, 0.65);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 6px;
+            padding: 4px 8px;
+            font-size: 11.5px;
+            transition: all 0.2s ease;
+        }
+        .ov-client-chip:hover {
+            background: rgba(30, 41, 59, 0.85);
+            border-color: rgba(56, 189, 248, 0.3);
+            transform: translateX(2px);
+        }
+
         /* Graphical Heartbeat Status Badge with Colored Glowing Balls */
         .heartbeat-status-wrap {
             display: flex;
@@ -3742,10 +3774,10 @@ HTML_PAGE = """<!DOCTYPE html>
                         <table>
                             <thead>
                                 <tr>
-                                    <th>Dealer Organization</th>
+                                    <th>Organization / Network Partner</th>
                                     <th>Portal Username</th>
-                                    <th>Assigned Clients</th>
-                                    <th>Online / Lost</th>
+                                    <th style="min-width: 270px;">Assigned Gavasah Gateways & Clients</th>
+                                    <th>Online / Lost Status</th>
                                     <th>Contact Details</th>
                                     <th>Account Status</th>
                                     <th>Action</th>
@@ -4981,51 +5013,119 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         function renderDealersUI() {
+            const actualDealers = dealersList.filter(d => !d.is_manufacturer);
             const badge = document.getElementById('badge-dealer-count');
-            if (badge) badge.innerText = dealersList.length;
+            if (badge) badge.innerText = actualDealers.length;
 
             const ovDealersCount = document.getElementById('ov-dealers-count');
-            if (ovDealersCount) ovDealersCount.innerText = dealersList.length;
+            if (ovDealersCount) ovDealersCount.innerText = actualDealers.length;
 
-            // Overview Dealers Table
+            // Overview Dealers Table (Includes Master Manufacturer HQ + Authorized Dealers + Client Gateways)
             const ovBody = document.getElementById('overview-dealers-body');
             if (ovBody && currentUser.role === 'manufacturer') {
-                ovBody.innerHTML = dealersList.map(d => `
-                    <tr>
-                        <td style="font-weight: 600; color: #fff;">
-                            <div>${escapeHtml(d.name)}</div>
-                            <div style="font-size: 11px; color: #64748b; font-family: monospace;">ID: ${escapeHtml(d.id)}</div>
-                        </td>
-                        <td style="font-family: monospace; color: #cbd5e1;">${escapeHtml(d.username)}</td>
-                        <td>
-                            <span class="badge-role" style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3);">
-                                ${d.client_count} Gateway(s) / ${d.integrator_count || 0} Integrator(s)
-                            </span>
-                        </td>
-                        <td>
-                            <span style="color: #10b981; font-weight: 600;">${d.online_count} Online</span> / 
-                            <span style="color: ${d.lost_count > 0 ? '#ef4444' : '#64748b'}; font-weight: 600;">${d.lost_count} Lost</span>
-                        </td>
-                        <td style="font-size: 12px; color: #94a3b8;">
-                            <div>${escapeHtml(d.email || '—')}</div>
-                            <div style="font-size: 11px; color: #64748b;">${escapeHtml(d.phone || '—')}</div>
-                        </td>
-                        <td>
-                            <span class="badge-status ${d.status === 'active' ? 'status-online' : 'status-lost'}">
-                                ${d.status.toUpperCase()}
-                            </span>
-                        </td>
-                        <td>
-                            <button class="btn-sm" onclick="filterFleetByDealer('${d.id}')">View Fleet ➔</button>
-                        </td>
-                    </tr>
-                `).join('') || `<tr><td colspan="7" style="text-align: center; color: #64748b; padding: 24px;">No authorized dealers registered yet.</td></tr>`;
+                const nowSec = Math.floor(Date.now() / 1000);
+                ovBody.innerHTML = dealersList.map(d => {
+                    // Gather clients for this organization
+                    let orgClients = d.clients;
+                    if (!orgClients || orgClients.length === 0) {
+                        if (Array.isArray(currentFleetData)) {
+                            orgClients = currentFleetData.filter(c => d.is_manufacturer ? (!c.dealer_id || c.dealer_id === 'owner_master') : c.dealer_id === d.id);
+                        } else {
+                            orgClients = [];
+                        }
+                    }
+
+                    // Calculate live health for this organization
+                    let onlineC = 0, lostC = 0;
+                    orgClients.forEach(c => {
+                        const isPending = !c.last_heartbeat || c.last_heartbeat === 0 || c.status === 'pending';
+                        const diff = isPending ? -1 : nowSec - (c.last_heartbeat || 0);
+                        if (!isPending && diff <= 135) onlineC++;
+                        else lostC++;
+                    });
+                    const totalC = orgClients.length;
+                    const healthPct = totalC > 0 ? Math.round((onlineC / totalC) * 100) : 100;
+
+                    const clientChipsHtml = orgClients.length > 0 ? orgClients.map(c => {
+                        const isPending = !c.last_heartbeat || c.last_heartbeat === 0 || c.status === 'pending';
+                        const diff = isPending ? -1 : nowSec - (c.last_heartbeat || 0);
+                        const isOnline = !isPending && diff <= 135;
+                        const isWarn = !isPending && diff > 135 && diff <= 240;
+                        const dotBg = isOnline ? '#10b981' : (isWarn ? '#f59e0b' : '#ef4444');
+                        const dotShadow = isOnline ? '0 0 6px #10b981' : (isWarn ? '0 0 6px #f59e0b' : '0 0 6px #ef4444');
+                        const stLabel = isOnline ? 'Online' : (isWarn ? 'Delayed Pulse' : (isPending ? 'Awaiting Contact' : 'Offline / Lost'));
+                        const cDomain = c.domain || (c.client_id + '.gavasah.com');
+                        return `
+                            <div class="ov-client-chip" title="Gateway: ${escapeHtml(c.name || c.client_id)} (${escapeHtml(c.client_id)}) • Status: ${stLabel}">
+                                <div style="display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1;">
+                                    <span style="width: 7px; height: 7px; border-radius: 50%; background: ${dotBg}; box-shadow: ${dotShadow}; flex-shrink: 0;"></span>
+                                    <span style="font-weight: 500; color: #f1f5f9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(c.name || c.client_id)}</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
+                                    <a href="https://${escapeHtml(cDomain)}" target="_blank" class="site-domain-link" style="font-size: 10px; padding: 1px 5px;" title="Open Remote GUI: https://${escapeHtml(cDomain)}">GUI ↗</a>
+                                    <button type="button" class="btn-action-icon" style="padding: 1px 5px; font-size: 10px;" onclick="openEditModal('${c.client_id}')" title="Configure Gateway">⚙️</button>
+                                </div>
+                            </div>
+                        `;
+                    }).join('') : `<div style="font-size: 11px; color: #64748b; font-style: italic; padding: 4px 0;">No Gavasah Gateways assigned</div>`;
+
+                    return `
+                        <tr style="${d.is_manufacturer ? 'background: rgba(56, 189, 248, 0.04); border-left: 3px solid #38bdf8;' : ''}">
+                            <td>
+                                <div style="display: flex; align-items: center; gap: 9px;">
+                                    <span style="font-size: 18px;">${d.is_manufacturer ? '👑' : '🏢'}</span>
+                                    <div>
+                                        <div style="font-weight: 700; color: ${d.is_manufacturer ? '#38bdf8' : '#fff'}; font-size: 13.5px;">${escapeHtml(d.name)}</div>
+                                        <div style="font-size: 11px; color: ${d.is_manufacturer ? '#94a3b8' : '#64748b'}; font-family: monospace;">
+                                            ${d.is_manufacturer ? 'Central Manufacturer HQ Supervision' : 'ID: ' + escapeHtml(d.id)}
+                                        </div>
+                                    </div>
+                                </div>
+                            </td>
+                            <td style="font-family: monospace; color: #cbd5e1;">
+                                <div>${escapeHtml(d.username)}</div>
+                                ${d.is_manufacturer ? `<span class="badge-role" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); font-size: 9.5px; padding: 1px 5px; margin-top: 3px; display: inline-block;">HQ MASTER ADMIN</span>` : ''}
+                            </td>
+                            <td>
+                                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                                    <span class="badge-role" style="${d.is_manufacturer ? 'background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);' : 'background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3);'}">
+                                        ${totalC} Gateway${totalC !== 1 ? 's' : ''} / ${d.integrator_count || 0} Integrator${(d.integrator_count || 0) !== 1 ? 's' : ''}
+                                    </span>
+                                </div>
+                                <div class="ov-clients-container">
+                                    ${clientChipsHtml}
+                                </div>
+                            </td>
+                            <td>
+                                <div style="font-weight: 600; font-size: 13px;">
+                                    <span style="color: #10b981;">${onlineC} Online</span> / 
+                                    <span style="color: ${lostC > 0 ? '#ef4444' : '#64748b'};">${lostC} Lost</span>
+                                </div>
+                                <div style="font-size: 10.5px; color: #94a3b8; margin-top: 3px; font-family: monospace;">
+                                    ${totalC > 0 ? `${healthPct}% Operational` : 'No active fleet'}
+                                </div>
+                            </td>
+                            <td style="font-size: 12px; color: #94a3b8;">
+                                <div>${escapeHtml(d.email || '—')}</div>
+                                <div style="font-size: 11px; color: #64748b; margin-top: 2px;">${escapeHtml(d.phone || '—')}</div>
+                            </td>
+                            <td>
+                                <span class="badge-status ${d.is_manufacturer ? 'status-online' : (d.status === 'active' ? 'status-online' : 'status-lost')}" style="${d.is_manufacturer ? 'background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);' : ''}">
+                                    ${d.is_manufacturer ? 'ACTIVE (HQ)' : d.status.toUpperCase()}
+                                </span>
+                            </td>
+                            <td>
+                                <button class="btn-sm ${d.is_manufacturer ? 'btn-primary-sm' : ''}" onclick="filterFleetByDealer('${d.id}')">View Fleet ➔</button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('') || `<tr><td colspan="7" style="text-align: center; color: #64748b; padding: 24px;">No authorized organizations or dealers registered yet.</td></tr>`;
             }
 
             // Dedicated Dealers Directory Table (With Password Reveal & Edit for Manufacturer)
             const dirBody = document.getElementById('dealers-management-body');
             if (dirBody) {
-                dirBody.innerHTML = dealersList.map(d => `
+                dirBody.innerHTML = actualDealers.map(d => `
                     <tr>
                         <td style="font-weight: 600; color: #fff;">
                             <div style="font-size: 14px;">${escapeHtml(d.name)}</div>
@@ -5077,13 +5177,14 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         function updateDealerDropdowns() {
+            const actualDealers = dealersList.filter(d => !d.is_manufacturer);
             // Fleet filter dropdown
             const filterSel = document.getElementById('fleet-dealer-filter');
             if (filterSel && currentUser.role === 'manufacturer') {
                 const prev = filterSel.value;
                 filterSel.innerHTML = '<option value="all">All Dealer Networks</option>' +
                     '<option value="owner_master">Master Manufacturer (Direct Supervision)</option>' +
-                    dealersList.map(d => `<option value="${d.id}">${escapeHtml(d.name)} (${d.client_count || 0})</option>`).join('');
+                    actualDealers.map(d => `<option value="${d.id}">${escapeHtml(d.name)} (${d.client_count || 0})</option>`).join('');
                 filterSel.value = prev || 'all';
             }
 
@@ -5093,7 +5194,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 const prev = intDealerFilter.value;
                 intDealerFilter.innerHTML = '<option value="all">All Dealers Workforce</option>' +
                     '<option value="owner_master">Master Manufacturer (Direct)</option>' +
-                    dealersList.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+                    actualDealers.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
                 intDealerFilter.value = prev || 'all';
             }
 
@@ -5101,21 +5202,21 @@ HTML_PAGE = """<!DOCTYPE html>
             const onbDealerSel = document.getElementById('onb-dealer-select');
             if (onbDealerSel && currentUser.role === 'manufacturer') {
                 onbDealerSel.innerHTML = '<option value="owner_master">Master Manufacturer (Direct Supervision)</option>' +
-                    dealersList.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+                    actualDealers.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
             }
 
             // Integrator modal dealer select
             const intDealerSel = document.getElementById('int-dealer-select');
             if (intDealerSel && currentUser.role === 'manufacturer') {
                 intDealerSel.innerHTML = '<option value="owner_master">Master Manufacturer (Direct Supervision)</option>' +
-                    dealersList.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+                    actualDealers.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
             }
 
             // Edit client modal dealer select
             const editDealerSel = document.getElementById('edit-dealer-select');
             if (editDealerSel && currentUser.role === 'manufacturer') {
                 editDealerSel.innerHTML = '<option value="owner_master">Master Manufacturer (Direct Supervision)</option>' +
-                    dealersList.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+                    actualDealers.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
             }
         }
 
@@ -5680,6 +5781,9 @@ HTML_PAGE = """<!DOCTYPE html>
                 const badgeFleet = document.getElementById('badge-fleet-count');
                 if (badgeFleet) badgeFleet.innerText = data.length;
                 renderTable(data);
+                if (currentUser && currentUser.role === 'manufacturer' && dealersList.length > 0) {
+                    renderDealersUI();
+                }
                 if (activeTab === 'branding') {
                     updateLiveBrandingPreview();
                 }
@@ -5737,7 +5841,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (icon) icon.innerText = '🏢';
                 let html = '<option value="ALL">🏢 All Dealers (All Fleet)</option>';
                 html += '<option value="owner_master">🛡️ Master Direct Supervision</option>';
-                dealersList.forEach(d => {
+                dealersList.filter(d => !d.is_manufacturer).forEach(d => {
                     html += `<option value="${escapeHtml(d.id)}">${escapeHtml(d.name)} (${d.client_count || 0})</option>`;
                 });
                 sel.innerHTML = html;
@@ -8166,13 +8270,56 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             c_data = load_clients_state()
 
             res = []
+            now = int(time.time())
+
+            # 1. Master Manufacturer (Direct) Organization
+            owner = auth.get('owner', {})
+            owner_clients = [c for c in c_data.values() if c.get('dealer_id') in ['owner_master', '', None]]
+            owner_ints = [it for it in integrators_dict.values() if it.get('dealer_id') in ['owner_master', '', None]]
+            mfg_online_c = sum(1 for c in owner_clients if (now - c.get('last_heartbeat', 0)) <= 135)
+            mfg_lost_c = len(owner_clients) - mfg_online_c
+
+            mfg_clients_list = [{
+                'client_id': c.get('client_id'),
+                'name': c.get('name', c.get('client_id')),
+                'domain': c.get('domain', ''),
+                'status': 'online' if (now - c.get('last_heartbeat', 0)) <= 135 else 'offline',
+                'last_heartbeat': c.get('last_heartbeat', 0)
+            } for c in sorted(owner_clients, key=lambda x: str(x.get('name', '')).lower())]
+
+            res.append({
+                'id': 'owner_master',
+                'name': owner.get('name', 'Master Manufacturer (Direct)'),
+                'username': owner.get('username', 'admin'),
+                'password_plain': '••••••••',
+                'email': owner.get('email', 'admin@gavasah.com'),
+                'phone': owner.get('phone', 'HQ Direct Support'),
+                'role': 'manufacturer',
+                'is_manufacturer': True,
+                'status': 'active',
+                'created_at': owner.get('created_at', 0),
+                'client_count': len(owner_clients),
+                'integrator_count': len(owner_ints),
+                'online_count': mfg_online_c,
+                'lost_count': mfg_lost_c,
+                'clients': mfg_clients_list
+            })
+
+            # 2. Authorized Dealer Partners
             for did, d in dealers_dict.items():
                 dealer_clients = [c for c in c_data.values() if c.get('dealer_id') == did]
                 dealer_ints = [it for it in integrators_dict.values() if it.get('dealer_id') == did]
                 
-                now = int(time.time())
                 online_c = sum(1 for c in dealer_clients if (now - c.get('last_heartbeat', 0)) <= 135)
                 lost_c = len(dealer_clients) - online_c
+
+                dlr_clients_list = [{
+                    'client_id': c.get('client_id'),
+                    'name': c.get('name', c.get('client_id')),
+                    'domain': c.get('domain', ''),
+                    'status': 'online' if (now - c.get('last_heartbeat', 0)) <= 135 else 'offline',
+                    'last_heartbeat': c.get('last_heartbeat', 0)
+                } for c in sorted(dealer_clients, key=lambda x: str(x.get('name', '')).lower())]
 
                 res.append({
                     'id': d['id'],
@@ -8182,12 +8329,14 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                     'email': d.get('email', ''),
                     'phone': d.get('phone', ''),
                     'role': 'dealer',
+                    'is_manufacturer': False,
                     'status': d.get('status', 'active'),
                     'created_at': d.get('created_at', 0),
                     'client_count': len(dealer_clients),
                     'integrator_count': len(dealer_ints),
                     'online_count': online_c,
-                    'lost_count': lost_c
+                    'lost_count': lost_c,
+                    'clients': dlr_clients_list
                 })
 
             self.send_json(200, res)
