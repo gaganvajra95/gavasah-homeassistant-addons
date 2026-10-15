@@ -5,6 +5,14 @@ All notable changes to the **Gavasah Cloud Agent** Home Assistant Add-on will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-10-16
+
+### Added
+- **Automated Zero-Touch WireGuard Mesh Tunnel**: Added automated WireGuard client uplink (`wg0`) in `entrypoint.sh` fetching client-specific mesh keys from `/api/wireguard_config` on startup. Includes dual-engine activation (native kernel `wg-quick` with automatic fallback to `wireguard-go` userspace daemon) and `10.42.0.0/16` routing.
+- **Kernel Module & Network Capabilities**: Enabled `kernel_modules: true` and added `wireguard-tools`, `wireguard-go`, and `openresolv` in Alpine `Dockerfile` for seamless high-performance UDP tunneling for remote ETS KNX device programming.
+
+---
+
 ## [1.2.2] - 2026-10-16
 
 ### Fixed

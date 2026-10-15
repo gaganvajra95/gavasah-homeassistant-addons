@@ -15,8 +15,10 @@ RUN apk add --no-cache \
     socat \
     iproute2 \
     net-tools \
-    bind-tools \
-    ca-certificates
+    ca-certificates \
+    wireguard-tools \
+    wireguard-go \
+    openresolv
 
 # Copy rootfs files
 COPY rootfs /

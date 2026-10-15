@@ -191,6 +191,96 @@ echo "[+] Starting Gavasah Telemetry & Slot Watchdog..."
 python3 /usr/bin/heartbeat.py &
 HEARTBEAT_PID=$!
 
+# 3b. Setup & Launch Zero-Touch WireGuard Mesh Tunnel for Remote KNX / ETS Programming
+echo "[+] Initializing WireGuard Mesh Tunnel for Client $CLIENT_ID..."
+python3 - << 'EOF'
+import urllib.request, json, os, subprocess, ssl, time
+
+ctx = ssl._create_unverified_context()
+options_path = '/data/options.json'
+try:
+    with open(options_path, 'r', encoding='utf-8') as f:
+        opts = json.load(f)
+except Exception:
+    opts = {}
+
+cid = opts.get('client_id', '')
+sec = opts.get('auth_key', '')
+hub = opts.get('hub_host', '122.175.49.35')
+
+if cid:
+    endpoints = [
+        f"https://{hub}/api/wireguard_config?client_id={cid}&auth_secret={sec}",
+        f"http://{hub}:3000/api/wireguard_config?client_id={cid}&auth_secret={sec}",
+        f"https://dealer.gavasah.com/api/wireguard_config?client_id={cid}&auth_secret={sec}",
+        f"http://122.175.49.35:3000/api/wireguard_config?client_id={cid}&auth_secret={sec}"
+    ]
+    wg_conf_content = None
+    for ep in endpoints:
+        try:
+            req = urllib.request.Request(ep)
+            with urllib.request.urlopen(req, context=ctx, timeout=6) as resp:
+                if resp.status == 200:
+                    data = resp.read().decode('utf-8')
+                    if '[Interface]' in data and '[Peer]' in data:
+                        wg_conf_content = data
+                        print(f"[✓] Retrieved WireGuard mesh configuration from {ep}")
+                        break
+        except Exception:
+            continue
+
+    if wg_conf_content:
+        os.makedirs('/etc/wireguard', exist_ok=True)
+        conf_path = '/etc/wireguard/wg0.conf'
+        with open(conf_path, 'w', encoding='utf-8') as f:
+            f.write(wg_conf_content.strip() + '\n')
+        os.chmod(conf_path, 0o600)
+
+        # Ensure tun device node exists
+        if not os.path.exists('/dev/net/tun'):
+            try:
+                os.makedirs('/dev/net', exist_ok=True)
+                subprocess.run(['mknod', '/dev/net/tun', 'c', '10', '200'], capture_output=True)
+                os.chmod('/dev/net/tun', 0o666)
+            except Exception:
+                pass
+
+        # Try to load kernel module if available
+        subprocess.run(['modprobe', 'wireguard'], capture_output=True)
+
+        # Clean existing wg0 interface if present
+        subprocess.run(['wg-quick', 'down', 'wg0'], capture_output=True)
+        subprocess.run(['ip', 'link', 'delete', 'dev', 'wg0'], capture_output=True)
+
+        # Bring up WireGuard: Try kernel wg-quick first, fallback to wireguard-go
+        res = subprocess.run(['wg-quick', 'up', 'wg0'], capture_output=True, text=True)
+        if res.returncode == 0:
+            print("[✓] WireGuard mesh interface (wg0) successfully activated via kernel driver!")
+        else:
+            print(f"[!] wg-quick note: {res.stderr.strip()}; activating via wireguard-go fallback...")
+            wg_ip = '10.42.0.2/16'
+            for line in wg_conf_content.splitlines():
+                if line.strip().startswith('Address'):
+                    wg_ip = line.split('=', 1)[1].strip()
+            
+            subprocess.Popen(['wireguard-go', 'wg0'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(1.0)
+            subprocess.run(['wg', 'setconf', 'wg0', conf_path], capture_output=True)
+            subprocess.run(['ip', 'addr', 'add', wg_ip, 'dev', 'wg0'], capture_output=True)
+            subprocess.run(['ip', 'link', 'set', 'up', 'dev', 'wg0'], capture_output=True)
+            subprocess.run(['ip', 'route', 'add', '10.42.0.0/16', 'dev', 'wg0'], capture_output=True)
+            print("[✓] WireGuard mesh interface (wg0) successfully activated via wireguard-go!")
+
+        # Verify
+        show_res = subprocess.run(['wg', 'show', 'wg0'], capture_output=True, text=True)
+        if show_res.returncode == 0:
+            print("[✓] WireGuard Mesh Tunnel Active:\n" + show_res.stdout.strip())
+        else:
+            print("[!] WireGuard interface verification failed")
+    else:
+        print("[!] Warning: Could not retrieve WireGuard configuration from Central Hub")
+EOF
+
 # 4. Optional KNX UDP & TCP forwarders for remote ETS programming (supports dedicated LAN KNX devices)
 KNX_PORT="${KNX_PORT:-3671}"
 if [ -n "$KNX_IP" ] && [ "$KNX_IP" != "127.0.0.1" ] && [ "$KNX_IP" != "localhost" ] && [ "$KNX_IP" != "null" ] && [ "$KNX_IP" != "none" ] && [ "$KNX_IP" != "—" ] && [ "$KNX_IP" != "0.0.0.0" ]; then

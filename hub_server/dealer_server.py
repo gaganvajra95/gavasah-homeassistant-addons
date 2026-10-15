@@ -9706,7 +9706,7 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
         elif parsed.path == '/api/provision':
             query = parse_qs(parsed.query)
             client_id = (query.get('client_id', [''])[0]).strip()
-            secret = (query.get('auth_secret', [''])[0]).strip()
+            secret = (query.get('auth_secret', [''])[0]).strip() or (query.get('auth_key', [''])[0]).strip()
 
             c_data = load_clients_state()
             client = c_data.get(client_id)
@@ -9826,7 +9826,7 @@ echo "[OK] Zero-Touch Provisioning Complete! WireGuard Virtual Mesh IP: {wg_ip}"
         elif parsed.path == '/api/wireguard_config':
             query = parse_qs(parsed.query)
             client_id = (query.get('client_id', [''])[0]).strip()
-            secret = (query.get('auth_secret', [''])[0]).strip()
+            secret = (query.get('auth_secret', [''])[0]).strip() or (query.get('auth_key', [''])[0]).strip()
 
             c_data = load_clients_state()
             client = c_data.get(client_id)
