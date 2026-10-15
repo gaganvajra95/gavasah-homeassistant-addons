@@ -4512,10 +4512,10 @@ HTML_PAGE = """<!DOCTYPE html>
                             <label class="form-label" style="margin-bottom: 0; color: #fbbf24; font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
                                 ⏱️ HEARTBEAT TIMEOUT & ESCALATION INTERVALS
                             </label>
-                            <span class="badge-role" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 10px;">TIERED ESCALATION</span>
+                            <span class="badge-role" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 10px;">MINUTES & HOURS</span>
                         </div>
                         <div style="font-size: 11px; color: #94a3b8; margin-bottom: 12px; line-height: 1.4;">
-                            Configure tiered watchdog intervals before alerting each tier of supervision when a Gavasah Gateway stops pulsing:
+                            Configure tiered watchdog intervals (in minutes or hours) before escalating alerts when a Gavasah Gateway stops pulsing:
                         </div>
 
                         <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;">
@@ -4524,12 +4524,15 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
                                     <span style="font-size: 11px; font-weight: 700; color: #facc15;">🟡 DELAYED PULSE</span>
                                 </div>
-                                <div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px;">
+                                <div style="font-size: 10px; color: #94a3b8; margin-bottom: 8px;">
                                     Warns <strong>Integrator</strong>
                                 </div>
-                                <div class="form-input-wrap">
-                                    <input type="number" id="edit-hb-delayed" class="form-input" min="30" max="86400" step="10" placeholder="180" style="padding: 6px 10px; font-size: 12px; font-family: 'JetBrains Mono', monospace;" required>
-                                    <span style="position: absolute; right: 8px; font-size: 10px; color: #64748b;">sec</span>
+                                <div style="display: flex; gap: 6px;">
+                                    <input type="number" id="edit-hb-delayed-val" class="form-input" min="1" max="720" step="1" placeholder="3" style="padding: 6px 8px; font-size: 12px; font-family: 'JetBrains Mono', monospace; text-align: center; flex: 1;" required>
+                                    <select id="edit-hb-delayed-unit" class="form-input" style="padding: 6px 4px; font-size: 11px; width: 75px; flex-shrink: 0;">
+                                        <option value="m">Min</option>
+                                        <option value="h">Hours</option>
+                                    </select>
                                 </div>
                             </div>
 
@@ -4538,12 +4541,15 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
                                     <span style="font-size: 11px; font-weight: 700; color: #fb923c;">🟠 WARNING</span>
                                 </div>
-                                <div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px;">
+                                <div style="font-size: 10px; color: #94a3b8; margin-bottom: 8px;">
                                     Warns <strong>Integrator + Dealer</strong>
                                 </div>
-                                <div class="form-input-wrap">
-                                    <input type="number" id="edit-hb-warning" class="form-input" min="60" max="86400" step="10" placeholder="300" style="padding: 6px 10px; font-size: 12px; font-family: 'JetBrains Mono', monospace;" required>
-                                    <span style="position: absolute; right: 8px; font-size: 10px; color: #64748b;">sec</span>
+                                <div style="display: flex; gap: 6px;">
+                                    <input type="number" id="edit-hb-warning-val" class="form-input" min="1" max="720" step="1" placeholder="5" style="padding: 6px 8px; font-size: 12px; font-family: 'JetBrains Mono', monospace; text-align: center; flex: 1;" required>
+                                    <select id="edit-hb-warning-unit" class="form-input" style="padding: 6px 4px; font-size: 11px; width: 75px; flex-shrink: 0;">
+                                        <option value="m">Min</option>
+                                        <option value="h">Hours</option>
+                                    </select>
                                 </div>
                             </div>
 
@@ -4552,12 +4558,15 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
                                     <span style="font-size: 11px; font-weight: 700; color: #f87171;">🔴 OFFLINE</span>
                                 </div>
-                                <div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px;">
+                                <div style="font-size: 10px; color: #94a3b8; margin-bottom: 8px;">
                                     Warns <strong>All + Manufacturer</strong>
                                 </div>
-                                <div class="form-input-wrap">
-                                    <input type="number" id="edit-hb-offline" class="form-input" min="90" max="86400" step="10" placeholder="600" style="padding: 6px 10px; font-size: 12px; font-family: 'JetBrains Mono', monospace;" required>
-                                    <span style="position: absolute; right: 8px; font-size: 10px; color: #64748b;">sec</span>
+                                <div style="display: flex; gap: 6px;">
+                                    <input type="number" id="edit-hb-offline-val" class="form-input" min="1" max="720" step="1" placeholder="10" style="padding: 6px 8px; font-size: 12px; font-family: 'JetBrains Mono', monospace; text-align: center; flex: 1;" required>
+                                    <select id="edit-hb-offline-unit" class="form-input" style="padding: 6px 4px; font-size: 11px; width: 75px; flex-shrink: 0;">
+                                        <option value="m">Min</option>
+                                        <option value="h">Hours</option>
+                                    </select>
                                 </div>
                             </div>
                         </div>
@@ -5032,6 +5041,18 @@ HTML_PAGE = """<!DOCTYPE html>
             }
         }
 
+        function formatIntervalHuman(seconds) {
+            const s = parseInt(seconds) || 0;
+            if (s <= 0) return '0m';
+            if (s >= 3600) {
+                const h = Math.floor(s / 3600);
+                const m = Math.floor((s % 3600) / 60);
+                return m > 0 ? `${h}h ${m}m` : `${h}h`;
+            }
+            const m = Math.max(1, Math.round(s / 60));
+            return `${m}m`;
+        }
+
         function toggleTablePassword(elementId) {
             const el = document.getElementById(elementId);
             if (!el) return;
@@ -5190,7 +5211,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
                         const dotBg = isOnline ? '#10b981' : (isDelayed ? '#facc15' : (isWarn ? '#fb923c' : '#ef4444'));
                         const dotShadow = isOnline ? '0 0 6px #10b981' : (isDelayed ? '0 0 6px #facc15' : (isWarn ? '0 0 6px #fb923c' : '0 0 6px #ef4444'));
-                        const stLabel = isOnline ? 'Online' : (isDelayed ? `Delayed Pulse (Integrator Alerted >${delayedLimit}s)` : (isWarn ? `Warning (Dealer Alerted >${warnLimit}s)` : (isPending ? 'Awaiting Contact' : `Offline (All Alerted >${offLimit}s)`)));
+                        const stLabel = isOnline ? 'Online' : (isDelayed ? `Delayed Pulse (Integrator Alerted >${formatIntervalHuman(delayedLimit)})` : (isWarn ? `Warning (Dealer Alerted >${formatIntervalHuman(warnLimit)})` : (isPending ? 'Awaiting Contact' : `Offline (All Alerted >${formatIntervalHuman(offLimit)})`)));
                         const cDomain = fresh.domain || (fresh.client_id + '.gavasah.com');
                         const cName = fresh.name || fresh.client_id;
                         return `
@@ -6254,6 +6275,9 @@ HTML_PAGE = """<!DOCTYPE html>
                                 const delayedLimit = parseInt(c.hb_delayed_interval) || 180;
                                 const warnLimit = parseInt(c.hb_warning_interval) || 300;
                                 const offLimit = parseInt(c.hb_offline_interval) || 600;
+                                const delayedHuman = formatIntervalHuman(delayedLimit);
+                                const warnHuman = formatIntervalHuman(warnLimit);
+                                const offHuman = formatIntervalHuman(offLimit);
 
                                 if (isPending) {
                                     return `
@@ -6268,51 +6292,51 @@ HTML_PAGE = """<!DOCTYPE html>
                                 } else if (diff > offLimit) {
                                     const off = formatOfflineDetails(c.last_heartbeat, now);
                                     return `
-                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Everyone including Manufacturer (> ${offLimit}s)">
+                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Everyone including Manufacturer (> ${offHuman})">
                                             <span class="heartbeat-pill-badge hb-pill-offline">
                                                 <span class="hb-ball hb-ball-offline"></span>
                                                 <span>OFFLINE</span>
                                             </span>
                                             <div class="hb-timing-sub hb-timing-offline" title="${escapeHtml(off.tooltip)}">${escapeHtml(off.durationText)}</div>
-                                            <div class="hb-timestamp-sub" style="color: #f87171; font-size: 10px; font-weight: 600;">🚨 Warns All & Mfg (&gt;${offLimit}s)</div>
+                                            <div class="hb-timestamp-sub" style="color: #f87171; font-size: 10px; font-weight: 600;">🚨 Warns All & Mfg (&gt;${offHuman})</div>
                                             <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
                                         </div>
                                     `;
                                 } else if (diff > warnLimit) {
                                     const off = formatOfflineDetails(c.last_heartbeat, now);
                                     return `
-                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Integrators + Dealers (> ${warnLimit}s)">
+                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Integrators + Dealers (> ${warnHuman})">
                                             <span class="heartbeat-pill-badge hb-pill-warning">
                                                 <span class="hb-ball hb-ball-warning"></span>
                                                 <span>WARNING</span>
                                             </span>
                                             <div class="hb-timing-sub hb-timing-warning">Delayed (${humanDiff})</div>
-                                            <div class="hb-timestamp-sub" style="color: #fb923c; font-size: 10px; font-weight: 600;">🟠 Warns Dealer & Integrator (&gt;${warnLimit}s)</div>
+                                            <div class="hb-timestamp-sub" style="color: #fb923c; font-size: 10px; font-weight: 600;">🟠 Warns Dealer & Integrator (&gt;${warnHuman})</div>
                                             <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
                                         </div>
                                     `;
                                 } else if (diff > delayedLimit) {
                                     const off = formatOfflineDetails(c.last_heartbeat, now);
                                     return `
-                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Integrator (> ${delayedLimit}s)">
+                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Integrator (> ${delayedHuman})">
                                             <span class="heartbeat-pill-badge hb-pill-delayed">
                                                 <span class="hb-ball hb-ball-delayed"></span>
                                                 <span>DELAYED</span>
                                             </span>
                                             <div class="hb-timing-sub hb-timing-delayed">Delayed (${humanDiff})</div>
-                                            <div class="hb-timestamp-sub" style="color: #facc15; font-size: 10px; font-weight: 600;">🟡 Warns Integrator (&gt;${delayedLimit}s)</div>
+                                            <div class="hb-timestamp-sub" style="color: #facc15; font-size: 10px; font-weight: 600;">🟡 Warns Integrator (&gt;${delayedHuman})</div>
                                             <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
                                         </div>
                                     `;
                                 } else {
                                     return `
-                                        <div class="heartbeat-status-wrap" title="Gavasah Gateway connected and streaming telemetry (Last pulse ${humanDiff}) • Watchdog limits: ${delayedLimit}s / ${warnLimit}s / ${offLimit}s">
+                                        <div class="heartbeat-status-wrap" title="Gavasah Gateway connected and streaming telemetry (Last pulse ${humanDiff}) • Watchdog limits: ${delayedHuman} / ${warnHuman} / ${offHuman}">
                                             <span class="heartbeat-pill-badge hb-pill-online">
                                                 <span class="hb-ball hb-ball-online"></span>
                                                 <span>ONLINE</span>
                                             </span>
                                             <div class="hb-timing-sub hb-timing-online">Pulse ${humanDiff}</div>
-                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 10px;">Limits: ${delayedLimit}s / ${warnLimit}s / ${offLimit}s</div>
+                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 10px;">Limits: ${delayedHuman} / ${warnHuman} / ${offHuman}</div>
                                         </div>
                                     `;
                                 }
@@ -7445,9 +7469,23 @@ auto_update_external_url: true`;
             setVal('edit-client-id', client.client_id);
             setVal('edit-name', client.name || '');
             setVal('edit-secret', client.auth_secret || '');
-            setVal('edit-hb-delayed', client.hb_delayed_interval || 180);
-            setVal('edit-hb-warning', client.hb_warning_interval || 300);
-            setVal('edit-hb-offline', client.hb_offline_interval || 600);
+
+            const setDurationInputs = (valId, unitId, totalSec, defaultSec) => {
+                const s = parseInt(totalSec) || defaultSec;
+                const valEl = document.getElementById(valId);
+                const unitEl = document.getElementById(unitId);
+                if (!valEl || !unitEl) return;
+                if (s >= 3600 && s % 3600 === 0) {
+                    valEl.value = Math.floor(s / 3600);
+                    unitEl.value = 'h';
+                } else {
+                    valEl.value = Math.max(1, Math.round(s / 60));
+                    unitEl.value = 'm';
+                }
+            };
+            setDurationInputs('edit-hb-delayed-val', 'edit-hb-delayed-unit', client.hb_delayed_interval, 180);
+            setDurationInputs('edit-hb-warning-val', 'edit-hb-warning-unit', client.hb_warning_interval, 300);
+            setDurationInputs('edit-hb-offline-val', 'edit-hb-offline-unit', client.hb_offline_interval, 600);
 
             const dGroup = document.getElementById('edit-dealer-group');
             if (currentUser.role === 'manufacturer') {
@@ -7513,9 +7551,15 @@ auto_update_external_url: true`;
             const clientId = idEl ? idEl.value : '';
             const remoteToggle = document.getElementById('edit-remote-toggle');
             const client = currentFleetData.find(c => c.client_id === clientId);
-            const hbDelayedInput = document.getElementById('edit-hb-delayed');
-            const hbWarningInput = document.getElementById('edit-hb-warning');
-            const hbOfflineInput = document.getElementById('edit-hb-offline');
+            const getDurationSec = (valId, unitId, defaultSec) => {
+                const valEl = document.getElementById(valId);
+                const unitEl = document.getElementById(unitId);
+                if (!valEl) return defaultSec;
+                const v = parseFloat(valEl.value) || 0;
+                if (v <= 0) return defaultSec;
+                const u = unitEl ? unitEl.value : 'm';
+                return Math.round(u === 'h' ? v * 3600 : v * 60);
+            };
 
             const payload = {
                 client_id: clientId,
@@ -7524,9 +7568,9 @@ auto_update_external_url: true`;
                 knx_port: (client && client.knx_port && client.knx_ip && client.knx_ip !== '192.168.1.100' ? client.knx_port : null),
                 auth_secret: (document.getElementById('edit-secret') ? document.getElementById('edit-secret').value.trim() : ''),
                 remote_enabled: remoteToggle ? remoteToggle.checked : true,
-                hb_delayed_interval: hbDelayedInput ? parseInt(hbDelayedInput.value) || 180 : 180,
-                hb_warning_interval: hbWarningInput ? parseInt(hbWarningInput.value) || 300 : 300,
-                hb_offline_interval: hbOfflineInput ? parseInt(hbOfflineInput.value) || 600 : 600
+                hb_delayed_interval: getDurationSec('edit-hb-delayed-val', 'edit-hb-delayed-unit', 180),
+                hb_warning_interval: getDurationSec('edit-hb-warning-val', 'edit-hb-warning-unit', 300),
+                hb_offline_interval: getDurationSec('edit-hb-offline-val', 'edit-hb-offline-unit', 600)
             };
 
             if (currentUser.role === 'manufacturer') {
