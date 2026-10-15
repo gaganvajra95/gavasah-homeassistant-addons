@@ -366,7 +366,9 @@ def init_sqlite_database():
             onboarded_at INTEGER,
             hb_delayed_interval INTEGER DEFAULT 180,
             hb_warning_interval INTEGER DEFAULT 300,
-            hb_offline_interval INTEGER DEFAULT 600
+            hb_offline_interval INTEGER DEFAULT 600,
+            approval_status TEXT DEFAULT 'approved',
+            rejection_reason TEXT
         );
 
         CREATE TABLE IF NOT EXISTS client_logs (
@@ -428,6 +430,10 @@ def init_sqlite_database():
             conn.execute("ALTER TABLE clients ADD COLUMN hb_warning_interval INTEGER DEFAULT 300")
         if 'hb_offline_interval' not in cols:
             conn.execute("ALTER TABLE clients ADD COLUMN hb_offline_interval INTEGER DEFAULT 600")
+        if 'approval_status' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN approval_status TEXT DEFAULT 'approved'")
+        if 'rejection_reason' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN rejection_reason TEXT")
 
         # Ensure Remote ETS UDP Port Forwarding columns exist
         if 'ets_port' not in cols:
@@ -806,6 +812,8 @@ def load_clients_state():
             except: c['hb_warning_interval'] = 300
             try: c['hb_offline_interval'] = int(c.get('hb_offline_interval') or 600)
             except: c['hb_offline_interval'] = 600
+            c['approval_status'] = c.get('approval_status') or 'approved'
+            c['rejection_reason'] = c.get('rejection_reason') or ''
             res[c['client_id']] = c
         conn.close()
         return res
@@ -855,8 +863,9 @@ def save_clients_state(data):
                         technologies_json, backups_json, pending_backup,
                         ets_port, ets_target_type, ets_target_ip, ets_target_port, ets_port_assigned_at,
                         onboarded_at,
-                        hb_delayed_interval, hb_warning_interval, hb_offline_interval
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        hb_delayed_interval, hb_warning_interval, hb_offline_interval,
+                        approval_status, rejection_reason
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (c.get('client_id', cid), c.get('name', cid), c.get('dealer_id', 'owner_master'), c.get('dealer_name', 'Master Manufacturer (Direct)'),
                          c.get('integrator_id'), c.get('integrator_name', 'Direct Dealer Supervision'), c.get('domain', f"{cid}.gavasah.com"),
                          c.get('auth_secret', ''), int(c.get('dashboard_port', d_port)), int(c.get('ssh_port', s_port)),
@@ -871,7 +880,9 @@ def save_clients_state(data):
                          c.get('onboarded_at'),
                          int(c.get('hb_delayed_interval') or 180),
                          int(c.get('hb_warning_interval') or 300),
-                         int(c.get('hb_offline_interval') or 600))
+                         int(c.get('hb_offline_interval') or 600),
+                         c.get('approval_status', 'approved'),
+                         c.get('rejection_reason', ''))
                     )
             conn.close()
             return True
@@ -1071,6 +1082,18 @@ def teardown_client_tunnel(client_id, dashboard_port=None, ssh_port=None, ssh_pu
     # 5. Clean up local dynamic ingress configuration files on CT 150
     purge_local_ingress(client_id)
     return True
+
+def publish_mqtt_message(topic, payload, qos=0, retain=False):
+    """Publishes a message to the local EMQX broker on CT 150."""
+    try:
+        import paho.mqtt.publish as publish
+        if isinstance(payload, dict):
+            payload = json.dumps(payload)
+        publish.single(topic, str(payload), hostname="127.0.0.1", port=1883, qos=qos, retain=retain)
+        return True
+    except Exception as e:
+        print(f"[!] MQTT publish error ({topic}): {e}")
+        return False
 
 def sync_local_ingress(client_id, dash_port, proto="http", enabled=True, force=False, wg_ip=None):
     """
@@ -1275,6 +1298,17 @@ HTML_PAGE = """<!DOCTYPE html>
         .form-input:focus {
             border-color: var(--accent);
             box-shadow: 0 0 12px var(--accent-glow);
+        }
+
+        /* Remove spin arrows from number inputs across all modern browsers */
+        input[type=number]::-webkit-inner-spin-button,
+        input[type=number]::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        input[type=number] {
+            -moz-appearance: textfield;
+            appearance: textfield;
         }
 
         .pwd-toggle-btn {
@@ -3720,6 +3754,22 @@ HTML_PAGE = """<!DOCTYPE html>
                     <span class="nav-item-badge" id="badge-fleet-count">0</span>
                 </div>
 
+                <div class="nav-item" id="nav-approvals" onclick="switchTab('approvals')" style="display: none;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span class="nav-item-icon">📋</span>
+                        <span>Client Approvals</span>
+                    </div>
+                    <span class="nav-item-badge" id="badge-approvals-count" style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); display: none;">0</span>
+                </div>
+
+                <div class="nav-item" id="nav-mqtt" onclick="switchTab('mqtt')" style="display: none;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span class="nav-item-icon">⚡</span>
+                        <span>MQTT Broker (EMQX)</span>
+                    </div>
+                    <span class="status-indicator-dot online" style="margin-left: auto; width: 8px; height: 8px;"></span>
+                </div>
+
                 <div class="nav-item" id="nav-branding" onclick="switchTab('branding')" style="display: none;">
                     <div style="display: flex; align-items: center; gap: 10px;">
                         <span class="nav-item-icon">🎨</span>
@@ -4000,6 +4050,150 @@ HTML_PAGE = """<!DOCTYPE html>
                             <tbody id="fleet-table-body">
                             </tbody>
                         </table>
+                    </div>
+                </div>
+
+                <!-- ==============================================================
+                     TAB: CLIENT APPROVALS (MANUFACTURER)
+                     ============================================================== -->
+                <div class="tab-pane" id="tab-approvals">
+                    <div class="section-header" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px;">
+                        <div>
+                            <div class="section-title">📋 Client Gateways Awaiting Manufacturer Approval</div>
+                            <div style="font-size: 13px; color: #94a3b8; margin-top: 4px;">
+                                Review and authorize new client site registrations submitted by Dealers and Integrators. Approving enables reverse proxy ingress, live telemetry monitoring, and remote access.
+                            </div>
+                        </div>
+                        <button class="btn-sm" type="button" onclick="fetchApprovals()">🔄 Refresh Approvals</button>
+                    </div>
+
+                    <div id="approvals-empty-state" style="display: none; background: rgba(15, 23, 42, 0.6); border: 1px dashed rgba(255, 255, 255, 0.15); border-radius: 12px; padding: 40px; text-align: center;">
+                        <div style="font-size: 32px; margin-bottom: 10px;">✅</div>
+                        <div style="font-size: 16px; font-weight: 700; color: #f1f5f9; margin-bottom: 6px;">All Client Gateways Approved</div>
+                        <div style="font-size: 13px; color: #94a3b8; max-width: 450px; margin: 0 auto;">There are currently no client gateway registrations awaiting manufacturer approval. New submissions from dealers and integrators will appear here.</div>
+                    </div>
+
+                    <div class="table-container" id="approvals-table-container">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>Gateway Site Name & ID</th>
+                                    <th>Partner Assignment</th>
+                                    <th>Submission Time</th>
+                                    <th>Addon Configuration Snippet</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="approvals-table-body">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ==============================================================
+                     TAB: MQTT BROKER & DYNAMIC TOPICS (EMQX)
+                     ============================================================== -->
+                <div class="tab-pane" id="tab-mqtt">
+                    <div class="section-header" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px;">
+                        <div>
+                            <div class="section-title">⚡ MQTT Broker & High-Speed Telemetry Engine (EMQX)</div>
+                            <div style="font-size: 13px; color: #94a3b8; margin-top: 4px;">
+                                Enterprise MQTT broker running locally on Gavasah Server (CT 150) for real-time telemetry streaming, Last Will & Testament (LWT) gateway heartbeat drops, and instant bidirectional command dispatch.
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <a href="http://dealer.gavasah.com:18083" target="_blank" class="btn-action" style="display: inline-flex; align-items: center; gap: 6px; text-decoration: none;">
+                                <span>🚀 Launch EMQX Web GUI (Console)</span>
+                                <span style="font-size: 11px;">↗</span>
+                            </a>
+                        </div>
+                    </div>
+
+                    <!-- Broker Metrics Cards -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px;">
+                        <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(0, 240, 255, 0.3); border-radius: 12px; padding: 16px;">
+                            <div style="font-size: 11px; color: #94a3b8; font-weight: 700; text-transform: uppercase;">Broker Status</div>
+                            <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
+                                <span class="status-indicator-dot online" style="width: 10px; height: 10px;"></span>
+                                <span style="font-size: 18px; font-weight: 800; color: #fff;">EMQX v5.8.9</span>
+                            </div>
+                            <div style="font-size: 11px; color: #00f0ff; margin-top: 4px;">Active & Running (systemd)</div>
+                        </div>
+
+                        <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 12px; padding: 16px;">
+                            <div style="font-size: 11px; color: #94a3b8; font-weight: 700; text-transform: uppercase;">MQTT Listeners</div>
+                            <div style="font-size: 14px; font-weight: 700; color: #fff; margin-top: 6px;">
+                                TCP <code>:1883</code> &bull; WSS <code>:8084</code>
+                            </div>
+                            <div style="font-size: 11px; color: #64748b; margin-top: 4px;">WebSocket <code>:8083</code> (100% Firewall Safe)</div>
+                        </div>
+
+                        <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 12px; padding: 16px;">
+                            <div style="font-size: 11px; color: #94a3b8; font-weight: 700; text-transform: uppercase;">Management Console</div>
+                            <div style="font-size: 14px; font-weight: 700; color: #fff; margin-top: 6px;">
+                                Port <code>:18083</code>
+                            </div>
+                            <div style="font-size: 11px; color: #10b981; margin-top: 4px;">User: <code>admin</code> / Password: <code>vajju2175</code></div>
+                        </div>
+                    </div>
+
+                    <!-- Topic Hierarchy & Dispatcher -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px;">
+                        <!-- Topic Directory -->
+                        <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 12px; padding: 20px;">
+                            <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                                <span>🌳 Dynamic Topic Architecture (Auto-Evolving)</span>
+                            </div>
+                            <div style="font-size: 12px; color: #94a3b8; line-height: 1.5; margin-bottom: 14px;">
+                                Topics automatically evolve as clients, dealers, and integrators are provisioned or deprovisioned:
+                            </div>
+                            <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; background: rgba(0,0,0,0.4); padding: 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.06); line-height: 1.8;">
+                                <div style="color: #38bdf8;">🌐 Universal Broadcast:</div>
+                                <div style="padding-left: 14px; color: #94a3b8;">&bull; <strong style="color: #f1f5f9;">gavasah/universal/cmd</strong> (Broadcast to all gateways)</div>
+                                <div style="padding-left: 14px; color: #94a3b8;">&bull; <strong style="color: #f1f5f9;">gavasah/universal/status</strong> (Fleet announcements)</div>
+                                <div style="color: #a78bfa; margin-top: 8px;">🏢 Dealer & Integrator Scopes:</div>
+                                <div style="padding-left: 14px; color: #94a3b8;">&bull; <strong style="color: #f1f5f9;">gavasah/dealers/{dealer_id}/broadcast</strong></div>
+                                <div style="padding-left: 14px; color: #94a3b8;">&bull; <strong style="color: #f1f5f9;">gavasah/dealers/{dealer_id}/integrators/{integrator_id}/broadcast</strong></div>
+                                <div style="color: #34d399; margin-top: 8px;">🏠 Gavasah Gateway (Client) Dedicated:</div>
+                                <div style="padding-left: 14px; color: #94a3b8;">&bull; <strong style="color: #f1f5f9;">gavasah/clients/{client_id}/telemetry</strong> (Heartbeat & metrics)</div>
+                                <div style="padding-left: 14px; color: #94a3b8;">&bull; <strong style="color: #f1f5f9;">gavasah/clients/{client_id}/status</strong> (LWT socket drop trigger)</div>
+                                <div style="padding-left: 14px; color: #94a3b8;">&bull; <strong style="color: #f1f5f9;">gavasah/clients/{client_id}/cmd</strong> (Direct targeted commands)</div>
+                                <div style="padding-left: 14px; color: #94a3b8;">&bull; <strong style="color: #f1f5f9;">gavasah/clients/{client_id}/config</strong> (Dynamic config push)</div>
+                            </div>
+                        </div>
+
+                        <!-- Command Dispatcher Form -->
+                        <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 12px; padding: 20px;">
+                            <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                                <span>📡 Real-Time Command Dispatcher</span>
+                            </div>
+                            <div style="margin-bottom: 12px;">
+                                <label class="form-label">DISPATCH TARGET</label>
+                                <select id="mqtt-target-type" class="form-input" onchange="onMqttTargetChange()">
+                                    <option value="universal">Universal Broadcast (All Gavasah Gateways)</option>
+                                    <option value="client">Individual Client Gateway</option>
+                                </select>
+                            </div>
+
+                            <div id="mqtt-client-select-wrap" style="margin-bottom: 12px; display: none;">
+                                <label class="form-label">SELECT TARGET GAVASAH GATEWAY</label>
+                                <select id="mqtt-target-client" class="form-input">
+                                </select>
+                            </div>
+
+                            <div style="margin-bottom: 12px;">
+                                <label class="form-label">COMMAND PAYLOAD (JSON)</label>
+                                <textarea id="mqtt-cmd-payload" class="form-input" rows="4" style="font-family: 'JetBrains Mono', monospace; font-size: 12px;" placeholder='{"action": "ping", "timestamp": 1234567890}'></textarea>
+                            </div>
+
+                            <div style="display: flex; gap: 8px;">
+                                <button type="button" class="btn-action" style="flex: 1;" onclick="dispatchMqttCommand()">
+                                    ⚡ Dispatch via MQTT
+                                </button>
+                                <button type="button" class="btn-sm" onclick="setSampleMqttCmd('ping')">Sample: Ping</button>
+                                <button type="button" class="btn-sm" onclick="setSampleMqttCmd('reload')">Sample: Reload</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -4507,29 +4701,29 @@ HTML_PAGE = """<!DOCTYPE html>
 
 
 
-                    <div class="form-group" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 10px; padding: 14px 16px; margin-top: 14px;">
+                    <div class="form-group" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 10px; padding: 14px 16px; margin-top: 14px;">
                         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
                             <label class="form-label" style="margin-bottom: 0; color: #fbbf24; font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
-                                ⏱️ HEARTBEAT TIMEOUT & ESCALATION INTERVALS
+                                ⏱️ HEALTH & ESCALATION INTERVALS (HEARTBEAT & INTEGRATIONS)
                             </label>
                             <span class="badge-role" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 10px;">MINUTES & HOURS</span>
                         </div>
                         <div style="font-size: 11px; color: #94a3b8; margin-bottom: 12px; line-height: 1.4;">
-                            Configure tiered watchdog intervals (in minutes or hours) before escalating alerts when a Gavasah Gateway stops pulsing:
+                            Configure threshold escalation (in minutes or hours) triggered by missed heartbeats or subsystem/integration failures:
                         </div>
 
-                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;">
-                            <!-- Tier 1: Delayed Pulse (Yellow) -->
-                            <div style="background: rgba(250, 204, 21, 0.05); border: 1px solid rgba(250, 204, 21, 0.25); border-radius: 8px; padding: 10px;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+                            <!-- Tier 1: Delayed Pulse / Minor Issues (Yellow) -->
+                            <div style="background: rgba(250, 204, 21, 0.05); border: 1px solid rgba(250, 204, 21, 0.25); border-radius: 8px; padding: 12px;">
                                 <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
-                                    <span style="font-size: 11px; font-weight: 700; color: #facc15;">🟡 DELAYED PULSE</span>
+                                    <span style="font-size: 11px; font-weight: 700; color: #facc15;">🟡 DELAYED / DEGRADED</span>
                                 </div>
                                 <div style="font-size: 10px; color: #94a3b8; margin-bottom: 8px;">
                                     Warns <strong>Integrator</strong>
                                 </div>
-                                <div style="display: flex; gap: 6px;">
-                                    <input type="number" id="edit-hb-delayed-val" class="form-input" min="1" max="720" step="1" placeholder="3" style="padding: 6px 8px; font-size: 12px; font-family: 'JetBrains Mono', monospace; text-align: center; flex: 1;" required>
-                                    <select id="edit-hb-delayed-unit" class="form-input" style="padding: 6px 4px; font-size: 11px; width: 75px; flex-shrink: 0;">
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <input type="number" id="edit-hb-delayed-val" class="form-input" min="1" max="720" step="1" placeholder="3" style="padding: 9px 12px; font-size: 14px; font-family: 'JetBrains Mono', monospace; font-weight: 700; text-align: center; flex: 1.8; min-width: 85px;" required>
+                                    <select id="edit-hb-delayed-unit" class="form-input" style="padding: 9px 8px; font-size: 12px; font-weight: 600; width: 85px; flex-shrink: 0;">
                                         <option value="m">Min</option>
                                         <option value="h">Hours</option>
                                     </select>
@@ -4537,16 +4731,16 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
 
                             <!-- Tier 2: Warning (Orange) -->
-                            <div style="background: rgba(251, 146, 60, 0.05); border: 1px solid rgba(251, 146, 60, 0.25); border-radius: 8px; padding: 10px;">
+                            <div style="background: rgba(251, 146, 60, 0.05); border: 1px solid rgba(251, 146, 60, 0.25); border-radius: 8px; padding: 12px;">
                                 <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
                                     <span style="font-size: 11px; font-weight: 700; color: #fb923c;">🟠 WARNING</span>
                                 </div>
                                 <div style="font-size: 10px; color: #94a3b8; margin-bottom: 8px;">
                                     Warns <strong>Integrator + Dealer</strong>
                                 </div>
-                                <div style="display: flex; gap: 6px;">
-                                    <input type="number" id="edit-hb-warning-val" class="form-input" min="1" max="720" step="1" placeholder="5" style="padding: 6px 8px; font-size: 12px; font-family: 'JetBrains Mono', monospace; text-align: center; flex: 1;" required>
-                                    <select id="edit-hb-warning-unit" class="form-input" style="padding: 6px 4px; font-size: 11px; width: 75px; flex-shrink: 0;">
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <input type="number" id="edit-hb-warning-val" class="form-input" min="1" max="720" step="1" placeholder="5" style="padding: 9px 12px; font-size: 14px; font-family: 'JetBrains Mono', monospace; font-weight: 700; text-align: center; flex: 1.8; min-width: 85px;" required>
+                                    <select id="edit-hb-warning-unit" class="form-input" style="padding: 9px 8px; font-size: 12px; font-weight: 600; width: 85px; flex-shrink: 0;">
                                         <option value="m">Min</option>
                                         <option value="h">Hours</option>
                                     </select>
@@ -4554,16 +4748,16 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
 
                             <!-- Tier 3: Offline (Red) -->
-                            <div style="background: rgba(239, 68, 68, 0.05); border: 1px solid rgba(239, 68, 68, 0.25); border-radius: 8px; padding: 10px;">
+                            <div style="background: rgba(239, 68, 68, 0.05); border: 1px solid rgba(239, 68, 68, 0.25); border-radius: 8px; padding: 12px;">
                                 <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
-                                    <span style="font-size: 11px; font-weight: 700; color: #f87171;">🔴 OFFLINE</span>
+                                    <span style="font-size: 11px; font-weight: 700; color: #f87171;">🔴 OFFLINE / CRITICAL</span>
                                 </div>
                                 <div style="font-size: 10px; color: #94a3b8; margin-bottom: 8px;">
                                     Warns <strong>All + Manufacturer</strong>
                                 </div>
-                                <div style="display: flex; gap: 6px;">
-                                    <input type="number" id="edit-hb-offline-val" class="form-input" min="1" max="720" step="1" placeholder="10" style="padding: 6px 8px; font-size: 12px; font-family: 'JetBrains Mono', monospace; text-align: center; flex: 1;" required>
-                                    <select id="edit-hb-offline-unit" class="form-input" style="padding: 6px 4px; font-size: 11px; width: 75px; flex-shrink: 0;">
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <input type="number" id="edit-hb-offline-val" class="form-input" min="1" max="720" step="1" placeholder="10" style="padding: 9px 12px; font-size: 14px; font-family: 'JetBrains Mono', monospace; font-weight: 700; text-align: center; flex: 1.8; min-width: 85px;" required>
+                                    <select id="edit-hb-offline-unit" class="form-input" style="padding: 9px 8px; font-size: 12px; font-weight: 600; width: 85px; flex-shrink: 0;">
                                         <option value="m">Min</option>
                                         <option value="h">Hours</option>
                                     </select>
@@ -4907,11 +5101,16 @@ HTML_PAGE = """<!DOCTYPE html>
 
                 const navBrandMfg = document.getElementById('nav-branding');
                 if (navBrandMfg) navBrandMfg.style.display = 'flex';
+                const navApprovals = document.getElementById('nav-approvals');
+                if (navApprovals) navApprovals.style.display = 'flex';
+                const navMqtt = document.getElementById('nav-mqtt');
+                if (navMqtt) navMqtt.style.display = 'flex';
                 applyDealerBranding(currentUser.branding);
                 switchTab('overview');
                 fetchDealers();
                 fetchIntegrators();
                 fetchFleet();
+                fetchApprovals();
                 populatePartnerFilter();
 
             } else if (currentUser.role === 'dealer') {
@@ -4932,6 +5131,10 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('nav-account').style.display = 'none';
                 const navBrand = document.getElementById('nav-branding');
                 if (navBrand) navBrand.style.display = 'flex';
+                const navApprD = document.getElementById('nav-approvals');
+                if (navApprD) navApprD.style.display = 'none';
+                const navMqttD = document.getElementById('nav-mqtt');
+                if (navMqttD) navMqttD.style.display = 'none';
                 applyDealerBranding(currentUser.branding);
                 document.getElementById('th-dealer-col').style.display = 'none';
                 document.getElementById('th-int-dealership-col').style.display = 'none';
@@ -5122,6 +5325,206 @@ HTML_PAGE = """<!DOCTYPE html>
                 fetchFleet();
             } else if (tabId === 'fleet') {
                 fetchFleet();
+            } else if (tabId === 'approvals') {
+                fetchApprovals();
+            } else if (tabId === 'mqtt') {
+                populateMqttDispatcherClients();
+            }
+        }
+
+        // ======================================================================
+        // CLIENT APPROVALS (MANUFACTURER)
+        // ======================================================================
+        let currentApprovalsData = [];
+
+        async function fetchApprovals() {
+            if (!currentUser || currentUser.role !== 'manufacturer') return;
+            try {
+                const res = await apiFetch('/api/approvals?t=' + Date.now());
+                if (res.ok) {
+                    currentApprovalsData = await res.json();
+                    renderApprovalsUI(currentApprovalsData);
+                }
+            } catch (err) {
+                console.error("Error fetching approvals:", err);
+            }
+        }
+
+        function renderApprovalsUI(list) {
+            const tbody = document.getElementById('approvals-table-body');
+            const emptyEl = document.getElementById('approvals-empty-state');
+            const tableWrap = document.getElementById('approvals-table-container');
+            const badgeCount = document.getElementById('badge-approvals-count');
+
+            if (badgeCount) {
+                if (list.length > 0) {
+                    badgeCount.innerText = list.length;
+                    badgeCount.style.display = 'inline-block';
+                } else {
+                    badgeCount.style.display = 'none';
+                }
+            }
+
+            if (!tbody) return;
+
+            if (list.length === 0) {
+                if (emptyEl) emptyEl.style.display = 'block';
+                if (tableWrap) tableWrap.style.display = 'none';
+                tbody.innerHTML = '';
+                return;
+            }
+
+            if (emptyEl) emptyEl.style.display = 'none';
+            if (tableWrap) tableWrap.style.display = 'block';
+
+            tbody.innerHTML = list.map(c => {
+                const onb = formatOnboardingDateTime(c.onboarded_at);
+                const snippet = `hub_host: "dealer.gavasah.com"
+client_id: "${c.client_id}"
+auth_key: "${c.auth_secret}"
+remote_dashboard_port: ${c.dashboard_port || 10001}`;
+
+                return `
+                    <tr>
+                        <td>
+                            <div class="site-name-text" style="font-size: 14px; font-weight: 700; color: #fff;">${escapeHtml(c.name)}</div>
+                            <div class="site-slug-text" style="font-family: 'JetBrains Mono', monospace; color: #00f0ff;">${escapeHtml(c.client_id)}</div>
+                            <div style="font-size: 11px; color: #94a3b8; margin-top: 3px;">Domain: <code>${escapeHtml(c.domain)}</code></div>
+                        </td>
+                        <td>
+                            <div style="font-size: 12px; font-weight: 600; color: #c084fc;">🏢 ${escapeHtml(c.dealer_name || 'Direct')}</div>
+                            <div style="font-size: 11px; color: #34d399; margin-top: 2px;">🔧 ${escapeHtml(c.integrator_name || 'Direct Supervision')}</div>
+                        </td>
+                        <td>
+                            <div style="font-size: 12px; color: #f1f5f9;">📅 ${escapeHtml(onb.dateText || 'Recent')}</div>
+                            <div style="font-size: 11px; color: #64748b; font-family: monospace;">⏰ ${escapeHtml(onb.timeText || '')}</div>
+                        </td>
+                        <td>
+                            <div style="position: relative; max-width: 280px;">
+                                <pre style="background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 8px; font-size: 10px; font-family: 'JetBrains Mono', monospace; margin: 0; color: #cbd5e1; white-space: pre-wrap;">${escapeHtml(snippet)}</pre>
+                                <button type="button" class="btn-sm" style="position: absolute; top: 4px; right: 4px; font-size: 10px; padding: 2px 6px;" onclick="navigator.clipboard.writeText('${escapeHtml(snippet)}'); showToast('Snippet copied!', 'success');">Copy</button>
+                            </div>
+                        </td>
+                        <td>
+                            <div style="display: flex; flex-direction: column; gap: 6px;">
+                                <button type="button" class="btn-action" style="background: #10b981; font-size: 11px; padding: 6px 12px; justify-content: center;" onclick="approveClient('${escapeHtml(c.client_id)}')">
+                                    ✅ Approve Client
+                                </button>
+                                <button type="button" class="btn-sm" style="color: #f87171; border-color: rgba(239,68,68,0.4); font-size: 11px; padding: 5px 10px; justify-content: center;" onclick="rejectClient('${escapeHtml(c.client_id)}')">
+                                    ❌ Reject
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        async function approveClient(clientId) {
+            if (!confirm(`Approve client site '${clientId}'?\n\nThis will activate reverse proxy ingress, telemetry monitoring, and remote access immediately.`)) return;
+            try {
+                const res = await apiFetch('/api/approvals/approve', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ client_id: clientId })
+                });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast(data.message || 'Client approved successfully!', 'success');
+                    await fetchApprovals();
+                    await fetchFleet();
+                } else {
+                    showToast(data.error || 'Approval failed', 'error');
+                }
+            } catch (err) {
+                showToast('Network error approving client', 'error');
+            }
+        }
+
+        async function rejectClient(clientId) {
+            const reason = prompt(`Enter reason for declining client registration '${clientId}':`, 'Registration declined by Manufacturer HQ');
+            if (reason === null) return;
+            try {
+                const res = await apiFetch('/api/approvals/reject', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ client_id: clientId, reason: reason })
+                });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast('Client registration rejected', 'info');
+                    await fetchApprovals();
+                    await fetchFleet();
+                } else {
+                    showToast(data.error || 'Rejection failed', 'error');
+                }
+            } catch (err) {
+                showToast('Network error rejecting client', 'error');
+            }
+        }
+
+        // ======================================================================
+        // MQTT MANAGEMENT & COMMAND DISPATCHER
+        // ======================================================================
+        function populateMqttDispatcherClients() {
+            const sel = document.getElementById('mqtt-target-client');
+            if (!sel) return;
+            sel.innerHTML = currentFleetData.map(c => `
+                <option value="${escapeHtml(c.client_id)}">${escapeHtml(c.name)} (${escapeHtml(c.client_id)})</option>
+            `).join('');
+        }
+
+        function onMqttTargetChange() {
+            const t = document.getElementById('mqtt-target-type');
+            const wrap = document.getElementById('mqtt-client-select-wrap');
+            if (t && wrap) {
+                wrap.style.display = t.value === 'client' ? 'block' : 'none';
+            }
+        }
+
+        function setSampleMqttCmd(type) {
+            const ta = document.getElementById('mqtt-cmd-payload');
+            if (!ta) return;
+            if (type === 'ping') {
+                ta.value = JSON.stringify({ action: "ping", timestamp: Date.now() }, null, 2);
+            } else if (type === 'reload') {
+                ta.value = JSON.stringify({ action: "reload_integrations", subsystems: ["knx"] }, null, 2);
+            }
+        }
+
+        async function dispatchMqttCommand() {
+            const targetType = document.getElementById('mqtt-target-type').value;
+            const payloadStr = document.getElementById('mqtt-cmd-payload').value.trim();
+            if (!payloadStr) {
+                showToast('Please enter a JSON command payload', 'error');
+                return;
+            }
+
+            let topic = 'gavasah/universal/cmd';
+            if (targetType === 'client') {
+                const clientSel = document.getElementById('mqtt-target-client');
+                const cid = clientSel ? clientSel.value : '';
+                if (!cid) {
+                    showToast('Please select a target Gavasah Gateway', 'error');
+                    return;
+                }
+                topic = `gavasah/clients/${cid}/cmd`;
+            }
+
+            try {
+                const res = await apiFetch('/api/mqtt/publish', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ topic: topic, payload: payloadStr })
+                });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast(`Dispatched to topic: ${topic}`, 'success');
+                } else {
+                    showToast(data.error || 'Failed to dispatch via MQTT', 'error');
+                }
+            } catch (err) {
+                showToast('Network error dispatching MQTT command', 'error');
             }
         }
 
@@ -6279,7 +6682,35 @@ HTML_PAGE = """<!DOCTYPE html>
                                 const warnHuman = formatIntervalHuman(warnLimit);
                                 const offHuman = formatIntervalHuman(offLimit);
 
-                                if (isPending) {
+                                // Check for integration & subsystem issues (KNX, Zigbee, Lutron, Matter, HA Core)
+                                let integrationIssues = [];
+                                if (c.knx_ip && c.knx_status) {
+                                    if (c.knx_status.configured && (c.knx_status.reachable === false || c.knx_status.state === 'error' || c.knx_status.state === 'disconnected')) {
+                                        integrationIssues.push('KNX Gateway unreachable');
+                                    }
+                                }
+                                if (c.technologies) {
+                                    for (const [techKey, techVal] of Object.entries(c.technologies)) {
+                                        if (techVal && (techVal.status === 'error' || techVal.healthy === false || techVal.state === 'failed')) {
+                                            integrationIssues.push(`${techKey.toUpperCase()} failure`);
+                                        }
+                                    }
+                                }
+                                const hasIntegrationIssue = integrationIssues.length > 0;
+                                const integrationIssueText = integrationIssues.join(', ');
+
+                                if (c.approval_status === 'pending') {
+                                    return `
+                                        <div class="heartbeat-status-wrap" title="Registration submitted &bull; Awaiting Manufacturer HQ Approval before remote access and monitoring are enabled">
+                                            <span class="heartbeat-pill-badge hb-pill-pending" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border-color: rgba(245, 158, 11, 0.4);">
+                                                <span class="hb-ball hb-ball-pending" style="background: #fbbf24; box-shadow: 0 0 6px #fbbf24;"></span>
+                                                <span>AWAITING APPROVAL</span>
+                                            </span>
+                                            <div class="hb-timing-sub" style="color: #fbbf24; font-weight: 600;">Pending HQ Review</div>
+                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 10px;">🔒 Remote access locked</div>
+                                        </div>
+                                    `;
+                                } else if (isPending) {
                                     return `
                                         <div class="heartbeat-status-wrap" title="Client site provisioned - awaiting initial connection from physical gateway">
                                             <span class="heartbeat-pill-badge hb-pill-pending">
@@ -6302,29 +6733,29 @@ HTML_PAGE = """<!DOCTYPE html>
                                             <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
                                         </div>
                                     `;
-                                } else if (diff > warnLimit) {
+                                } else if (diff > warnLimit || (hasIntegrationIssue && diff > delayedLimit)) {
                                     const off = formatOfflineDetails(c.last_heartbeat, now);
                                     return `
-                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Integrators + Dealers (> ${warnHuman})">
+                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Integrators + Dealers (> ${warnHuman})${hasIntegrationIssue ? ' • Issues: ' + escapeHtml(integrationIssueText) : ''}">
                                             <span class="heartbeat-pill-badge hb-pill-warning">
                                                 <span class="hb-ball hb-ball-warning"></span>
                                                 <span>WARNING</span>
                                             </span>
-                                            <div class="hb-timing-sub hb-timing-warning">Delayed (${humanDiff})</div>
-                                            <div class="hb-timestamp-sub" style="color: #fb923c; font-size: 10px; font-weight: 600;">🟠 Warns Dealer & Integrator (&gt;${warnHuman})</div>
+                                            <div class="hb-timing-sub hb-timing-warning">${hasIntegrationIssue ? 'Subsystem Alert' : `Delayed (${humanDiff})`}</div>
+                                            <div class="hb-timestamp-sub" style="color: #fb923c; font-size: 10px; font-weight: 600;">${hasIntegrationIssue ? `🟠 Issue: ${escapeHtml(integrationIssueText)}` : `🟠 Warns Dealer & Integrator (&gt;${warnHuman})`}</div>
                                             <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
                                         </div>
                                     `;
-                                } else if (diff > delayedLimit) {
+                                } else if (diff > delayedLimit || hasIntegrationIssue) {
                                     const off = formatOfflineDetails(c.last_heartbeat, now);
                                     return `
-                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Integrator (> ${delayedHuman})">
+                                        <div class="heartbeat-status-wrap" title="${hasIntegrationIssue ? 'Integration problem detected: ' + escapeHtml(integrationIssueText) : escapeHtml(off.tooltip)} • Escalation: Warns Integrator (> ${delayedHuman})">
                                             <span class="heartbeat-pill-badge hb-pill-delayed">
                                                 <span class="hb-ball hb-ball-delayed"></span>
-                                                <span>DELAYED</span>
+                                                <span>${hasIntegrationIssue ? 'DEGRADED' : 'DELAYED'}</span>
                                             </span>
-                                            <div class="hb-timing-sub hb-timing-delayed">Delayed (${humanDiff})</div>
-                                            <div class="hb-timestamp-sub" style="color: #facc15; font-size: 10px; font-weight: 600;">🟡 Warns Integrator (&gt;${delayedHuman})</div>
+                                            <div class="hb-timing-sub hb-timing-delayed">${hasIntegrationIssue ? `Pulse ${humanDiff} (Subsystem Issue)` : `Delayed (${humanDiff})`}</div>
+                                            <div class="hb-timestamp-sub" style="color: #facc15; font-size: 10px; font-weight: 600;">${hasIntegrationIssue ? `🟡 Issue: ${escapeHtml(integrationIssueText)}` : `🟡 Warns Integrator (&gt;${delayedHuman})`}</div>
                                             <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
                                         </div>
                                     `;
@@ -6467,21 +6898,27 @@ HTML_PAGE = """<!DOCTYPE html>
                                     ⚙️ Actions <span class="action-caret">▼</span>
                                 </button>
                                 <div class="action-menu-popover" id="action-menu-${c.client_id}" style="display: none;">
-                                    ${remoteEnabled ? (
-                                        isPending ? `
-                                            <a href="https://${escapeHtml(c.domain)}" target="_blank" class="action-menu-item" style="color: #fbbf24;" onclick="closeAllActionMenus()">
-                                                <span>⏳</span> Dashboard (Pending) ↗
-                                            </a>
-                                        ` : `
-                                            <a href="https://${escapeHtml(c.domain)}" target="_blank" class="action-menu-item" style="color: #38bdf8;" onclick="closeAllActionMenus()">
-                                                <span>📊</span> Open Dashboard ↗
+                                    ${c.approval_status === 'pending' && currentUser.role !== 'manufacturer' ? `
+                                        <div class="action-menu-item" style="color: #fbbf24; cursor: not-allowed; opacity: 0.8;" title="Remote Access is locked until Manufacturer approves this client site">
+                                            <span>🔒</span> Remote Access Locked (Pending HQ)
+                                        </div>
+                                    ` : (
+                                        remoteEnabled ? (
+                                            isPending ? `
+                                                <a href="https://${escapeHtml(c.domain)}" target="_blank" class="action-menu-item" style="color: #fbbf24;" onclick="closeAllActionMenus()">
+                                                    <span>⏳</span> Dashboard (Pending) ↗
+                                                </a>
+                                            ` : `
+                                                <a href="https://${escapeHtml(c.domain)}" target="_blank" class="action-menu-item" style="color: #38bdf8;" onclick="closeAllActionMenus()">
+                                                    <span>📊</span> Open Dashboard ↗
+                                                </a>
+                                            `
+                                        ) : `
+                                            <a href="https://${escapeHtml(c.domain)}" target="_blank" class="action-menu-item" style="color: #f87171;" onclick="closeAllActionMenus()">
+                                                <span>🔒</span> Restricted Notice ↗
                                             </a>
                                         `
-                                    ) : `
-                                        <a href="https://${escapeHtml(c.domain)}" target="_blank" class="action-menu-item" style="color: #f87171;" onclick="closeAllActionMenus()">
-                                            <span>🔒</span> Restricted Notice ↗
-                                        </a>
-                                    `}
+                                    )}
                                     ${c.ets_port ? `
                                         <button type="button" class="action-menu-item" style="color: #c084fc;" onclick="copyEtsRemoteUrl('${c.domain}', ${c.ets_port}, event); closeAllActionMenus();">
                                             <span>🔌</span> Copy Remote ETS (: ${c.ets_port})
@@ -8959,6 +9396,77 @@ PersistentKeepalive = 25
             self.wfile.write(encoded)
             return
 
+        # 12d. Manufacturer Approvals Listing
+        elif parsed.path == '/api/approvals':
+            user = self.get_authenticated_user()
+            if not user or user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer authorization required'})
+                return
+
+            c_data = load_clients_state()
+            pending = [c for c in c_data.values() if c.get('approval_status') == 'pending']
+            pending.sort(key=lambda x: x.get('onboarded_at') or 0, reverse=True)
+            self.send_json(200, pending)
+            return
+
+        # 12e. MQTT Broker Status & Listeners
+        elif parsed.path == '/api/mqtt/status':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+
+            self.send_json(200, {
+                'active': True,
+                'broker': 'EMQX v5.8.9',
+                'tcp_port': 1883,
+                'ws_port': 8083,
+                'wss_port': 8084,
+                'dashboard_port': 18083,
+                'dashboard_url': 'http://dealer.gavasah.com:18083'
+            })
+            return
+
+        # 12f. MQTT Dynamic Topic Tree
+        elif parsed.path == '/api/mqtt/topics':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+
+            c_data = load_clients_state()
+            auth = load_auth_state()
+            dealers = auth.get('dealers', {})
+            integrators = auth.get('integrators', {})
+
+            topics = {
+                'universal': [
+                    {'topic': 'gavasah/universal/cmd', 'desc': 'Broadcast commands to all Gavasah Gateways'},
+                    {'topic': 'gavasah/universal/status', 'desc': 'Fleet announcements & firmware notices'}
+                ],
+                'dealers': [
+                    {'topic': f'gavasah/dealers/{did}/broadcast', 'dealer_name': d.get('name')}
+                    for did, d in dealers.items()
+                ],
+                'integrators': [
+                    {'topic': f'gavasah/dealers/{it.get("dealer_id")}/integrators/{iid}/broadcast', 'integrator_name': it.get('name')}
+                    for iid, it in integrators.items()
+                ],
+                'clients': [
+                    {
+                        'client_id': cid,
+                        'name': c.get('name'),
+                        'telemetry_topic': f'gavasah/clients/{cid}/telemetry',
+                        'status_topic': f'gavasah/clients/{cid}/status',
+                        'cmd_topic': f'gavasah/clients/{cid}/cmd',
+                        'config_topic': f'gavasah/clients/{cid}/config'
+                    }
+                    for cid, c in c_data.items()
+                ]
+            }
+            self.send_json(200, topics)
+            return
+
         else:
             self.send_response(404)
             self.end_headers()
@@ -10129,6 +10637,11 @@ PersistentKeepalive = 25
             while ssh_port in existing_ssh_ports:
                 ssh_port += 1
 
+            is_mfg = (user['role'] == 'manufacturer')
+            approval_status = 'approved' if is_mfg else 'pending'
+            remote_requested = bool(body.get('remote_enabled', True))
+            effective_remote = remote_requested if is_mfg else False
+
             new_client = {
                 'client_id': clean_id,
                 'dealer_id': assigned_dealer_id,
@@ -10151,7 +10664,9 @@ PersistentKeepalive = 25
                 'last_heartbeat': 0,
                 'status': 'pending',
                 'onboarded_at': None,
-                'remote_enabled': bool(body.get('remote_enabled', True)),
+                'remote_enabled': effective_remote,
+                'approval_status': approval_status,
+                'rejection_reason': '',
                 'system': {},
                 'network': {},
                 'knx_status': {'configured': False, 'reachable': False, 'reason': 'no_knx_integration'} if not knx_ip else {}
@@ -10160,15 +10675,32 @@ PersistentKeepalive = 25
             c_data[clean_id] = new_client
             save_clients_state(c_data)
 
-            # Ingress and SSH config
-            sync_caddy_ingress(clean_id, dash_port, 'http', new_client['remote_enabled'], wg_ip=wg_ip)
+            # Ingress and SSH config: only activate ingress if approved by manufacturer
+            if is_mfg and effective_remote:
+                sync_caddy_ingress(clean_id, dash_port, 'http', True, wg_ip=wg_ip)
+                prewarm_caddy_tls(domain)
+            else:
+                purge_caddy_ingress(clean_id)
+
             if ssh_key:
                 sync_client_ssh_user(clean_id, ssh_key)
 
-            # Pre-warm Caddy TLS certificate immediately in background so the dashboard loads with 0 TLS delay
-            prewarm_caddy_tls(domain)
+            if is_mfg:
+                append_client_log(clean_id, 'INFO', 'ONBOARD_COMPLETE', f"Site '{client_name}' onboarded and approved directly by Manufacturer.")
+            else:
+                append_client_log(clean_id, 'INFO', 'AWAITING_APPROVAL', f"Site '{client_name}' submitted for Manufacturer Approval by {user['name']} ({user['role'].title()}). Remote ingress locked pending review.")
 
-            append_client_log(clean_id, 'INFO', 'ONBOARD_COMPLETE', f"Site '{client_name}' onboarded successfully by {user['name']}.")
+            # Publish MQTT dynamic topic creation & lifecycle announcement
+            publish_mqtt_message(f'gavasah/lifecycle/clients/{clean_id}', {
+                'event': 'client_created',
+                'client_id': clean_id,
+                'name': client_name,
+                'dealer_id': assigned_dealer_id,
+                'integrator_id': assigned_int_id,
+                'approval_status': approval_status,
+                'telemetry_topic': f'gavasah/clients/{clean_id}/telemetry',
+                'cmd_topic': f'gavasah/clients/{clean_id}/cmd'
+            }, retain=True)
             bootstrap_cmd = f"curl -sSL https://dealer.gavasah.com/api/bootstrap?client_id={clean_id}&auth_secret={new_client['auth_secret']} | bash"
             self.send_json(200, {
                 'ok': True,
@@ -10600,6 +11132,118 @@ PersistentKeepalive = 25
                         print(f"[!] Error auto-allocating ETS port for {client_id}: {e}")
 
             self.send_json(200, resp_payload)
+            return
+
+        # 17. Approve Client Registration (Manufacturer Only)
+        elif parsed.path == '/api/approvals/approve':
+            user = self.get_authenticated_user()
+            if not user or user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer authorization required'})
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            client_id = body.get('client_id', '').strip()
+
+            c_data = load_clients_state()
+            client = c_data.get(client_id)
+            if not client:
+                self.send_json(404, {'error': 'Client site not found'})
+                return
+
+            client['approval_status'] = 'approved'
+            client['remote_enabled'] = True
+            save_clients_state(c_data)
+
+            # Sync Caddy ingress and prewarm TLS
+            sync_caddy_ingress(client_id, client.get('dashboard_port', 10001), 'http', True, wg_ip=client.get('wg_ip'))
+            prewarm_caddy_tls(client.get('domain', f"{client_id}.gavasah.com"))
+
+            append_client_log(
+                client_id, 'INFO', 'CLIENT_APPROVED',
+                f"Client site '{client.get('name', client_id)}' approved by Manufacturer. Remote access & telemetry monitoring enabled."
+            )
+
+            # Publish MQTT lifecycle event
+            publish_mqtt_message(f'gavasah/lifecycle/clients/{client_id}', {
+                'event': 'client_approved',
+                'client_id': client_id,
+                'name': client.get('name'),
+                'domain': client.get('domain'),
+                'remote_enabled': True
+            }, retain=True)
+
+            self.send_json(200, {
+                'ok': True,
+                'message': f"Client '{client.get('name')}' approved successfully. Remote ingress & telemetry active."
+            })
+            return
+
+        # 18. Reject Client Registration (Manufacturer Only)
+        elif parsed.path == '/api/approvals/reject':
+            user = self.get_authenticated_user()
+            if not user or user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer authorization required'})
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            client_id = body.get('client_id', '').strip()
+            reason = body.get('reason', 'Registration declined by Manufacturer HQ').strip()
+
+            c_data = load_clients_state()
+            client = c_data.get(client_id)
+            if not client:
+                self.send_json(404, {'error': 'Client site not found'})
+                return
+
+            client['approval_status'] = 'rejected'
+            client['rejection_reason'] = reason
+            client['remote_enabled'] = False
+            save_clients_state(c_data)
+
+            # Purge Caddy ingress
+            purge_caddy_ingress(client_id)
+
+            append_client_log(
+                client_id, 'WARNING', 'CLIENT_REJECTED',
+                f"Client site '{client.get('name', client_id)}' rejected by Manufacturer: {reason}"
+            )
+
+            # Publish MQTT lifecycle event
+            publish_mqtt_message(f'gavasah/lifecycle/clients/{client_id}', {
+                'event': 'client_rejected',
+                'client_id': client_id,
+                'reason': reason
+            }, retain=True)
+
+            self.send_json(200, {
+                'ok': True,
+                'message': f"Client '{client.get('name')}' rejected."
+            })
+            return
+
+        # 19. Publish MQTT Command / Telemetry Message
+        elif parsed.path == '/api/mqtt/publish':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            topic = body.get('topic', '').strip()
+            payload = body.get('payload', '')
+
+            if not topic:
+                self.send_json(400, {'error': 'Topic is required'})
+                return
+
+            ok = publish_mqtt_message(topic, payload)
+            if ok:
+                self.send_json(200, {'ok': True, 'topic': topic, 'message': 'Dispatched via MQTT broker'})
+            else:
+                self.send_json(500, {'error': 'Failed to dispatch via MQTT broker'})
             return
 
         else:
