@@ -39,7 +39,7 @@ def get_public_key():
             log(f"Notice: Could not read {SSH_PUBKEY_PATH}: {e}")
     return ""
 
-ADDON_VERSION = "1.2.0"
+ADDON_VERSION = "1.2.1"
 MAX_HEALING_ATTEMPTS = 5
 HEALING_COOLDOWN_SEC = 60
 

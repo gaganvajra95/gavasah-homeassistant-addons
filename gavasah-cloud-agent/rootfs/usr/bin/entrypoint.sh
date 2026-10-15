@@ -126,7 +126,7 @@ except Exception:
 
 # 2d. Autonomous IP-Ban Purge & Reverse Proxy Self-Healing
 echo "[+] Verifying Home Assistant IP ban list and reverse proxy trusted headers..."
-python3 -c "
+python3 - << 'EOF'
 import os
 config_paths = ['/homeassistant', '/config']
 for base in config_paths:
@@ -142,8 +142,8 @@ for base in config_paths:
                 skip = False
                 for line in lines:
                     is_loopback = (
-                        ("127.0.0.1" in line or "::1" in line or "10.42.0." in line) and
-                        (":" in line and not line.startswith(" ") and not line.startswith("\t"))
+                        ('127.0.0.1' in line or '::1' in line or '10.42.0.' in line) and
+                        (':' in line and not line.startswith(' ') and not line.startswith('\t'))
                     )
                     if is_loopback:
                         skip = True
@@ -184,7 +184,7 @@ http:
                 print(f'[✓] Autonomous Self-Heal: Appended ip_ban_enabled & trusted_proxies configuration to {cfg_file}')
         except Exception as e:
             print(f'[!] Notice: Could not update {cfg_file}: {e}')
-"
+EOF
 
 # 3. Start Telemetry Engine in background
 echo "[+] Starting Gavasah Telemetry & Slot Watchdog..."
