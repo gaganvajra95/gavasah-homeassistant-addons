@@ -5,6 +5,16 @@ All notable changes to the **Gavasah Cloud Agent** Home Assistant Add-on will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] - 2026-10-15
+
+### Fixed
+- **Loopback Quoted Key Ban Removal**: Fixed regex and prefix matching to purge quoted loopback keys (`'127.0.0.1':`, `"127.0.0.1":`) from `/config/ip_bans.yaml`.
+- **Permanent Ban Disabling via `ip_ban_enabled: false`**: Automatically injects `ip_ban_enabled: false` into `http:` in `/config/configuration.yaml` so loopback reverse tunnels are never banned by failed authentication attempts.
+- **Automatic Core Restart on Unban**: Dispatches `/core/restart` via Supervisor API whenever an unban command is received to immediately flush the in-memory banned IP list.
+- **Heartbeat WAN Resilience**: Extended `urllib` socket timeout from 6s to 15s to eliminate timeout drops and chunked empty body 400 errors over high-latency WAN/cellular connections.
+
+---
+
 ## [1.1.2] - 2026-10-14
 
 ### Added

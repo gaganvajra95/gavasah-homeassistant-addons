@@ -245,10 +245,10 @@ IP_BAN_HEALING_HTML_TEMPLATE = """<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Autonomous Self-Healing Active | GAVASAH Cloud</title>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
-        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-        body {{
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
             background: #060913;
             color: #f1f5f9;
             font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
@@ -257,135 +257,378 @@ IP_BAN_HEALING_HTML_TEMPLATE = """<!DOCTYPE html>
             align-items: center;
             justify-content: center;
             padding: 24px;
-        }}
-        .card {{
-            background: radial-gradient(circle at top right, rgba(16, 185, 129, 0.12), transparent 50%),
-                        linear-gradient(180deg, #0e172a 0%, #090e1b 100%);
-            border: 1px solid rgba(16, 185, 129, 0.35);
-            border-radius: 20px;
-            max-width: 520px;
+            overflow-x: hidden;
+            position: relative;
+        }
+        body::before {
+            content: '';
+            position: absolute;
+            width: 600px;
+            height: 600px;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(6, 182, 212, 0.12) 0%, rgba(16, 185, 129, 0.04) 40%, transparent 70%);
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 0;
+        }
+        .card {
+            position: relative;
+            z-index: 1;
+            background: radial-gradient(circle at 85% 15%, rgba(6, 182, 212, 0.14), transparent 50%),
+                        linear-gradient(180deg, rgba(15, 23, 42, 0.92) 0%, rgba(8, 14, 28, 0.96) 100%);
+            border: 1px solid rgba(56, 189, 248, 0.28);
+            border-radius: 24px;
+            max-width: 540px;
             width: 100%;
-            padding: 44px 36px;
+            padding: 42px 36px 36px;
             text-align: center;
-            box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.7), 0 0 35px rgba(16, 185, 129, 0.12);
-        }}
-        .icon-halo {{
+            box-shadow: 0 30px 70px -15px rgba(0, 0, 0, 0.8), 0 0 50px rgba(6, 182, 212, 0.12);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+        }
+        .icon-wrap {
+            position: relative;
             width: 76px;
             height: 76px;
-            margin: 0 auto 22px;
-            border-radius: 50%;
-            background: rgba(16, 185, 129, 0.15);
-            border: 2px solid rgba(16, 185, 129, 0.4);
+            margin: 0 auto 20px;
             display: flex;
             align-items: center;
             justify-content: center;
-            box-shadow: 0 0 30px rgba(16, 185, 129, 0.25);
-            animation: pulse 2s infinite ease-in-out;
-        }}
-        @keyframes pulse {{
-            0%, 100% {{ transform: scale(1); opacity: 1; }}
-            50% {{ transform: scale(1.06); opacity: 0.85; }}
-        }}
-        .icon-halo svg {{ width: 38px; height: 38px; stroke: #10b981; }}
-        .badge-status {{
-            display: inline-block;
-            background: rgba(16, 185, 129, 0.2);
-            color: #34d399;
-            border: 1px solid rgba(16, 185, 129, 0.4);
+        }
+        .icon-halo {
+            width: 76px;
+            height: 76px;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(6, 182, 212, 0.25) 0%, rgba(16, 185, 129, 0.1) 70%);
+            border: 1.5px solid rgba(56, 189, 248, 0.45);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 0 35px rgba(6, 182, 212, 0.35);
+            animation: pulse-ring 2.8s infinite ease-in-out;
+        }
+        @keyframes pulse-ring {
+            0%, 100% { transform: scale(1); box-shadow: 0 0 35px rgba(6, 182, 212, 0.35); }
+            50% { transform: scale(1.06); box-shadow: 0 0 50px rgba(16, 185, 129, 0.5); }
+        }
+        .icon-halo svg { width: 36px; height: 36px; stroke: #38bdf8; }
+        .badge-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            background: rgba(6, 182, 212, 0.12);
+            color: #38bdf8;
+            border: 1px solid rgba(56, 189, 248, 0.35);
             font-size: 11px;
-            font-weight: 800;
-            letter-spacing: 1.2px;
-            padding: 6px 14px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            padding: 5px 14px;
             border-radius: 9999px;
             text-transform: uppercase;
-            margin-bottom: 16px;
-        }}
-        h1 {{ font-size: 23px; font-weight: 800; color: #ffffff; margin-bottom: 10px; }}
-        .gateway-tag {{
-            font-size: 13px;
-            color: #94a3b8;
-            margin-bottom: 18px;
-            font-family: monospace;
-            background: rgba(15, 23, 42, 0.6);
-            display: inline-block;
-            padding: 4px 10px;
-            border-radius: 6px;
-            border: 1px solid rgba(255, 255, 255, 0.08);
-        }}
-        p {{ font-size: 14px; line-height: 1.6; color: #94a3b8; margin-bottom: 22px; }}
-        .note {{
-            background: rgba(15, 23, 42, 0.85);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 14px;
-            padding: 18px 20px;
+            margin-bottom: 14px;
+        }
+        .badge-status::before {
+            content: '';
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #10b981;
+            box-shadow: 0 0 8px #10b981;
+            animation: blink 1.4s infinite;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+        h1 {
+            font-size: 22px;
+            font-weight: 800;
+            color: #ffffff;
+            margin-bottom: 8px;
+            letter-spacing: -0.3px;
+        }
+        .sub-desc {
             font-size: 13.5px;
-            color: #e2e8f0;
             line-height: 1.55;
+            color: #94a3b8;
+            margin-bottom: 20px;
+        }
+        .gateway-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            padding: 6px 14px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12.5px;
+            color: #e2e8f0;
+            margin-bottom: 22px;
+        }
+        .gateway-pill strong { color: #38bdf8; font-weight: 600; }
+        
+        /* Timeline Steps */
+        .timeline-box {
+            background: rgba(11, 19, 41, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            border-radius: 14px;
+            padding: 16px 18px;
             text-align: left;
             margin-bottom: 24px;
-        }}
-        .progress-bar {{
-            height: 6px;
-            width: 100%;
-            background: rgba(255, 255, 255, 0.08);
-            border-radius: 3px;
-            overflow: hidden;
-            margin-bottom: 12px;
-        }}
-        .progress-fill {{
-            height: 100%;
-            width: 0%;
-            background: linear-gradient(90deg, #10b981, #06b6d4);
-            transition: width 0.25s linear;
-        }}
-        .timer-text {{
+        }
+        .timeline-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
             font-size: 12.5px;
+            padding: 7px 0;
+            color: #cbd5e1;
+        }
+        .timeline-item:not(:last-child) {
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        }
+        .timeline-dot {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            flex-shrink: 0;
+            margin-top: 1px;
+        }
+        .dot-done { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+        .dot-active { background: rgba(6, 182, 212, 0.25); color: #38bdf8; border: 1px solid rgba(6, 182, 212, 0.6); animation: pulse-dot 1.2s infinite; }
+        .dot-pend { background: rgba(100, 116, 139, 0.2); color: #64748b; border: 1px solid rgba(100, 116, 139, 0.3); }
+        @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        
+        /* Circular Timer */
+        .timer-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .timer-svg {
+            transform: rotate(-90deg);
+        }
+        .timer-bg {
+            fill: none;
+            stroke: rgba(255, 255, 255, 0.08);
+            stroke-width: 4;
+        }
+        .timer-fill {
+            fill: none;
+            stroke: url(#timerGrad);
+            stroke-width: 4;
+            stroke-linecap: round;
+            stroke-dasharray: 226;
+            stroke-dashoffset: 0;
+            transition: stroke-dashoffset 0.95s linear;
+        }
+        .timer-info {
+            text-align: left;
+        }
+        .timer-val {
+            font-size: 20px;
+            font-weight: 800;
+            color: #ffffff;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .timer-sub {
+            font-size: 11.5px;
             color: #64748b;
-        }}
+            margin-top: 2px;
+        }
+
+        /* Action Buttons */
+        .btn-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .btn-primary-action {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            background: linear-gradient(135deg, #0284c7 0%, #06b6d4 100%);
+            color: #ffffff;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 12px;
+            font-size: 13.5px;
+            font-weight: 700;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 14px rgba(2, 132, 199, 0.35);
+        }
+        .btn-primary-action:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(6, 182, 212, 0.5);
+        }
+        .btn-secondary-action {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            background: rgba(15, 23, 42, 0.7);
+            color: #94a3b8;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 10px 18px;
+            border-radius: 12px;
+            font-size: 12.5px;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s ease;
+        }
+        .btn-secondary-action:hover {
+            color: #e2e8f0;
+            background: rgba(30, 41, 59, 0.85);
+            border-color: rgba(56, 189, 248, 0.3);
+        }
+        .copy-feedback {
+            font-size: 11.5px;
+            color: #10b981;
+            margin-top: 8px;
+            display: none;
+        }
     </style>
 </head>
 <body>
     <div class="card">
-        <div class="icon-halo">
-            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-                <path d="m9 12 2 2 4-4"></path>
+        <div class="icon-wrap">
+            <div class="icon-halo">
+                <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                    <path d="m9 12 2 2 4-4"></path>
+                </svg>
+            </div>
+        </div>
+        <div class="badge-status">Loopback Protection Active</div>
+        <h1>Gavasah Gateway Recovery</h1>
+        <div class="sub-desc">
+            Home Assistant Core restricted tunnel loopback traffic (HTTP 403). GAVASAH Cloud has autonomously dispatched unban directives and trusted reverse proxy provisioning.
+        </div>
+
+        <div class="gateway-pill">
+            <span>Gateway:</span>
+            <strong>{client_display}</strong>
+        </div>
+
+        <div class="timeline-box">
+            <div class="timeline-item">
+                <span class="timeline-dot dot-done">✓</span>
+                <div>
+                    <div style="font-weight: 600; color: #f8fafc;">Autonomous Unban Dispatched</div>
+                    <div style="color: #64748b; font-size: 11.5px;">Flushing loopback ban from ip_bans.yaml</div>
+                </div>
+            </div>
+            <div class="timeline-item">
+                <span class="timeline-dot dot-active">⚡</span>
+                <div>
+                    <div style="font-weight: 600; color: #38bdf8;">Reverse Proxy Headers Sync</div>
+                    <div style="color: #64748b; font-size: 11.5px;">Validating trusted_proxies & disabling loopback ban rule</div>
+                </div>
+            </div>
+            <div class="timeline-item">
+                <span class="timeline-dot dot-pend">⋯</span>
+                <div>
+                    <div style="font-weight: 600; color: #94a3b8;">Automatic Ingress Reconnection</div>
+                    <div style="color: #64748b; font-size: 11.5px;">Reloading session into Home Assistant Core GUI</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="timer-container">
+            <svg class="timer-svg" width="76" height="76" viewBox="0 0 76 76">
+                <defs>
+                    <linearGradient id="timerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stop-color="#06b6d4" />
+                        <stop offset="100%" stop-color="#10b981" />
+                    </linearGradient>
+                </defs>
+                <circle class="timer-bg" cx="38" cy="38" r="34" />
+                <circle class="timer-fill" id="timer-circle" cx="38" cy="38" r="34" />
             </svg>
+            <div class="timer-info">
+                <div class="timer-val"><span id="countdown">15</span>s</div>
+                <div class="timer-sub">Auto-reconnecting to GUI...</div>
+            </div>
         </div>
-        <div class="badge-status">IP Ban Detected • Autonomous Self-Healing Active</div>
-        <h1>Restoring Home Assistant Access</h1>
-        <div class="gateway-tag">{client_display}</div>
-        <p>
-            Home Assistant Core temporarily restricted reverse tunnel connections (IP Ban 403). GAVASAH Cloud has automatically dispatched an unban & trusted-proxy self-healing command to the gateway.
-        </p>
-        <div class="note">
-            ⚡ <strong>Autonomous Recovery in Progress</strong><br>
-            The gateway is flushing the IP ban table and re-establishing authenticated ingress. Your browser will automatically reconnect once cleared.
+
+        <div class="btn-group">
+            <button type="button" class="btn-primary-action" onclick="reconnectNow()">
+                <span>⚡ Reconnect to Gateway Now</span>
+            </button>
+            <button type="button" class="btn-secondary-action" onclick="bypassDirect()">
+                <span>👁️ Direct Upstream Pass-Through (Bypass Filter)</span>
+            </button>
+            <button type="button" class="btn-secondary-action" onclick="copyDiagnostics()">
+                <span>📋 Copy Diagnostics for Support</span>
+            </button>
         </div>
-        <div class="progress-bar">
-            <div class="progress-fill" id="pfill"></div>
-        </div>
-        <div class="timer-text">
-            Reconnecting in <span id="countdown">20</span> seconds...
-        </div>
+        <div id="copy-msg" class="copy-feedback">✓ Diagnostic telemetry copied to clipboard</div>
     </div>
+
     <script>
-        var total = 20;
+        var total = 15;
         var left = total;
-        var pfill = document.getElementById('pfill');
+        var circle = document.getElementById('timer-circle');
         var cd = document.getElementById('countdown');
+        var maxOffset = 213.6; // 2 * PI * 34
+
         var timer = setInterval(function() {
             left -= 1;
             if (left <= 0) {
                 clearInterval(timer);
-                pfill.style.width = '100%';
-                cd.innerText = '0';
+                if (cd) cd.innerText = '0';
+                if (circle) circle.style.strokeDashoffset = maxOffset;
                 window.location.reload();
             } else {
-                cd.innerText = left;
-                pfill.style.width = ((total - left) / total * 100) + '%';
+                if (cd) cd.innerText = left;
+                if (circle) {
+                    var progress = (total - left) / total;
+                    circle.style.strokeDashoffset = progress * maxOffset;
+                }
             }
         }, 1000);
+
+        function reconnectNow() {
+            window.location.reload();
+        }
+
+        function bypassDirect() {
+            document.cookie = 'gavasah_bypass_ban=1; path=/; max-age=3600';
+            var currentUrl = new URL(window.location.href);
+            currentUrl.searchParams.set('bypass_ban_interceptor', '1');
+            window.location.href = currentUrl.toString();
+        }
+
+        function copyDiagnostics() {
+            var diag = "GAVASAH GATEWAY DIAGNOSTICS\\n" +
+                       "Gateway: {client_display} ({client_id})\\n" +
+                       "Domain: {client_domain}\\n" +
+                       "Event: Loopback Reverse Tunnel Ingress Restriction (HTTP 403)\\n" +
+                       "Timestamp: " + new Date().toISOString() + "\\n" +
+                       "User-Agent: " + navigator.userAgent;
+            navigator.clipboard.writeText(diag).then(function() {
+                var el = document.getElementById('copy-msg');
+                if (el) {
+                    el.style.display = 'block';
+                    setTimeout(function() { el.style.display = 'none'; }, 3000);
+                }
+            }).catch(function() {
+                alert("Diagnostics:\\n" + diag);
+            });
+        }
     </script>
 </body>
 </html>"""
@@ -707,6 +950,13 @@ async def handle_connection(reader, writer):
             writer.close()
             return
 
+        # Check for user-directed bypass (e.g. cookie or query parameter)
+        is_bypass = (
+            b"bypass_ban_interceptor=1" in initial_data or
+            b"gavasah_bypass_ban=1" in initial_data or
+            b"X-Gavasah-Bypass-Ban" in initial_data
+        )
+
         # Check the first upstream response buffer for 403 Forbidden (Home Assistant loopback IP Ban)
         first_resp_chunk = primed_chunk
         if not first_resp_chunk:
@@ -715,12 +965,18 @@ async def handle_connection(reader, writer):
             except Exception:
                 first_resp_chunk = b""
 
-        if first_resp_chunk and (b"403 Forbidden" in first_resp_chunk or b"403: Forbidden" in first_resp_chunk):
+        if not is_bypass and first_resp_chunk and (b"403 Forbidden" in first_resp_chunk or b"403: Forbidden" in first_resp_chunk):
             cid = client_info.get('client_id') or slug
-            queue_client_command(cid, {"action": "unban_and_fix", "reason": "ingress_403_detected"})
+            queue_client_command(cid, {"action": "unban_and_fix", "restart_core": True, "reason": "ingress_403_detected"})
             
             client_display = html.escape(client_info.get('name') or slug)
-            resp_html = IP_BAN_HEALING_HTML_TEMPLATE.replace("{client_display}", client_display)
+            client_domain = html.escape(client_info.get('domain') or (slug + '.gavasah.com'))
+            resp_html = (
+                IP_BAN_HEALING_HTML_TEMPLATE
+                .replace("{client_display}", client_display)
+                .replace("{client_domain}", client_domain)
+                .replace("{client_id}", html.escape(cid))
+            )
             resp = build_http_response(200, "OK", resp_html)
             writer.write(resp)
             await writer.drain()

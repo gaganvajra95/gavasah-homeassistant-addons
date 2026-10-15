@@ -5025,45 +5025,61 @@ HTML_PAGE = """<!DOCTYPE html>
             if (ovBody && currentUser.role === 'manufacturer') {
                 const nowSec = Math.floor(Date.now() / 1000);
                 ovBody.innerHTML = dealersList.map(d => {
-                    // Gather clients for this organization
-                    let orgClients = d.clients;
-                    if (!orgClients || orgClients.length === 0) {
-                        if (Array.isArray(currentFleetData)) {
-                            orgClients = currentFleetData.filter(c => d.is_manufacturer ? (!c.dealer_id || c.dealer_id === 'owner_master') : c.dealer_id === d.id);
-                        } else {
-                            orgClients = [];
-                        }
+                    // Map latest live fleet data by client_id to prevent stale page-load timestamps
+                    const fleetMap = {};
+                    if (Array.isArray(currentFleetData)) {
+                        currentFleetData.forEach(fc => {
+                            if (fc && fc.client_id) fleetMap[fc.client_id] = fc;
+                        });
                     }
 
-                    // Calculate live health for this organization
+                    // Dynamically resolve clients from live currentFleetData
+                    let orgClients = [];
+                    if (Array.isArray(currentFleetData) && currentFleetData.length > 0) {
+                        orgClients = currentFleetData.filter(c => {
+                            if (d.is_manufacturer) {
+                                return !c.dealer_id || c.dealer_id === 'owner_master' || c.dealer_id === 'direct' || c.dealer_id === '';
+                            }
+                            return c.dealer_id === d.id;
+                        });
+                    } else if (Array.isArray(d.clients)) {
+                        orgClients = d.clients.map(c => fleetMap[c.client_id] || c);
+                    }
+
+                    // Calculate live health for this organization using live fleet data
                     let onlineC = 0, lostC = 0;
                     orgClients.forEach(c => {
-                        const isPending = !c.last_heartbeat || c.last_heartbeat === 0 || c.status === 'pending';
-                        const diff = isPending ? -1 : nowSec - (c.last_heartbeat || 0);
-                        if (!isPending && diff <= 135) onlineC++;
+                        const fresh = fleetMap[c.client_id] || c;
+                        const hb = fresh.last_heartbeat || 0;
+                        const isPending = !hb || hb === 0 || fresh.status === 'pending';
+                        const diff = isPending ? -1 : nowSec - hb;
+                        if (!isPending && diff <= 180) onlineC++;
                         else lostC++;
                     });
                     const totalC = orgClients.length;
                     const healthPct = totalC > 0 ? Math.round((onlineC / totalC) * 100) : 100;
 
                     const clientChipsHtml = orgClients.length > 0 ? orgClients.map(c => {
-                        const isPending = !c.last_heartbeat || c.last_heartbeat === 0 || c.status === 'pending';
-                        const diff = isPending ? -1 : nowSec - (c.last_heartbeat || 0);
-                        const isOnline = !isPending && diff <= 135;
-                        const isWarn = !isPending && diff > 135 && diff <= 240;
+                        const fresh = fleetMap[c.client_id] || c;
+                        const hb = fresh.last_heartbeat || 0;
+                        const isPending = !hb || hb === 0 || fresh.status === 'pending';
+                        const diff = isPending ? -1 : nowSec - hb;
+                        const isOnline = !isPending && diff <= 180;
+                        const isWarn = !isPending && diff > 180 && diff <= 300;
                         const dotBg = isOnline ? '#10b981' : (isWarn ? '#f59e0b' : '#ef4444');
                         const dotShadow = isOnline ? '0 0 6px #10b981' : (isWarn ? '0 0 6px #f59e0b' : '0 0 6px #ef4444');
                         const stLabel = isOnline ? 'Online' : (isWarn ? 'Delayed Pulse' : (isPending ? 'Awaiting Contact' : 'Offline / Lost'));
-                        const cDomain = c.domain || (c.client_id + '.gavasah.com');
+                        const cDomain = fresh.domain || (fresh.client_id + '.gavasah.com');
+                        const cName = fresh.name || fresh.client_id;
                         return `
-                            <div class="ov-client-chip" title="Gateway: ${escapeHtml(c.name || c.client_id)} (${escapeHtml(c.client_id)}) • Status: ${stLabel}">
+                            <div class="ov-client-chip" title="Gateway: ${escapeHtml(cName)} (${escapeHtml(fresh.client_id)}) • Status: ${stLabel}">
                                 <div style="display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1;">
                                     <span style="width: 7px; height: 7px; border-radius: 50%; background: ${dotBg}; box-shadow: ${dotShadow}; flex-shrink: 0;"></span>
-                                    <span style="font-weight: 500; color: #f1f5f9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(c.name || c.client_id)}</span>
+                                    <span style="font-weight: 500; color: #f1f5f9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(cName)}</span>
                                 </div>
                                 <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
                                     <a href="https://${escapeHtml(cDomain)}" target="_blank" class="site-domain-link" style="font-size: 10px; padding: 1px 5px;" title="Open Remote GUI: https://${escapeHtml(cDomain)}">GUI ↗</a>
-                                    <button type="button" class="btn-action-icon" style="padding: 1px 5px; font-size: 10px;" onclick="openEditModal('${c.client_id}')" title="Configure Gateway">⚙️</button>
+                                    <button type="button" class="btn-action-icon" style="padding: 1px 5px; font-size: 10px;" onclick="openEditModal('${fresh.client_id}')" title="Configure Gateway">⚙️</button>
                                 </div>
                             </div>
                         `;
@@ -5942,13 +5958,13 @@ HTML_PAGE = """<!DOCTYPE html>
                 const isPending = !c.last_heartbeat || c.last_heartbeat === 0 || c.status === 'pending';
                 const diff = isPending ? -1 : now - (c.last_heartbeat || 0);
                 if (isPending) offlineCount++;
-                else if (diff <= 135) onlineCount++;
-                else if (diff <= 240) warningCount++;
+                else if (diff <= 180) onlineCount++;
+                else if (diff <= 300) warningCount++;
                 else offlineCount++;
 
-                if (fleetStatusFilter === 'ONLINE' && (isPending || diff > 135)) return false;
-                if (fleetStatusFilter === 'WARNING' && (isPending || diff <= 135 || diff > 240)) return false;
-                if ((fleetStatusFilter === 'OFFLINE' || fleetStatusFilter === 'LOST') && !isPending && diff <= 135) return false;
+                if (fleetStatusFilter === 'ONLINE' && (isPending || diff > 180)) return false;
+                if (fleetStatusFilter === 'WARNING' && (isPending || diff <= 180 || diff > 300)) return false;
+                if ((fleetStatusFilter === 'OFFLINE' || fleetStatusFilter === 'LOST') && !isPending && diff <= 180) return false;
 
                 if (fleetSearchQuery) {
                     const str = `${c.client_id} ${c.name} ${c.dealer_name || ''} ${c.integrator_name || ''} ${c.domain} ${c.knx_ip}`.toLowerCase();
@@ -6018,8 +6034,8 @@ HTML_PAGE = """<!DOCTYPE html>
                 let stClass = 'status-online';
                 let stText = 'ONLINE';
                 if (isPending) { stClass = 'status-pending'; stText = '⏳ PENDING'; }
-                else if (diff > 240) { stClass = 'status-lost'; stText = 'OFFLINE'; }
-                else if (diff > 135) { stClass = 'status-warning'; stText = 'WARNING'; }
+                else if (diff > 300) { stClass = 'status-lost'; stText = 'OFFLINE'; }
+                else if (diff > 180) { stClass = 'status-warning'; stText = 'WARNING'; }
 
                 const sys = c.system || {};
                 const net = c.network || {};
@@ -6631,8 +6647,8 @@ HTML_PAGE = """<!DOCTYPE html>
                     currentFleetData.forEach(c => {
                         const isPending = !c.last_heartbeat || c.last_heartbeat === 0 || c.status === 'pending';
                         const diff = isPending ? -1 : nowSec - (c.last_heartbeat || 0);
-                        if (isPending || diff > 240) offline++;
-                        else if (diff > 135) warning++;
+                        if (isPending || diff > 300) offline++;
+                        else if (diff > 180) warning++;
                         else online++;
                     });
 
@@ -7648,11 +7664,19 @@ auto_update_external_url: true`;
         }
 
         // Initialization
+        let pollCounter = 0;
         window.addEventListener('DOMContentLoaded', () => {
             checkAuth();
             setInterval(() => {
                 if (currentUser) {
+                    pollCounter++;
                     fetchFleet();
+                    if (pollCounter % 3 === 0 && currentUser.role === 'manufacturer') {
+                        fetchDealers();
+                    }
+                    if (pollCounter % 6 === 0 && currentUser.role !== 'integrator') {
+                        fetchIntegrators();
+                    }
                 }
             }, 10000); // 10s polling interval
         });
@@ -8276,14 +8300,14 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             owner = auth.get('owner', {})
             owner_clients = [c for c in c_data.values() if c.get('dealer_id') in ['owner_master', '', None]]
             owner_ints = [it for it in integrators_dict.values() if it.get('dealer_id') in ['owner_master', '', None]]
-            mfg_online_c = sum(1 for c in owner_clients if (now - c.get('last_heartbeat', 0)) <= 135)
+            mfg_online_c = sum(1 for c in owner_clients if (now - c.get('last_heartbeat', 0)) <= 180)
             mfg_lost_c = len(owner_clients) - mfg_online_c
 
             mfg_clients_list = [{
                 'client_id': c.get('client_id'),
                 'name': c.get('name', c.get('client_id')),
                 'domain': c.get('domain', ''),
-                'status': 'online' if (now - c.get('last_heartbeat', 0)) <= 135 else 'offline',
+                'status': 'online' if (now - c.get('last_heartbeat', 0)) <= 180 else 'offline',
                 'last_heartbeat': c.get('last_heartbeat', 0)
             } for c in sorted(owner_clients, key=lambda x: str(x.get('name', '')).lower())]
 
@@ -8310,14 +8334,14 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                 dealer_clients = [c for c in c_data.values() if c.get('dealer_id') == did]
                 dealer_ints = [it for it in integrators_dict.values() if it.get('dealer_id') == did]
                 
-                online_c = sum(1 for c in dealer_clients if (now - c.get('last_heartbeat', 0)) <= 135)
+                online_c = sum(1 for c in dealer_clients if (now - c.get('last_heartbeat', 0)) <= 180)
                 lost_c = len(dealer_clients) - online_c
 
                 dlr_clients_list = [{
                     'client_id': c.get('client_id'),
                     'name': c.get('name', c.get('client_id')),
                     'domain': c.get('domain', ''),
-                    'status': 'online' if (now - c.get('last_heartbeat', 0)) <= 135 else 'offline',
+                    'status': 'online' if (now - c.get('last_heartbeat', 0)) <= 180 else 'offline',
                     'last_heartbeat': c.get('last_heartbeat', 0)
                 } for c in sorted(dealer_clients, key=lambda x: str(x.get('name', '')).lower())]
 
@@ -8366,7 +8390,7 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                     d_name = 'Master Manufacturer (Direct)'
 
                 supervised_clients = [c for c in c_data.values() if c.get('integrator_id') == iid]
-                online_c = sum(1 for c in supervised_clients if (now - c.get('last_heartbeat', 0)) <= 135)
+                online_c = sum(1 for c in supervised_clients if (now - c.get('last_heartbeat', 0)) <= 180)
                 lost_c = len(supervised_clients) - online_c
 
                 res.append({
@@ -10142,7 +10166,17 @@ PersistentKeepalive = 25
         # 16. Gateway Telemetry Heartbeat (KNX-IP Controller Ingestion)
         elif parsed.path == '/api/heartbeat':
             content_length = int(self.headers.get('Content-Length', 0))
-            raw_body = self.rfile.read(content_length).decode('utf-8', errors='replace') if content_length > 0 else ''
+            raw_body = ''
+            if content_length > 0:
+                chunks = []
+                bytes_read = 0
+                while bytes_read < content_length:
+                    chunk = self.rfile.read(min(content_length - bytes_read, 65536))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    bytes_read += len(chunk)
+                raw_body = b''.join(chunks).decode('utf-8', errors='replace')
             body = {}
             if raw_body and raw_body.strip():
                 try:

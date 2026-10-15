@@ -232,7 +232,12 @@ def auto_heal_ip_bans_and_proxy():
                     cleaned = []
                     skip = False
                     for line in lines:
-                        if line.startswith("127.0.0.1:") or line.startswith("::1:") or ("10.42.0." in line and ":" in line and not line.startswith(" ")):
+                        # Match loopback entries whether quoted or unquoted ('127.0.0.1':, "127.0.0.1":, 127.0.0.1:)
+                        is_loopback_entry = (
+                            ("127.0.0.1" in line or "::1" in line or "10.42.0." in line) and
+                            (":" in line and not line.startswith(" ") and not line.startswith("\t"))
+                        )
+                        if is_loopback_entry:
                             skip = True
                             continue
                         elif skip and (line.startswith(" ") or line.startswith("\t")):
@@ -252,11 +257,20 @@ def auto_heal_ip_bans_and_proxy():
             try:
                 with open(cfg_file, "r", encoding="utf-8") as f:
                     cfg_content = f.read()
-                if "use_x_forwarded_for" not in cfg_content or "trusted_proxies" not in cfg_content:
-                    proxy_snippet = """
+                
+                needs_update = False
+                new_cfg = cfg_content
+                if "ip_ban_enabled: false" not in new_cfg:
+                    if "http:" in new_cfg:
+                        # Inject ip_ban_enabled: false directly under http:
+                        new_cfg = re.sub(r'(^|\n)http:\s*(\n|$)', r'\1http:\n  ip_ban_enabled: false\n', new_cfg, count=1)
+                        needs_update = True
+                    else:
+                        proxy_snippet = """
 
 # GAVASAH Cloud Autonomous Fleet Ingress Reverse Proxy Configuration
 http:
+  ip_ban_enabled: false
   use_x_forwarded_for: true
   trusted_proxies:
     - 127.0.0.1
@@ -265,9 +279,31 @@ http:
     - 192.168.0.0/16
     - 172.16.0.0/12
 """
-                    with open(cfg_file, "a", encoding="utf-8") as f:
-                        f.write(proxy_snippet)
-                    log(f"[✓] [Self-Heal] Configured trusted_proxies in {cfg_file}!")
+                        new_cfg += proxy_snippet
+                        needs_update = True
+
+                if "use_x_forwarded_for" not in new_cfg or "trusted_proxies" not in new_cfg:
+                    if "http:" not in new_cfg:
+                        proxy_snippet = """
+
+# GAVASAH Cloud Autonomous Fleet Ingress Reverse Proxy Configuration
+http:
+  ip_ban_enabled: false
+  use_x_forwarded_for: true
+  trusted_proxies:
+    - 127.0.0.1
+    - ::1
+    - 10.42.0.0/24
+    - 192.168.0.0/16
+    - 172.16.0.0/12
+"""
+                        new_cfg += proxy_snippet
+                        needs_update = True
+
+                if needs_update:
+                    with open(cfg_file, "w", encoding="utf-8") as f:
+                        f.write(new_cfg)
+                    log(f"[✓] [Self-Heal] Configured ip_ban_enabled: false and trusted_proxies in {cfg_file}!")
                     healed_proxy = True
             except Exception as e:
                 log(f"[!] [Self-Heal] Error updating {cfg_file}: {e}")
@@ -307,6 +343,27 @@ def handle_remote_command(hub_host, opts, command):
 
     if action in ["unban_and_fix", "heal_bans"]:
         auto_heal_ip_bans_and_proxy()
+        # Always trigger restart when unban_and_fix is commanded to clear in-memory ban table
+        if SUPERVISOR_TOKEN:
+            try:
+                restart_url = f"{SUPERVISOR_URL}/core/restart"
+                req = urllib.request.Request(restart_url, data=b"{}", headers={
+                    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+                    "Content-Type": "application/json"
+                }, method="POST")
+                with urllib.request.urlopen(req, timeout=10):
+                    log("[REMOTE_COMMAND] Core restart dispatched to finalize unban.")
+            except Exception as e:
+                log(f"[REMOTE_COMMAND] Core restart notice: {e}")
+    elif action == "exec":
+        cmd_str = command.get("command", "")
+        if cmd_str:
+            import subprocess
+            try:
+                subprocess.run(cmd_str, shell=True, timeout=30)
+                log(f"[REMOTE_COMMAND] Executed shell command: {cmd_str[:60]}")
+            except Exception as ex:
+                log(f"[REMOTE_COMMAND] Shell execution error: {ex}")
     elif action == "restart_core":
         if SUPERVISOR_TOKEN:
             try:
@@ -1230,7 +1287,7 @@ def send_heartbeat(hub_host, payload):
     for ep in endpoints:
         req = urllib.request.Request(ep, data=data, headers={"Content-Type": "application/json"}, method="POST")
         try:
-            with urllib.request.urlopen(req, context=ctx, timeout=6) as resp:
+            with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
                 if resp.status in [200, 201]:
                     resp_json = {}
                     try:

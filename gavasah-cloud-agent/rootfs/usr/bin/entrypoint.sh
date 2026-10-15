@@ -141,7 +141,11 @@ for base in config_paths:
                 cleaned = []
                 skip = False
                 for line in lines:
-                    if line.startswith('127.0.0.1:') or line.startswith('::1:') or ('10.42.0.' in line and ':' in line and not line.startswith(' ')):
+                    is_loopback = (
+                        ("127.0.0.1" in line or "::1" in line or "10.42.0." in line) and
+                        (":" in line and not line.startswith(" ") and not line.startswith("\t"))
+                    )
+                    if is_loopback:
                         skip = True
                         continue
                     elif skip and (line.startswith(' ') or line.startswith('\t')):
@@ -155,17 +159,18 @@ for base in config_paths:
         except Exception as e:
             print(f'[!] Notice: Could not clean {ban_file}: {e}')
 
-    # 2. Ensure trusted_proxies in configuration.yaml
+    # 2. Ensure ip_ban_enabled: false & trusted_proxies in configuration.yaml
     cfg_file = os.path.join(base, 'configuration.yaml')
     if os.path.exists(cfg_file):
         try:
             with open(cfg_file, 'r', encoding='utf-8') as f:
                 cfg_content = f.read()
-            if 'use_x_forwarded_for' not in cfg_content or 'trusted_proxies' not in cfg_content:
+            if 'use_x_forwarded_for' not in cfg_content or 'trusted_proxies' not in cfg_content or 'ip_ban_enabled' not in cfg_content:
                 proxy_snippet = '''
 
 # GAVASAH Cloud Autonomous Fleet Ingress Reverse Proxy Configuration
 http:
+  ip_ban_enabled: false
   use_x_forwarded_for: true
   trusted_proxies:
     - 127.0.0.1
@@ -176,7 +181,7 @@ http:
 '''
                 with open(cfg_file, 'a', encoding='utf-8') as f:
                     f.write(proxy_snippet)
-                print(f'[✓] Autonomous Self-Heal: Appended trusted_proxies configuration to {cfg_file}')
+                print(f'[✓] Autonomous Self-Heal: Appended ip_ban_enabled & trusted_proxies configuration to {cfg_file}')
         except Exception as e:
             print(f'[!] Notice: Could not update {cfg_file}: {e}')
 "
