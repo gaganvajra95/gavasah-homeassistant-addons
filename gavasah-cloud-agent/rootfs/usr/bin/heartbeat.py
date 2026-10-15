@@ -46,6 +46,19 @@ HEALING_COOLDOWN_SEC = 60
 # In-memory Autonomous Self-Healing Registry & History
 _healing_registry = {}
 _recent_recoveries = []
+_last_system_error = None
+
+def record_last_command_error(command, err_str):
+    global _last_system_error
+    _last_system_error = {
+        "command": command,
+        "error": str(err_str),
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+    }
+
+def clear_last_command_error():
+    global _last_system_error
+    _last_system_error = None
 
 def supervisor_get(endpoint):
     url = f"{SUPERVISOR_URL}/{endpoint}"
@@ -665,6 +678,57 @@ def handle_remote_command(hub_host, opts, command):
                     log("[REMOTE_COMMAND] Core configuration reload triggered.")
             except Exception as e:
                 log(f"[REMOTE_COMMAND] Core reload error: {e}")
+    elif action in ["reboot_gateway", "reboot_host"]:
+        if SUPERVISOR_TOKEN:
+            try:
+                log("[REMOTE_COMMAND] Gavasah Gateway host hardware reboot commanded. Dispatching /host/reboot...")
+                ok, res = supervisor_post("host/reboot", {}, timeout=15)
+                if not ok:
+                    log(f"[REMOTE_COMMAND] Host reboot returned: {res}. Falling back to core restart...")
+                    ok2, res2 = supervisor_post("core/restart", {}, timeout=15)
+                    if not ok2:
+                        record_last_command_error(action, f"Host reboot: {res}; Core restart: {res2}")
+                    else:
+                        clear_last_command_error()
+                else:
+                    clear_last_command_error()
+                    log("[REMOTE_COMMAND] Gateway host reboot dispatched successfully.")
+            except Exception as e:
+                record_last_command_error(action, str(e))
+                log(f"[REMOTE_COMMAND] Host reboot error: {e}")
+
+    elif action == "update_core":
+        if SUPERVISOR_TOKEN:
+            try:
+                log("[REMOTE_COMMAND] Home Assistant Core update commanded. Dispatching /core/update...")
+                ok, res = supervisor_post("core/update", {}, timeout=180)
+                if ok:
+                    clear_last_command_error()
+                    log("[REMOTE_COMMAND] Home Assistant Core update initiated successfully.")
+                else:
+                    err_msg = res.get("message") or res.get("error") or "Core update command failed"
+                    record_last_command_error(action, err_msg)
+                    log(f"[REMOTE_COMMAND] Core update error: {err_msg}")
+            except Exception as e:
+                record_last_command_error(action, str(e))
+                log(f"[REMOTE_COMMAND] Core update exception: {e}")
+
+    elif action == "update_supervisor":
+        if SUPERVISOR_TOKEN:
+            try:
+                log("[REMOTE_COMMAND] Home Assistant Supervisor update commanded. Dispatching /supervisor/update...")
+                ok, res = supervisor_post("supervisor/update", {}, timeout=180)
+                if ok:
+                    clear_last_command_error()
+                    log("[REMOTE_COMMAND] Home Assistant Supervisor update initiated successfully.")
+                else:
+                    err_msg = res.get("message") or res.get("error") or "Supervisor update command failed"
+                    record_last_command_error(action, err_msg)
+                    log(f"[REMOTE_COMMAND] Supervisor update error: {err_msg}")
+            except Exception as e:
+                record_last_command_error(action, str(e))
+                log(f"[REMOTE_COMMAND] Supervisor update exception: {e}")
+
     elif action == "update_addon":
         if SUPERVISOR_TOKEN:
             try:
@@ -672,16 +736,37 @@ def handle_remote_command(hub_host, opts, command):
                 supervisor_post("store/reload", {}, timeout=20)
                 time.sleep(3)
                 log(f"[REMOTE_COMMAND] Initiating add-on self-update to latest release...")
-                req = urllib.request.Request(
-                    f"{SUPERVISOR_URL}/addons/self/update",
-                    data=b"{}",
-                    headers={"Authorization": f"Bearer {SUPERVISOR_TOKEN}", "Content-Type": "application/json"},
-                    method="POST"
-                )
-                with urllib.request.urlopen(req, timeout=90):
+                ok, res = supervisor_post("addons/self/update", {}, timeout=90)
+                if ok:
+                    clear_last_command_error()
                     log("[REMOTE_COMMAND] Add-on self-update successfully initiated.")
+                else:
+                    err_msg = res.get("message") or res.get("error") or "Add-on update command failed"
+                    record_last_command_error(action, err_msg)
+                    log(f"[REMOTE_COMMAND] Add-on update error: {err_msg}")
             except Exception as e:
-                log(f"[REMOTE_COMMAND] Add-on update notice: {e}")
+                record_last_command_error(action, str(e))
+                log(f"[REMOTE_COMMAND] Add-on update exception: {e}")
+
+    elif action == "update_all":
+        if SUPERVISOR_TOKEN:
+            try:
+                log("[REMOTE_COMMAND] Master Full Update commanded. Reloading store...")
+                supervisor_post("store/reload", {}, timeout=20)
+                time.sleep(2)
+                log("[REMOTE_COMMAND] Updating Gavasah Cloud Agent add-on...")
+                supervisor_post("addons/self/update", {}, timeout=90)
+                time.sleep(2)
+                log("[REMOTE_COMMAND] Updating Home Assistant Core...")
+                supervisor_post("core/update", {}, timeout=180)
+                time.sleep(2)
+                log("[REMOTE_COMMAND] Updating Home Assistant Supervisor...")
+                supervisor_post("supervisor/update", {}, timeout=180)
+                clear_last_command_error()
+                log("[REMOTE_COMMAND] Master Full Update sequence dispatched successfully.")
+            except Exception as e:
+                record_last_command_error(action, str(e))
+                log(f"[REMOTE_COMMAND] Master update error: {e}")
 
 
 def check_ha_knx_native_connection():
@@ -1370,6 +1455,8 @@ def collect_telemetry(opts):
     host_info = supervisor_get("host/info")
     net_info = supervisor_get("network/info")
     core_info = supervisor_get("core/info")
+    sup_info = supervisor_get("supervisor/info")
+    addon_self = supervisor_get("addons/self/info")
 
     boot_slot = os_info.get("boot", "Unknown")
     haos_version = os_info.get("version", "Unknown")
@@ -1476,9 +1563,18 @@ def collect_telemetry(opts):
         "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
         "system": {
             "addon_version": ADDON_VERSION,
-            "hostname": host_info.get("hostname", "homeassistant"),
+            "addon_latest_version": addon_self.get("version_latest") if isinstance(addon_self, dict) and addon_self.get("version_latest") else ADDON_VERSION,
+            "addon_update_available": bool(addon_self.get("update_available")) if isinstance(addon_self, dict) else False,
+            "core_version": core_info.get("version", "Unknown") if isinstance(core_info, dict) else "Unknown",
+            "core_latest_version": core_info.get("version_latest", "") if isinstance(core_info, dict) else "",
+            "core_update_available": bool(core_info.get("update_available")) if isinstance(core_info, dict) else False,
+            "supervisor_version": sup_info.get("version", "Unknown") if isinstance(sup_info, dict) else "Unknown",
+            "supervisor_latest_version": sup_info.get("version_latest", "") if isinstance(sup_info, dict) else "",
+            "supervisor_update_available": bool(sup_info.get("update_available")) if isinstance(sup_info, dict) else False,
             "haos_version": haos_version,
-            "core_version": core_info.get("version", "Unknown"),
+            "haos_latest_version": os_info.get("version_latest", "") if isinstance(os_info, dict) else "",
+            "haos_update_available": bool(os_info.get("update_available")) if isinstance(os_info, dict) else False,
+            "hostname": host_info.get("hostname", "homeassistant") if isinstance(host_info, dict) else "homeassistant",
             "board": board,
             "boot_slot": boot_slot,
             "is_recovery_mode": is_recovery,
@@ -1488,7 +1584,8 @@ def collect_telemetry(opts):
             "memory_percent": main_mem_pct,
             "disk_free_gb": d_free,
             "disk_total_gb": d_total,
-            "reboot_required": host_info.get("reboot_required", False)
+            "reboot_required": host_info.get("reboot_required", False) if isinstance(host_info, dict) else False,
+            "last_error": _last_system_error
         },
         "network": {
             "local_ipv4": default_ip,
