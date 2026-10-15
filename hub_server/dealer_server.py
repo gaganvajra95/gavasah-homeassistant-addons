@@ -3331,6 +3331,26 @@ HTML_PAGE = """<!DOCTYPE html>
             color: #94a3b8;
             border: 1px solid rgba(100, 116, 139, 0.3);
         }
+        /* Autonomous Self-Healing Engine Styles */
+        .tech-status-healing {
+            background: rgba(234, 179, 8, 0.15) !important;
+            color: #facc15 !important;
+            border: 1px solid rgba(234, 179, 8, 0.4) !important;
+        }
+        .hb-pill-healing {
+            background: rgba(234, 179, 8, 0.15) !important;
+            color: #facc15 !important;
+            border-color: rgba(234, 179, 8, 0.4) !important;
+        }
+        .hb-ball-healing {
+            background: #facc15 !important;
+            box-shadow: 0 0 8px #facc15 !important;
+            animation: pulse-amber 1.8s infinite;
+        }
+        @keyframes pulse-amber {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(0.85); }
+        }
         .tech-status-online {
             border-color: rgba(16, 185, 129, 0.45) !important;
         }
@@ -6763,6 +6783,24 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                 const hasIntegrationIssue = integrationIssues.length > 0;
                                 const integrationIssueText = integrationIssues.join(', ');
 
+                                // Autonomous Self-Healing Engine Inspection
+                                const shData = (c.technologies && c.technologies.self_healing) || {};
+                                const shSubsystems = shData.subsystems || {};
+                                const activeHealing = [];
+                                const exhaustedHealing = [];
+
+                                for (const [subKey, subInfo] of Object.entries(shSubsystems)) {
+                                    if (subInfo && subInfo.status === 'healing' && (subInfo.attempts || 0) <= 5) {
+                                        const pretty = subKey === 'coolmaster' ? 'CoolMaster HVAC' : (subKey === 'failed_core_entries' ? 'Core Entry' : subKey.toUpperCase());
+                                        activeHealing.push({ key: subKey, name: pretty, attempt: subInfo.attempts || 1, maxAttempts: subInfo.max_attempts || 5, action: subInfo.last_action });
+                                    } else if (subInfo && (subInfo.status === 'escalated' || (subInfo.attempts || 0) >= 5)) {
+                                        const pretty = subKey === 'coolmaster' ? 'CoolMaster HVAC' : (subKey === 'failed_core_entries' ? 'Core Entry' : subKey.toUpperCase());
+                                        exhaustedHealing.push({ key: subKey, name: pretty, attempt: subInfo.attempts || 5, maxAttempts: subInfo.max_attempts || 5 });
+                                    }
+                                }
+                                const isHealingActive = activeHealing.length > 0;
+                                const isHealingExhausted = exhaustedHealing.length > 0;
+
                                 if (c.approval_status === 'pending') {
                                     return `
                                         <div class="heartbeat-status-wrap" title="Registration submitted &bull; Awaiting Manufacturer HQ Approval before remote access and monitoring are enabled">
@@ -6797,7 +6835,35 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                             <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
                                         </div>
                                     `;
-                                } else if (diff > warnLimit || (hasIntegrationIssue && diff > delayedLimit)) {
+                                } else if (diff <= delayedLimit && isHealingActive) {
+                                    // Autonomous Self-Healing Active: Suppress alerts and display live recovery progress!
+                                    const primaryHeal = activeHealing[0];
+                                    return `
+                                        <div class="heartbeat-status-wrap" title="Autonomous Self-Healing Active: ${escapeHtml(primaryHeal.name)} remediation attempt ${primaryHeal.attempt} of ${primaryHeal.maxAttempts} in progress (${escapeHtml(primaryHeal.action || 'Remediating')}) • Partner escalation suppressed while healing">
+                                            <span class="heartbeat-pill-badge hb-pill-healing">
+                                                <span class="hb-ball hb-ball-healing"></span>
+                                                <span>SELF-HEALING</span>
+                                            </span>
+                                            <div class="hb-timing-sub" style="color: #facc15; font-weight: 600;">${escapeHtml(primaryHeal.name)} (${primaryHeal.attempt}/${primaryHeal.maxAttempts})</div>
+                                            <div class="hb-timestamp-sub" style="color: #94a3b8; font-size: 10px;">🛡️ Escalation suppressed</div>
+                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 9px;">Pulse ${humanDiff}</div>
+                                        </div>
+                                    `;
+                                } else if (diff <= delayedLimit && isHealingExhausted) {
+                                    // Self-Healing exhausted after 5 attempts: Escalate to partners & HQ
+                                    const primaryExh = exhaustedHealing[0];
+                                    return `
+                                        <div class="heartbeat-status-wrap" title="Autonomous Self-Healing Exhausted: 5/5 remediation attempts failed for ${escapeHtml(primaryExh.name)} • Escalated to Integrator, Dealer, and Manufacturer HQ">
+                                            <span class="heartbeat-pill-badge hb-pill-offline" style="background: rgba(239, 68, 68, 0.2); color: #f87171; border-color: rgba(239, 68, 68, 0.4);">
+                                                <span class="hb-ball hb-ball-offline"></span>
+                                                <span>HEALING FAILED</span>
+                                            </span>
+                                            <div class="hb-timing-sub hb-timing-offline">${escapeHtml(primaryExh.name)} (5/5 Failed)</div>
+                                            <div class="hb-timestamp-sub" style="color: #f87171; font-size: 10px; font-weight: 600;">🚨 Escalated to Partners &amp; Mfg</div>
+                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 9px;">Pulse ${humanDiff}</div>
+                                        </div>
+                                    `;
+                                } else if (diff > warnLimit || (hasIntegrationIssue && !isHealingActive && diff > delayedLimit)) {
                                     const off = formatOfflineDetails(c.last_heartbeat, now);
                                     return `
                                         <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Integrators + Dealers (> ${warnHuman})${hasIntegrationIssue ? ' • Issues: ' + escapeHtml(integrationIssueText) : ''}">
@@ -6872,7 +6938,10 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                     if (hasKnx) {
                                         const ep = knx.gateway_ip ? `${knx.gateway_ip}:${knx.gateway_port || 3671}` : (c.knx_ip ? `${c.knx_ip}:${c.knx_port || 3671}` : 'Bus');
                                         const isKnxOnline = Boolean(knx.reachable || knx.state === 'connected' || knx.status === 'online');
-                                        if (isKnxOnline) {
+                                        const knxHealing = shSubsystems['knx'];
+                                        if (knxHealing && knxHealing.status === 'healing' && (knxHealing.attempts || 0) <= 5) {
+                                            badges.push(`<span class="tech-badge tech-status-healing" onclick="openIntegrationDiagnostics('${c.client_id}', 'knx', event)" style="cursor: pointer;" title="Autonomous Self-Healing in Progress (Attempt ${knxHealing.attempts}/5: ${escapeHtml(knxHealing.last_action || 'Remediating')}) • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#facc15; box-shadow: 0 0 6px #facc15;"></span>KNX Healing (${knxHealing.attempts}/5)</span>`);
+                                        } else if (isKnxOnline) {
                                             const latStr = knx.latency_ms ? ` (${knx.latency_ms}ms)` : '';
                                             badges.push(`<span class="tech-badge tech-knx tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'knx', event)" style="cursor: pointer;" title="KNXnet/IP Online • Endpoint: ${escapeHtml(ep)}${latStr} • Click for full diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>KNX ${escapeHtml(ep)}${escapeHtml(latStr)}</span>`);
                                         } else {
@@ -6936,7 +7005,10 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                     if (coolmaster.detected || (coolmaster.entries && coolmaster.entries.length > 0)) {
                                         const isCmOffline = Boolean(coolmaster.status === 'offline' || coolmaster.offline_reason);
                                         const cmTitle = coolmaster.entries && coolmaster.entries.length > 0 ? coolmaster.entries.map(e => e.title || `${e.host || ''}:${e.port || 10102}`).join(', ') : 'CoolMaster Gateway';
-                                        if (isCmOffline) {
+                                        const cmHealing = shSubsystems['coolmaster'];
+                                        if (cmHealing && cmHealing.status === 'healing' && (cmHealing.attempts || 0) <= 5) {
+                                            badges.push(`<span class="tech-badge tech-status-healing" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="Autonomous Self-Healing in Progress (Attempt ${cmHealing.attempts}/5: ${escapeHtml(cmHealing.last_action || 'Remediating')}) • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#facc15; box-shadow: 0 0 6px #facc15;"></span>CoolMaster Healing (${cmHealing.attempts}/5)</span>`);
+                                        } else if (isCmOffline) {
                                             badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="CoolMaster Offline • Reason: ${escapeHtml(coolmaster.offline_reason || 'HVAC Gateway unreachable')} • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>CoolMaster Offline</span>`);
                                         } else {
                                             badges.push(`<span class="tech-badge tech-coolmaster tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="CoolMasterNet Online (${escapeHtml(cmTitle)}) • Click for diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>CoolMaster (HVAC Online)</span>`);
@@ -6965,7 +7037,10 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                             ` : `
                                 <div style="color: #cbd5e1; font-weight: 500;">CPU: ${sys.cpu_percent}% &bull; RAM: ${sys.memory_percent}%</div>
                                 <div style="color: #94a3b8; font-size: 11px; margin-top: 2px;">💾 Storage: ${sys.disk_total_gb ? `${(sys.disk_total_gb - (sys.disk_free_gb || 0)).toFixed(1)} / ${Number(sys.disk_total_gb).toFixed(1)} GB (${Math.round(((sys.disk_total_gb - (sys.disk_free_gb || 0)) / sys.disk_total_gb) * 100)}%)` : (sys.disk_free_gb ? `${Number(sys.disk_free_gb).toFixed(1)} GB Free` : '—')}</div>
-                                <div style="color: #64748b; font-size: 10px; margin-top: 1px;">HAOS ${escapeHtml(sys.haos_version || '—')}${sys.core_version ? ` &bull; Core ${escapeHtml(sys.core_version)}` : ''}</div>
+                                <div style="color: #64748b; font-size: 10px; margin-top: 1px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap;">
+                                    <span>HAOS ${escapeHtml(sys.haos_version || '—')}${sys.core_version ? ` &bull; Core ${escapeHtml(sys.core_version)}` : ''}</span>
+                                    ${sys.addon_version ? `<span style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 3px; padding: 0 4px; font-size: 9px; font-weight: 600;" title="Gavasah Cloud Agent Version">v${escapeHtml(sys.addon_version)}</span>` : '<span style="background: rgba(148, 163, 184, 0.15); color: #94a3b8; border-radius: 3px; padding: 0 4px; font-size: 9px;" title="Older Cloud Agent (Update Recommended)">v1.1.x</span>'}
+                                </div>
                             `}
                         </td>
                         <td class="col-actions-menu">
@@ -7009,6 +7084,9 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                     <button type="button" class="action-menu-item" style="color: #38bdf8;" onclick="openSnapshotModal('${c.client_id}', '${escapeHtml(c.name)}'); closeAllActionMenus();">
                                         <span>📸</span> Snapshots & Backups
                                     </button>
+                                    <button type="button" class="action-menu-item" style="color: #22d3ee;" onclick="triggerAddonUpdate('${c.client_id}', '${escapeHtml(c.name)}'); closeAllActionMenus();" title="Dispatch over-the-air update to latest Gavasah Cloud Agent v1.2.0">
+                                        <span>🚀</span> Update Cloud Agent (v1.2.0)
+                                    </button>
                                     <button type="button" class="action-menu-item" onclick="openLogsModal('${c.client_id}'); closeAllActionMenus();">
                                         <span>📋</span> Telemetry Logs
                                     </button>
@@ -7047,6 +7125,31 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
         // ======================================================================
         // REMOTE ETS CLIPBOARD & INTEGRATOR UTILITIES
         // ======================================================================
+        
+        // ======================================================================
+        // OVER-THE-AIR ADD-ON UPDATE DISPATCHER
+        // ======================================================================
+        async function triggerAddonUpdate(clientId, clientName) {
+            if (!confirm(`Dispatch Over-The-Air add-on update for '${clientName}'?\n\nThe gateway will reload the supervisor repository and upgrade to the latest Gavasah Cloud Agent release (v1.2.0) on its next heartbeat.`)) {
+                return;
+            }
+            try {
+                const resp = await fetch('/api/client_command_trigger', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ client_id: clientId, action: 'update_addon' })
+                });
+                const res = await resp.json();
+                if (res.ok) {
+                    showToast(`OTA Add-on update dispatched for ${clientName}!`, 'success');
+                } else {
+                    showToast(res.error || 'Failed to dispatch add-on update', 'error');
+                }
+            } catch (err) {
+                showToast(`Error dispatching update: ${err.message}`, 'error');
+            }
+        }
+    
         function copyEtsRemoteUrl(domain, port, event) {
             if (event) {
                 event.stopPropagation();
@@ -8702,6 +8805,42 @@ All active sessions for this integrator will be terminated immediately.` : '';
                             <td style="color: #94a3b8; font-family: sans-serif; font-size: 11px; line-height: 1.4;">${escapeHtml(fixAction)}</td>
                         </tr>
                     </table>
+
+                    ${(() => {
+                        const shData = (client.technologies && client.technologies.self_healing) || {};
+                        const shSub = (shData.subsystems && shData.subsystems[techKey]) || {};
+                        const recs = (shData.recent_recoveries || []).filter(r => r.subsystem === techKey || techKey === 'all');
+
+                        if (shSub && shSub.status === 'healing') {
+                            return `
+                                <div style="margin-top: 14px; background: rgba(234, 179, 8, 0.1); border: 1px solid rgba(234, 179, 8, 0.3); border-radius: 8px; padding: 12px;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                                        <strong style="color: #facc15; font-size: 13px; display: flex; align-items: center; gap: 6px;">
+                                            <span class="tech-dot tech-dot-pulsing" style="background: #facc15;"></span> Autonomous Self-Healing In Progress
+                                        </strong>
+                                        <span style="background: rgba(234, 179, 8, 0.2); color: #facc15; border-radius: 4px; padding: 2px 6px; font-size: 10px; font-weight: 700;">Attempt ${shSub.attempts || 1} / 5</span>
+                                    </div>
+                                    <div style="font-size: 11px; color: #cbd5e1; margin-bottom: 4px;"><strong>Remediation Action:</strong> ${escapeHtml(shSub.last_action || 'Executing auto-recovery reload')}</div>
+                                    <div style="font-size: 10px; color: #94a3b8;">Cooldown delay: 60s between attempts. Alarms to dealers/integrators are suppressed while healing.</div>
+                                </div>
+                            `;
+                        } else if (recs.length > 0) {
+                            const latestRec = recs[0];
+                            return `
+                                <div style="margin-top: 14px; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 8px; padding: 12px;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                                        <strong style="color: #34d399; font-size: 13px; display: flex; align-items: center; gap: 6px;">
+                                            <span>🛡️</span> Autonomous Self-Healing: Silent Recovery Logged
+                                        </strong>
+                                        <span style="background: rgba(16, 185, 129, 0.2); color: #34d399; border-radius: 4px; padding: 2px 6px; font-size: 10px; font-weight: 700;">Success in ${latestRec.attempts_taken} attempt(s)</span>
+                                    </div>
+                                    <div style="font-size: 11px; color: #cbd5e1;"><strong>Final Remediation:</strong> ${escapeHtml(latestRec.final_action || 'Resolved autonomously')}</div>
+                                    <div style="font-size: 10px; color: #64748b; margin-top: 4px;">Recovered at: ${escapeHtml(latestRec.recovered_at || 'Recently')} &bull; Handled silently with 0 alerts</div>
+                                </div>
+                            `;
+                        }
+                        return '';
+                    })()}
                 `;
             }
 
@@ -11227,6 +11366,19 @@ PersistentKeepalive = 25
             if tech_dict is None:
                 try: tech_dict = json.loads(client.get('technologies_json') or '{}')
                 except: tech_dict = {}
+
+            # Capture Autonomous Self-Healing Engine telemetry
+            sh_data = body.get('self_healing')
+            if sh_data and isinstance(sh_data, dict):
+                tech_dict['self_healing'] = sh_data
+                recs = sh_data.get('recent_recoveries') or []
+                if recs:
+                    latest = recs[0]
+                    print(f"[✓] [Autonomous Self-Healing] Client '{client_id}' recovered '{latest.get('subsystem')}' autonomously after {latest.get('attempts_taken')} attempt(s)!", flush=True)
+
+            # Capture Add-on Version in system_dict
+            if 'system' in body and isinstance(body['system'], dict) and 'addon_version' in body['system']:
+                sys_dict['addon_version'] = body['system']['addon_version']
 
             backups_list = body.get('backups')
             if backups_list is None:
