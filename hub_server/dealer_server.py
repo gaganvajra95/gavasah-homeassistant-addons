@@ -3877,6 +3877,11 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="metric-value" style="color: #ef4444;" id="ov-lost-clients">0</div>
                             <div class="metric-sub">>75s Signal Interruption</div>
                         </div>
+                        <div class="metric-card" id="ov-card-approvals" style="cursor: pointer; display: none;" onclick="switchTab('approvals')" title="Click to review pending gateway approval requests">
+                            <div class="metric-label" style="color: #fbbf24;">Pending Approvals</div>
+                            <div class="metric-value" style="color: #fbbf24;" id="ov-approvals-count">0</div>
+                            <div class="metric-sub">Awaiting HQ Authorization</div>
+                        </div>
                     </div>
 
                     <div class="section-header">
@@ -5136,6 +5141,8 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (navBrandMfg) navBrandMfg.style.display = 'flex';
                 const navApprovals = document.getElementById('nav-approvals');
                 if (navApprovals) navApprovals.style.display = 'flex';
+                const ovApprovalsCard = document.getElementById('ov-card-approvals');
+                if (ovApprovalsCard) ovApprovalsCard.style.display = '';
                 const navMqtt = document.getElementById('nav-mqtt');
                 if (navMqtt) navMqtt.style.display = 'flex';
                 applyDealerBranding(currentUser.branding);
@@ -5369,6 +5376,8 @@ HTML_PAGE = """<!DOCTYPE html>
         // CLIENT APPROVALS (MANUFACTURER)
         // ======================================================================
         let currentApprovalsData = [];
+        let lastApprovalsHash = '';
+        let previousApprovalCount = null;
 
         async function fetchApprovals() {
             if (!currentUser || currentUser.role !== 'manufacturer') return;
@@ -5388,15 +5397,34 @@ HTML_PAGE = """<!DOCTYPE html>
             const emptyEl = document.getElementById('approvals-empty-state');
             const tableWrap = document.getElementById('approvals-table-container');
             const badgeCount = document.getElementById('badge-approvals-count');
+            const ovApprovals = document.getElementById('ov-approvals-count');
 
+            const currentCount = list.length;
             if (badgeCount) {
-                if (list.length > 0) {
-                    badgeCount.innerText = list.length;
+                if (currentCount > 0) {
+                    badgeCount.innerText = currentCount;
                     badgeCount.style.display = 'inline-block';
                 } else {
                     badgeCount.style.display = 'none';
                 }
             }
+            if (ovApprovals) {
+                ovApprovals.innerText = currentCount;
+            }
+
+            // Real-time toast alert when a new client gateway approval request arrives
+            if (previousApprovalCount !== null && currentCount > previousApprovalCount) {
+                const diff = currentCount - previousApprovalCount;
+                showToast(`🔔 ${diff} new client gateway approval request${diff > 1 ? 's' : ''} submitted by partner!`, 'info');
+            }
+            previousApprovalCount = currentCount;
+
+            // Diff-check to prevent re-rendering identical DOM during 2.5s continuous live sync
+            const currentHash = JSON.stringify(list.map(c => [c.client_id, c.approval_status, c.dealer_id, c.integrator_id]));
+            if (currentHash === lastApprovalsHash) {
+                return;
+            }
+            lastApprovalsHash = currentHash;
 
             if (!tbody) return;
 
@@ -8409,22 +8437,27 @@ auto_update_external_url: true`;
             }, 3500);
         }
 
-        // Initialization
+        // Initialization & Continuous Live Data Synchronization (No Refresh Required)
         let pollCounter = 0;
         window.addEventListener('DOMContentLoaded', () => {
             checkAuth();
             setInterval(() => {
                 if (currentUser) {
                     pollCounter++;
+                    // Continuously poll live fleet inventory and heartbeats every 2.5s
                     fetchFleet();
-                    if (pollCounter % 3 === 0 && currentUser.role === 'manufacturer') {
+                    // Continuously poll pending approvals for Manufacturer every 2.5s
+                    if (currentUser.role === 'manufacturer') {
+                        fetchApprovals();
+                    }
+                    if (pollCounter % 4 === 0 && currentUser.role === 'manufacturer') {
                         fetchDealers();
                     }
                     if (pollCounter % 6 === 0 && currentUser.role !== 'integrator') {
                         fetchIntegrators();
                     }
                 }
-            }, 10000); // 10s polling interval
+            }, 2500); // 2.5s live polling interval for instantaneous zero-refresh updates
         });
 
 
