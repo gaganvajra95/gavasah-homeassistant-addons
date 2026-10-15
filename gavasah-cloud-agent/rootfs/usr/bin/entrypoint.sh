@@ -252,24 +252,23 @@ if cid:
         subprocess.run(['wg-quick', 'down', 'wg0'], capture_output=True)
         subprocess.run(['ip', 'link', 'delete', 'dev', 'wg0'], capture_output=True)
 
-        # Bring up WireGuard: Try kernel wg-quick first, fallback to wireguard-go
+        # Bring up WireGuard: Try wg-quick first, fallback to direct ip link + wg setconf
         res = subprocess.run(['wg-quick', 'up', 'wg0'], capture_output=True, text=True)
         if res.returncode == 0:
-            print("[✓] WireGuard mesh interface (wg0) successfully activated via kernel driver!")
+            print("[✓] WireGuard mesh interface (wg0) successfully activated via wg-quick!")
         else:
-            print(f"[!] wg-quick note: {res.stderr.strip()}; activating via wireguard-go fallback...")
+            print(f"[!] wg-quick notice: {res.stderr.strip()}; activating via direct ip link + wg setconf...")
             wg_ip = '10.42.0.2/16'
             for line in wg_conf_content.splitlines():
                 if line.strip().startswith('Address'):
                     wg_ip = line.split('=', 1)[1].strip()
             
-            subprocess.Popen(['wireguard-go', 'wg0'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(1.0)
+            subprocess.run(['ip', 'link', 'add', 'dev', 'wg0', 'type', 'wireguard'], capture_output=True)
             subprocess.run(['wg', 'setconf', 'wg0', conf_path], capture_output=True)
             subprocess.run(['ip', 'addr', 'add', wg_ip, 'dev', 'wg0'], capture_output=True)
             subprocess.run(['ip', 'link', 'set', 'up', 'dev', 'wg0'], capture_output=True)
             subprocess.run(['ip', 'route', 'add', '10.42.0.0/16', 'dev', 'wg0'], capture_output=True)
-            print("[✓] WireGuard mesh interface (wg0) successfully activated via wireguard-go!")
+            print("[✓] WireGuard mesh interface (wg0) direct activation complete!")
 
         # Verify
         show_res = subprocess.run(['wg', 'show', 'wg0'], capture_output=True, text=True)

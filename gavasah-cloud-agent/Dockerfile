@@ -17,7 +17,6 @@ RUN apk add --no-cache \
     net-tools \
     ca-certificates \
     wireguard-tools \
-    wireguard-go \
     openresolv
 
 # Copy rootfs files
