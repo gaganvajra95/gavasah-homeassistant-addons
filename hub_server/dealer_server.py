@@ -363,7 +363,10 @@ def init_sqlite_database():
             system_json TEXT,
             network_json TEXT,
             knx_json TEXT,
-            onboarded_at INTEGER
+            onboarded_at INTEGER,
+            hb_delayed_interval INTEGER DEFAULT 180,
+            hb_warning_interval INTEGER DEFAULT 300,
+            hb_offline_interval INTEGER DEFAULT 600
         );
 
         CREATE TABLE IF NOT EXISTS client_logs (
@@ -419,6 +422,12 @@ def init_sqlite_database():
         if 'onboarded_at' not in cols:
             conn.execute("ALTER TABLE clients ADD COLUMN onboarded_at INTEGER")
             conn.execute("UPDATE clients SET onboarded_at = last_heartbeat WHERE last_heartbeat > 0 AND onboarded_at IS NULL")
+        if 'hb_delayed_interval' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN hb_delayed_interval INTEGER DEFAULT 180")
+        if 'hb_warning_interval' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN hb_warning_interval INTEGER DEFAULT 300")
+        if 'hb_offline_interval' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN hb_offline_interval INTEGER DEFAULT 600")
 
         # Ensure Remote ETS UDP Port Forwarding columns exist
         if 'ets_port' not in cols:
@@ -791,6 +800,12 @@ def load_clients_state():
             except: c['technologies'] = {}
             try: c['backups'] = json.loads(c.get('backups_json') or '[]')
             except: c['backups'] = []
+            try: c['hb_delayed_interval'] = int(c.get('hb_delayed_interval') or 180)
+            except: c['hb_delayed_interval'] = 180
+            try: c['hb_warning_interval'] = int(c.get('hb_warning_interval') or 300)
+            except: c['hb_warning_interval'] = 300
+            try: c['hb_offline_interval'] = int(c.get('hb_offline_interval') or 600)
+            except: c['hb_offline_interval'] = 600
             res[c['client_id']] = c
         conn.close()
         return res
@@ -839,8 +854,9 @@ def save_clients_state(data):
                         wg_ip, wg_pubkey, wg_privkey, tunnel_mode,
                         technologies_json, backups_json, pending_backup,
                         ets_port, ets_target_type, ets_target_ip, ets_target_port, ets_port_assigned_at,
-                        onboarded_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        onboarded_at,
+                        hb_delayed_interval, hb_warning_interval, hb_offline_interval
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (c.get('client_id', cid), c.get('name', cid), c.get('dealer_id', 'owner_master'), c.get('dealer_name', 'Master Manufacturer (Direct)'),
                          c.get('integrator_id'), c.get('integrator_name', 'Direct Dealer Supervision'), c.get('domain', f"{cid}.gavasah.com"),
                          c.get('auth_secret', ''), int(c.get('dashboard_port', d_port)), int(c.get('ssh_port', s_port)),
@@ -852,7 +868,10 @@ def save_clients_state(data):
                          c.get('wg_ip'), c.get('wg_pubkey'), c.get('wg_privkey'), c.get('tunnel_mode', 'wireguard'),
                          tech_json, backups_json, c.get('pending_backup'),
                          c.get('ets_port'), c.get('ets_target_type'), c.get('ets_target_ip'), c.get('ets_target_port'), c.get('ets_port_assigned_at'),
-                         c.get('onboarded_at'))
+                         c.get('onboarded_at'),
+                         int(c.get('hb_delayed_interval') or 180),
+                         int(c.get('hb_warning_interval') or 300),
+                         int(c.get('hb_offline_interval') or 600))
                     )
             conn.close()
             return True
@@ -1928,6 +1947,18 @@ HTML_PAGE = """<!DOCTYPE html>
             color: #34d399;
             box-shadow: 0 0 10px rgba(16, 185, 129, 0.25);
         }
+        .pill-btn.pill-yellow.active {
+            background: rgba(250, 204, 21, 0.15);
+            border-color: #facc15;
+            color: #facc15;
+            box-shadow: 0 0 10px rgba(250, 204, 21, 0.25);
+        }
+        .pill-btn.pill-orange.active {
+            background: rgba(251, 146, 60, 0.15);
+            border-color: #fb923c;
+            color: #fb923c;
+            box-shadow: 0 0 10px rgba(251, 146, 60, 0.25);
+        }
         .pill-btn.pill-red.active {
             background: rgba(239, 68, 68, 0.15);
             border-color: #ef4444;
@@ -2124,10 +2155,15 @@ HTML_PAGE = """<!DOCTYPE html>
             color: #34d399;
             border: 1px solid rgba(16, 185, 129, 0.3);
         }
+        .status-delayed {
+            background: rgba(250, 204, 21, 0.15);
+            color: #facc15;
+            border: 1px solid rgba(250, 204, 21, 0.35);
+        }
         .status-warning {
-            background: rgba(245, 158, 11, 0.15);
-            color: #fbbf24;
-            border: 1px solid rgba(245, 158, 11, 0.3);
+            background: rgba(251, 146, 60, 0.15);
+            color: #fb923c;
+            border: 1px solid rgba(251, 146, 60, 0.35);
         }
         .status-lost {
             background: rgba(239, 68, 68, 0.15);
@@ -2217,16 +2253,28 @@ HTML_PAGE = """<!DOCTYPE html>
             box-shadow: 0 0 8px #10b981, 0 0 14px rgba(16, 185, 129, 0.6);
             animation: hbPulseGreen 2.2s infinite ease-in-out;
         }
+        .hb-pill-delayed {
+            background: rgba(250, 204, 21, 0.12);
+            color: #facc15;
+            border-color: rgba(250, 204, 21, 0.35);
+        }
+        .hb-ball-delayed {
+            background: #facc15;
+            box-shadow: 0 0 8px #facc15, 0 0 14px rgba(250, 204, 21, 0.6);
+            animation: hbPulseYellow 2.2s infinite ease-in-out;
+        }
+        .hb-timing-delayed { color: #facc15; font-weight: 600; }
         .hb-pill-warning {
-            background: rgba(245, 158, 11, 0.12);
-            color: #fbbf24;
-            border-color: rgba(245, 158, 11, 0.35);
+            background: rgba(251, 146, 60, 0.12);
+            color: #fb923c;
+            border-color: rgba(251, 146, 60, 0.35);
         }
         .hb-ball-warning {
-            background: #f59e0b;
-            box-shadow: 0 0 8px #f59e0b, 0 0 14px rgba(245, 158, 11, 0.6);
-            animation: hbPulseAmber 2.2s infinite ease-in-out;
+            background: #fb923c;
+            box-shadow: 0 0 8px #fb923c, 0 0 14px rgba(251, 146, 60, 0.6);
+            animation: hbPulseOrange 2.2s infinite ease-in-out;
         }
+        .hb-timing-warning { color: #fb923c; font-weight: 600; }
         .hb-pill-offline {
             background: rgba(239, 68, 68, 0.12);
             color: #f87171;
@@ -2250,9 +2298,13 @@ HTML_PAGE = """<!DOCTYPE html>
             0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 6px #10b981; }
             50% { transform: scale(1.25); opacity: 0.8; box-shadow: 0 0 12px #10b981, 0 0 16px rgba(16, 185, 129, 0.5); }
         }
-        @keyframes hbPulseAmber {
-            0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 6px #f59e0b; }
-            50% { transform: scale(1.25); opacity: 0.8; box-shadow: 0 0 12px #f59e0b, 0 0 16px rgba(245, 158, 11, 0.5); }
+        @keyframes hbPulseYellow {
+            0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 6px #facc15; }
+            50% { transform: scale(1.25); opacity: 0.8; box-shadow: 0 0 12px #facc15, 0 0 16px rgba(250, 204, 21, 0.5); }
+        }
+        @keyframes hbPulseOrange {
+            0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 6px #fb923c; }
+            50% { transform: scale(1.25); opacity: 0.8; box-shadow: 0 0 12px #fb923c, 0 0 16px rgba(251, 146, 60, 0.5); }
         }
         @keyframes hbPulsePurple {
             0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 6px #a855f7; }
@@ -3901,6 +3953,8 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div class="filter-pills">
                             <button class="pill-btn active" id="filter-pill-all" onclick="setFleetFilter('ALL')">All (<span id="pill-count-all">0</span>)</button>
                             <button class="pill-btn pill-green" id="filter-pill-online" onclick="setFleetFilter('ONLINE')">🟢 Online (<span id="pill-count-online">0</span>)</button>
+                            <button class="pill-btn pill-yellow" id="filter-pill-delayed" onclick="setFleetFilter('DELAYED')">🟡 Delayed (<span id="pill-count-delayed">0</span>)</button>
+                            <button class="pill-btn pill-orange" id="filter-pill-warning" onclick="setFleetFilter('WARNING')">🟠 Warning (<span id="pill-count-warning">0</span>)</button>
                             <button class="pill-btn pill-red" id="filter-pill-lost" onclick="setFleetFilter('LOST')">🔴 Lost (<span id="pill-count-lost">0</span>)</button>
                         </div>
                         <!-- Partner Filter Dropdown (Replaces scroll column tab) -->
@@ -4452,6 +4506,62 @@ HTML_PAGE = """<!DOCTYPE html>
                     </div>
 
 
+
+                    <div class="form-group" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 10px; padding: 14px 16px; margin-top: 14px;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                            <label class="form-label" style="margin-bottom: 0; color: #fbbf24; font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+                                ⏱️ HEARTBEAT TIMEOUT & ESCALATION INTERVALS
+                            </label>
+                            <span class="badge-role" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 10px;">TIERED ESCALATION</span>
+                        </div>
+                        <div style="font-size: 11px; color: #94a3b8; margin-bottom: 12px; line-height: 1.4;">
+                            Configure tiered watchdog intervals before alerting each tier of supervision when a Gavasah Gateway stops pulsing:
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;">
+                            <!-- Tier 1: Delayed Pulse (Yellow) -->
+                            <div style="background: rgba(250, 204, 21, 0.05); border: 1px solid rgba(250, 204, 21, 0.25); border-radius: 8px; padding: 10px;">
+                                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+                                    <span style="font-size: 11px; font-weight: 700; color: #facc15;">🟡 DELAYED PULSE</span>
+                                </div>
+                                <div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px;">
+                                    Warns <strong>Integrator</strong>
+                                </div>
+                                <div class="form-input-wrap">
+                                    <input type="number" id="edit-hb-delayed" class="form-input" min="30" max="86400" step="10" placeholder="180" style="padding: 6px 10px; font-size: 12px; font-family: 'JetBrains Mono', monospace;" required>
+                                    <span style="position: absolute; right: 8px; font-size: 10px; color: #64748b;">sec</span>
+                                </div>
+                            </div>
+
+                            <!-- Tier 2: Warning (Orange) -->
+                            <div style="background: rgba(251, 146, 60, 0.05); border: 1px solid rgba(251, 146, 60, 0.25); border-radius: 8px; padding: 10px;">
+                                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+                                    <span style="font-size: 11px; font-weight: 700; color: #fb923c;">🟠 WARNING</span>
+                                </div>
+                                <div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px;">
+                                    Warns <strong>Integrator + Dealer</strong>
+                                </div>
+                                <div class="form-input-wrap">
+                                    <input type="number" id="edit-hb-warning" class="form-input" min="60" max="86400" step="10" placeholder="300" style="padding: 6px 10px; font-size: 12px; font-family: 'JetBrains Mono', monospace;" required>
+                                    <span style="position: absolute; right: 8px; font-size: 10px; color: #64748b;">sec</span>
+                                </div>
+                            </div>
+
+                            <!-- Tier 3: Offline (Red) -->
+                            <div style="background: rgba(239, 68, 68, 0.05); border: 1px solid rgba(239, 68, 68, 0.25); border-radius: 8px; padding: 10px;">
+                                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+                                    <span style="font-size: 11px; font-weight: 700; color: #f87171;">🔴 OFFLINE</span>
+                                </div>
+                                <div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px;">
+                                    Warns <strong>All + Manufacturer</strong>
+                                </div>
+                                <div class="form-input-wrap">
+                                    <input type="number" id="edit-hb-offline" class="form-input" min="90" max="86400" step="10" placeholder="600" style="padding: 6px 10px; font-size: 12px; font-family: 'JetBrains Mono', monospace;" required>
+                                    <span style="position: absolute; right: 8px; font-size: 10px; color: #64748b;">sec</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
 
                     <div class="form-group" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(0, 240, 255, 0.25); border-radius: 10px; padding: 12px 16px; margin-top: 14px;">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -5047,13 +5157,18 @@ HTML_PAGE = """<!DOCTYPE html>
                     }
 
                     // Calculate live health for this organization using live fleet data
-                    let onlineC = 0, lostC = 0;
+                    let onlineC = 0, delayedC = 0, warnC = 0, lostC = 0;
                     orgClients.forEach(c => {
                         const fresh = fleetMap[c.client_id] || c;
                         const hb = fresh.last_heartbeat || 0;
                         const isPending = !hb || hb === 0 || fresh.status === 'pending';
                         const diff = isPending ? -1 : nowSec - hb;
-                        if (!isPending && diff <= 180) onlineC++;
+                        const delayedLimit = parseInt(fresh.hb_delayed_interval) || 180;
+                        const warnLimit = parseInt(fresh.hb_warning_interval) || 300;
+                        const offLimit = parseInt(fresh.hb_offline_interval) || 600;
+                        if (!isPending && diff <= delayedLimit) onlineC++;
+                        else if (!isPending && diff <= warnLimit) delayedC++;
+                        else if (!isPending && diff <= offLimit) warnC++;
                         else lostC++;
                     });
                     const totalC = orgClients.length;
@@ -5064,11 +5179,18 @@ HTML_PAGE = """<!DOCTYPE html>
                         const hb = fresh.last_heartbeat || 0;
                         const isPending = !hb || hb === 0 || fresh.status === 'pending';
                         const diff = isPending ? -1 : nowSec - hb;
-                        const isOnline = !isPending && diff <= 180;
-                        const isWarn = !isPending && diff > 180 && diff <= 300;
-                        const dotBg = isOnline ? '#10b981' : (isWarn ? '#f59e0b' : '#ef4444');
-                        const dotShadow = isOnline ? '0 0 6px #10b981' : (isWarn ? '0 0 6px #f59e0b' : '0 0 6px #ef4444');
-                        const stLabel = isOnline ? 'Online' : (isWarn ? 'Delayed Pulse' : (isPending ? 'Awaiting Contact' : 'Offline / Lost'));
+                        const delayedLimit = parseInt(fresh.hb_delayed_interval) || 180;
+                        const warnLimit = parseInt(fresh.hb_warning_interval) || 300;
+                        const offLimit = parseInt(fresh.hb_offline_interval) || 600;
+
+                        const isOnline = !isPending && diff <= delayedLimit;
+                        const isDelayed = !isPending && diff > delayedLimit && diff <= warnLimit;
+                        const isWarn = !isPending && diff > warnLimit && diff <= offLimit;
+                        const isLost = isPending || diff > offLimit;
+
+                        const dotBg = isOnline ? '#10b981' : (isDelayed ? '#facc15' : (isWarn ? '#fb923c' : '#ef4444'));
+                        const dotShadow = isOnline ? '0 0 6px #10b981' : (isDelayed ? '0 0 6px #facc15' : (isWarn ? '0 0 6px #fb923c' : '0 0 6px #ef4444'));
+                        const stLabel = isOnline ? 'Online' : (isDelayed ? `Delayed Pulse (Integrator Alerted >${delayedLimit}s)` : (isWarn ? `Warning (Dealer Alerted >${warnLimit}s)` : (isPending ? 'Awaiting Contact' : `Offline (All Alerted >${offLimit}s)`)));
                         const cDomain = fresh.domain || (fresh.client_id + '.gavasah.com');
                         const cName = fresh.name || fresh.client_id;
                         return `
@@ -5824,6 +5946,12 @@ HTML_PAGE = """<!DOCTYPE html>
             } else if (fleetStatusFilter === 'ONLINE') {
                 const el = document.getElementById('filter-pill-online');
                 if (el) el.classList.add('active');
+            } else if (fleetStatusFilter === 'DELAYED') {
+                const el = document.getElementById('filter-pill-delayed');
+                if (el) el.classList.add('active');
+            } else if (fleetStatusFilter === 'WARNING') {
+                const el = document.getElementById('filter-pill-warning');
+                if (el) el.classList.add('active');
             } else if (fleetStatusFilter === 'LOST' || fleetStatusFilter === 'OFFLINE') {
                 const el = document.getElementById('filter-pill-lost');
                 if (el) el.classList.add('active');
@@ -5931,6 +6059,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
             const now = Math.floor(Date.now() / 1000);
             let onlineCount = 0;
+            let delayedCount = 0;
             let warningCount = 0;
             let offlineCount = 0;
 
@@ -5957,14 +6086,20 @@ HTML_PAGE = """<!DOCTYPE html>
 
                 const isPending = !c.last_heartbeat || c.last_heartbeat === 0 || c.status === 'pending';
                 const diff = isPending ? -1 : now - (c.last_heartbeat || 0);
+                const delayedLimit = parseInt(c.hb_delayed_interval) || 180;
+                const warnLimit = parseInt(c.hb_warning_interval) || 300;
+                const offLimit = parseInt(c.hb_offline_interval) || 600;
+
                 if (isPending) offlineCount++;
-                else if (diff <= 180) onlineCount++;
-                else if (diff <= 300) warningCount++;
+                else if (diff <= delayedLimit) onlineCount++;
+                else if (diff <= warnLimit) delayedCount++;
+                else if (diff <= offLimit) warningCount++;
                 else offlineCount++;
 
-                if (fleetStatusFilter === 'ONLINE' && (isPending || diff > 180)) return false;
-                if (fleetStatusFilter === 'WARNING' && (isPending || diff <= 180 || diff > 300)) return false;
-                if ((fleetStatusFilter === 'OFFLINE' || fleetStatusFilter === 'LOST') && !isPending && diff <= 180) return false;
+                if (fleetStatusFilter === 'ONLINE' && (isPending || diff > delayedLimit)) return false;
+                if (fleetStatusFilter === 'DELAYED' && (isPending || diff <= delayedLimit || diff > warnLimit)) return false;
+                if (fleetStatusFilter === 'WARNING' && (isPending || diff <= warnLimit || diff > offLimit)) return false;
+                if ((fleetStatusFilter === 'OFFLINE' || fleetStatusFilter === 'LOST') && !isPending && diff <= offLimit) return false;
 
                 if (fleetSearchQuery) {
                     const str = `${c.client_id} ${c.name} ${c.dealer_name || ''} ${c.integrator_name || ''} ${c.domain} ${c.knx_ip}`.toLowerCase();
@@ -5979,15 +6114,19 @@ HTML_PAGE = """<!DOCTYPE html>
             const valLost = document.getElementById('val-lost');
             if (valTotal) valTotal.innerText = data.length;
             if (valOnline) valOnline.innerText = onlineCount;
-            if (valLost) valLost.innerText = offlineCount + warningCount;
+            if (valLost) valLost.innerText = offlineCount + warningCount + delayedCount;
 
             // Update Filter pill counters
             const pillAll = document.getElementById('pill-count-all');
             const pillOnline = document.getElementById('pill-count-online');
+            const pillDelayed = document.getElementById('pill-count-delayed');
+            const pillWarning = document.getElementById('pill-count-warning');
             const pillLost = document.getElementById('pill-count-lost');
             if (pillAll) pillAll.innerText = data.length;
             if (pillOnline) pillOnline.innerText = onlineCount;
-            if (pillLost) pillLost.innerText = offlineCount + warningCount;
+            if (pillDelayed) pillDelayed.innerText = delayedCount;
+            if (pillWarning) pillWarning.innerText = warningCount;
+            if (pillLost) pillLost.innerText = offlineCount;
 
             // Update Overview Tab cards
             const ovTotal = document.getElementById('ov-total-clients');
@@ -5995,7 +6134,7 @@ HTML_PAGE = """<!DOCTYPE html>
             const ovLost = document.getElementById('ov-lost-clients');
             if (ovTotal) ovTotal.innerText = data.length;
             if (ovOnline) ovOnline.innerText = onlineCount;
-            if (ovLost) ovLost.innerText = offlineCount + warningCount;
+            if (ovLost) ovLost.innerText = offlineCount + warningCount + delayedCount;
 
             // Update Sidebar Navigation Fleet Badge
             const badgeFleetEl = document.getElementById('badge-fleet-count');
@@ -6030,12 +6169,17 @@ HTML_PAGE = """<!DOCTYPE html>
             tbody.innerHTML = pageData.map(c => {
                 const isPending = !c.last_heartbeat || c.last_heartbeat === 0 || c.status === 'pending';
                 const diff = isPending ? -1 : now - (c.last_heartbeat || 0);
+                const delayedLimit = parseInt(c.hb_delayed_interval) || 180;
+                const warnLimit = parseInt(c.hb_warning_interval) || 300;
+                const offLimit = parseInt(c.hb_offline_interval) || 600;
+
                 let humanDiff = isPending ? 'awaiting pulse' : formatHeartbeatTime(diff);
                 let stClass = 'status-online';
                 let stText = 'ONLINE';
                 if (isPending) { stClass = 'status-pending'; stText = '⏳ PENDING'; }
-                else if (diff > 300) { stClass = 'status-lost'; stText = 'OFFLINE'; }
-                else if (diff > 180) { stClass = 'status-warning'; stText = 'WARNING'; }
+                else if (diff > offLimit) { stClass = 'status-lost'; stText = 'OFFLINE'; }
+                else if (diff > warnLimit) { stClass = 'status-warning'; stText = 'WARNING'; }
+                else if (diff > delayedLimit) { stClass = 'status-delayed'; stText = 'DELAYED'; }
 
                 const sys = c.system || {};
                 const net = c.network || {};
@@ -6107,6 +6251,10 @@ HTML_PAGE = """<!DOCTYPE html>
                         ${onboardCell}
                         <td>
                             ${(() => {
+                                const delayedLimit = parseInt(c.hb_delayed_interval) || 180;
+                                const warnLimit = parseInt(c.hb_warning_interval) || 300;
+                                const offLimit = parseInt(c.hb_offline_interval) || 600;
+
                                 if (isPending) {
                                     return `
                                         <div class="heartbeat-status-wrap" title="Client site provisioned - awaiting initial connection from physical gateway">
@@ -6117,38 +6265,54 @@ HTML_PAGE = """<!DOCTYPE html>
                                             <div class="hb-timing-sub hb-timing-pending">awaiting first pulse</div>
                                         </div>
                                     `;
-                                } else if (diff > 240) {
+                                } else if (diff > offLimit) {
                                     const off = formatOfflineDetails(c.last_heartbeat, now);
                                     return `
-                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)}">
+                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Everyone including Manufacturer (> ${offLimit}s)">
                                             <span class="heartbeat-pill-badge hb-pill-offline">
                                                 <span class="hb-ball hb-ball-offline"></span>
                                                 <span>OFFLINE</span>
                                             </span>
                                             <div class="hb-timing-sub hb-timing-offline" title="${escapeHtml(off.tooltip)}">${escapeHtml(off.durationText)}</div>
+                                            <div class="hb-timestamp-sub" style="color: #f87171; font-size: 10px; font-weight: 600;">🚨 Warns All & Mfg (&gt;${offLimit}s)</div>
                                             <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
                                         </div>
                                     `;
-                                } else if (diff > 135) {
+                                } else if (diff > warnLimit) {
                                     const off = formatOfflineDetails(c.last_heartbeat, now);
                                     return `
-                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)}">
+                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Integrators + Dealers (> ${warnLimit}s)">
                                             <span class="heartbeat-pill-badge hb-pill-warning">
                                                 <span class="hb-ball hb-ball-warning"></span>
                                                 <span>WARNING</span>
                                             </span>
                                             <div class="hb-timing-sub hb-timing-warning">Delayed (${humanDiff})</div>
+                                            <div class="hb-timestamp-sub" style="color: #fb923c; font-size: 10px; font-weight: 600;">🟠 Warns Dealer & Integrator (&gt;${warnLimit}s)</div>
+                                            <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
+                                        </div>
+                                    `;
+                                } else if (diff > delayedLimit) {
+                                    const off = formatOfflineDetails(c.last_heartbeat, now);
+                                    return `
+                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Integrator (> ${delayedLimit}s)">
+                                            <span class="heartbeat-pill-badge hb-pill-delayed">
+                                                <span class="hb-ball hb-ball-delayed"></span>
+                                                <span>DELAYED</span>
+                                            </span>
+                                            <div class="hb-timing-sub hb-timing-delayed">Delayed (${humanDiff})</div>
+                                            <div class="hb-timestamp-sub" style="color: #facc15; font-size: 10px; font-weight: 600;">🟡 Warns Integrator (&gt;${delayedLimit}s)</div>
                                             <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
                                         </div>
                                     `;
                                 } else {
                                     return `
-                                        <div class="heartbeat-status-wrap" title="Gavasah Gateway connected and streaming telemetry (Last pulse ${humanDiff})">
+                                        <div class="heartbeat-status-wrap" title="Gavasah Gateway connected and streaming telemetry (Last pulse ${humanDiff}) • Watchdog limits: ${delayedLimit}s / ${warnLimit}s / ${offLimit}s">
                                             <span class="heartbeat-pill-badge hb-pill-online">
                                                 <span class="hb-ball hb-ball-online"></span>
                                                 <span>ONLINE</span>
                                             </span>
                                             <div class="hb-timing-sub hb-timing-online">Pulse ${humanDiff}</div>
+                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 10px;">Limits: ${delayedLimit}s / ${warnLimit}s / ${offLimit}s</div>
                                         </div>
                                     `;
                                 }
@@ -7281,6 +7445,9 @@ auto_update_external_url: true`;
             setVal('edit-client-id', client.client_id);
             setVal('edit-name', client.name || '');
             setVal('edit-secret', client.auth_secret || '');
+            setVal('edit-hb-delayed', client.hb_delayed_interval || 180);
+            setVal('edit-hb-warning', client.hb_warning_interval || 300);
+            setVal('edit-hb-offline', client.hb_offline_interval || 600);
 
             const dGroup = document.getElementById('edit-dealer-group');
             if (currentUser.role === 'manufacturer') {
@@ -7346,13 +7513,20 @@ auto_update_external_url: true`;
             const clientId = idEl ? idEl.value : '';
             const remoteToggle = document.getElementById('edit-remote-toggle');
             const client = currentFleetData.find(c => c.client_id === clientId);
+            const hbDelayedInput = document.getElementById('edit-hb-delayed');
+            const hbWarningInput = document.getElementById('edit-hb-warning');
+            const hbOfflineInput = document.getElementById('edit-hb-offline');
+
             const payload = {
                 client_id: clientId,
                 name: (document.getElementById('edit-name') ? document.getElementById('edit-name').value.trim() : ''),
                 knx_ip: (client && client.knx_ip && client.knx_ip !== '192.168.1.100' ? client.knx_ip : ''),
                 knx_port: (client && client.knx_port && client.knx_ip && client.knx_ip !== '192.168.1.100' ? client.knx_port : null),
                 auth_secret: (document.getElementById('edit-secret') ? document.getElementById('edit-secret').value.trim() : ''),
-                remote_enabled: remoteToggle ? remoteToggle.checked : true
+                remote_enabled: remoteToggle ? remoteToggle.checked : true,
+                hb_delayed_interval: hbDelayedInput ? parseInt(hbDelayedInput.value) || 180 : 180,
+                hb_warning_interval: hbWarningInput ? parseInt(hbWarningInput.value) || 300 : 300,
+                hb_offline_interval: hbOfflineInput ? parseInt(hbOfflineInput.value) || 600 : 600
             };
 
             if (currentUser.role === 'manufacturer') {
@@ -8300,14 +8474,14 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             owner = auth.get('owner', {})
             owner_clients = [c for c in c_data.values() if c.get('dealer_id') in ['owner_master', '', None]]
             owner_ints = [it for it in integrators_dict.values() if it.get('dealer_id') in ['owner_master', '', None]]
-            mfg_online_c = sum(1 for c in owner_clients if (now - c.get('last_heartbeat', 0)) <= 180)
+            mfg_online_c = sum(1 for c in owner_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_delayed_interval') or 180))
             mfg_lost_c = len(owner_clients) - mfg_online_c
 
             mfg_clients_list = [{
                 'client_id': c.get('client_id'),
                 'name': c.get('name', c.get('client_id')),
                 'domain': c.get('domain', ''),
-                'status': 'online' if (now - c.get('last_heartbeat', 0)) <= 180 else 'offline',
+                'status': 'online' if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_delayed_interval') or 180) else 'offline',
                 'last_heartbeat': c.get('last_heartbeat', 0)
             } for c in sorted(owner_clients, key=lambda x: str(x.get('name', '')).lower())]
 
@@ -8334,14 +8508,14 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                 dealer_clients = [c for c in c_data.values() if c.get('dealer_id') == did]
                 dealer_ints = [it for it in integrators_dict.values() if it.get('dealer_id') == did]
                 
-                online_c = sum(1 for c in dealer_clients if (now - c.get('last_heartbeat', 0)) <= 180)
+                online_c = sum(1 for c in dealer_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_delayed_interval') or 180))
                 lost_c = len(dealer_clients) - online_c
 
                 dlr_clients_list = [{
                     'client_id': c.get('client_id'),
                     'name': c.get('name', c.get('client_id')),
                     'domain': c.get('domain', ''),
-                    'status': 'online' if (now - c.get('last_heartbeat', 0)) <= 180 else 'offline',
+                    'status': 'online' if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_delayed_interval') or 180) else 'offline',
                     'last_heartbeat': c.get('last_heartbeat', 0)
                 } for c in sorted(dealer_clients, key=lambda x: str(x.get('name', '')).lower())]
 
@@ -8390,7 +8564,7 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                     d_name = 'Master Manufacturer (Direct)'
 
                 supervised_clients = [c for c in c_data.values() if c.get('integrator_id') == iid]
-                online_c = sum(1 for c in supervised_clients if (now - c.get('last_heartbeat', 0)) <= 180)
+                online_c = sum(1 for c in supervised_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_delayed_interval') or 180))
                 lost_c = len(supervised_clients) - online_c
 
                 res.append({
@@ -10002,6 +10176,15 @@ PersistentKeepalive = 25
                     print(f"[!] Error releasing ETS port on client update: {ex}")
             if body.get('auth_secret'):
                 client['auth_secret'] = body['auth_secret'].strip()
+            if 'hb_delayed_interval' in body:
+                try: client['hb_delayed_interval'] = max(30, int(body['hb_delayed_interval']))
+                except: pass
+            if 'hb_warning_interval' in body:
+                try: client['hb_warning_interval'] = max(60, int(body['hb_warning_interval']))
+                except: pass
+            if 'hb_offline_interval' in body:
+                try: client['hb_offline_interval'] = max(90, int(body['hb_offline_interval']))
+                except: pass
 
             auth = load_auth_state()
             if user['role'] == 'manufacturer' and 'dealer_id' in body:
