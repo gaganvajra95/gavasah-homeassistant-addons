@@ -219,14 +219,13 @@ def execute_subsystem_remediation(subsystem, tech_data, opts, attempt_num):
         elif subsystem == "failed_core_entries":
             failed_list = tech_data.get("failed_core_entries", [])
             reloaded_titles = []
-            entries = get_ha_config_entries()
+            seen_ids = set()
             for f in failed_list:
-                fdomain = f.get("domain")
-                matched = [e for e in entries if e.get("domain") == fdomain]
-                for me in matched:
-                    eid = me.get("entry_id")
-                    if eid and reload_ha_config_entry(eid):
-                        reloaded_titles.append(f.get("title", fdomain))
+                eid = f.get("entry_id")
+                if eid and eid not in seen_ids:
+                    seen_ids.add(eid)
+                    if reload_ha_config_entry(eid):
+                        reloaded_titles.append(f.get("title", f.get("domain", "entry")))
             if reloaded_titles:
                 return f"Reloaded failed core integration(s): {', '.join(reloaded_titles)}"
             return "Reloaded failed integration entries"
@@ -1162,6 +1161,8 @@ def detect_all_technologies(opts):
 
         # Track any failed/error integration (ignore user-disabled or discovery-ignored)
         if state in ['setup_error', 'setup_retry', 'migration_error', 'not_loaded', 'failed_unload'] and not e.get('disabled_by') and e.get('source') != 'ignore':
+            if domain in ['knx', 'lutron', 'lutron_caseta', 'lutron_homeworks', 'matter', 'coolmaster', 'coolmasternet', 'coolautomation', 'zha', 'zigbee']:
+                continue
             failed_core_entries.append({
                 "entry_id": e.get('entry_id'),
                 "domain": domain,

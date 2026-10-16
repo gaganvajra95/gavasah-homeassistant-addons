@@ -7117,11 +7117,24 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                         }
                                     }
 
-                                    // 4. Lutron
+                                    // 4. Lutron (Grouped & status aware: online / degraded / offline)
                                     if (lutron.detected || (lutron.entries && lutron.entries.length > 0)) {
-                                        const isLutronOffline = Boolean(lutron.status === 'offline' || lutron.offline_reason);
-                                        const lTitle = lutron.entries && lutron.entries.length > 0 ? lutron.entries.map(e => e.title || e.domain).join(', ') : 'Lutron Repeater';
-                                        if (isLutronOffline) {
+                                        const lEntries = lutron.entries || [];
+                                        const runningL = lEntries.filter(e => e.state === 'loaded' || e.online === true);
+                                        const failedL = lEntries.filter(e => e.state !== 'loaded' && e.online === false);
+                                        const isLutronOffline = Boolean(lutron.status === 'offline' || lutron.offline_reason || (lEntries.length > 0 && runningL.length === 0));
+                                        const lTitle = lEntries.length > 0 ? lEntries.map(e => e.title || e.domain).join(', ') : 'Lutron Repeater';
+                                        
+                                        if (lEntries.length > 1) {
+                                            if (failedL.length === 0) {
+                                                badges.push(`<span class="tech-badge tech-lutron tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'lutron', event)" style="cursor: pointer;" title="Lutron Online (${escapeHtml(lTitle)}) • Click for diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>Lutron (${lEntries.length}x Online)</span>`);
+                                            } else if (runningL.length > 0) {
+                                                const errSummary = failedL.map(e => `${e.title || 'Bridge'}: ${e.state || 'offline'}`).join(', ');
+                                                badges.push(`<span class="tech-badge tech-status-degraded" onclick="openIntegrationDiagnostics('${c.client_id}', 'lutron', event)" style="cursor: pointer;" title="Lutron Degraded • ${escapeHtml(errSummary)} • Click for diagnostics"><span class="tech-dot" style="background:#f59e0b; box-shadow: 0 0 6px #f59e0b;"></span>Lutron (${runningL.length}/${lEntries.length} Online)</span>`);
+                                            } else {
+                                                badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'lutron', event)" style="cursor: pointer;" title="Lutron Offline • Reason: ${escapeHtml(lutron.offline_reason || 'Bridges unreachable')} • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>Lutron (${lEntries.length}x Offline)</span>`);
+                                            }
+                                        } else if (isLutronOffline) {
                                             badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'lutron', event)" style="cursor: pointer;" title="Lutron Offline • Reason: ${escapeHtml(lutron.offline_reason || 'Repeater unreachable')} • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>Lutron Offline</span>`);
                                         } else {
                                             badges.push(`<span class="tech-badge tech-lutron tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'lutron', event)" style="cursor: pointer;" title="Lutron Online (${escapeHtml(lTitle)}) • Click for diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>Lutron (${escapeHtml(lutron.type || 'Caséta')})</span>`);
@@ -7142,13 +7155,22 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                     const coolmaster = tech.coolmaster || {};
                                     if (coolmaster.detected || (coolmaster.entries && coolmaster.entries.length > 0)) {
                                         const cmEntries = coolmaster.entries || [];
-                                        const failedCm = cmEntries.find(e => e.state === 'setup_error' || e.state === 'setup_retry' || e.state === 'not_loaded' || e.online === false);
-                                        const isCmOffline = Boolean(coolmaster.status === 'offline' || coolmaster.status === 'setup_retry' || coolmaster.status === 'setup_error' || coolmaster.offline_reason || failedCm);
+                                        const runningCm = cmEntries.filter(e => e.state === 'loaded' || e.online === true);
+                                        const failedCm = cmEntries.filter(e => e.state === 'setup_error' || e.state === 'setup_retry' || e.state === 'not_loaded' || e.online === false);
+                                        const isCmOffline = Boolean(coolmaster.status === 'offline' || coolmaster.status === 'setup_retry' || coolmaster.status === 'setup_error' || coolmaster.offline_reason || failedCm.length > 0);
                                         const cmTitle = cmEntries.length > 0 ? cmEntries.map(e => e.title || `${e.host || ''}:${e.port || 10102}`).join(', ') : 'CoolMaster Gateway';
                                         const cmHealing = shSubsystems['coolmaster'];
-                                        const effectiveReason = coolmaster.offline_reason || (failedCm ? (failedCm.reason || `Integration in '${failedCm.state}' state`) : 'HVAC Gateway / Line Faulty');
+                                        const effectiveReason = coolmaster.offline_reason || (failedCm.length > 0 ? (failedCm[0].reason || `Integration in '${failedCm[0].state}' state`) : 'HVAC Gateway / Line Faulty');
                                         if (cmHealing && cmHealing.status === 'healing' && (cmHealing.attempts || 0) <= 5) {
                                             badges.push(`<span class="tech-badge tech-status-healing" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="Autonomous Self-Healing in Progress (Attempt ${cmHealing.attempts}/5: ${escapeHtml(cmHealing.last_action || 'Remediating')}) • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#facc15; box-shadow: 0 0 6px #facc15;"></span>CoolMaster Healing (${cmHealing.attempts}/5)</span>`);
+                                        } else if (cmEntries.length > 1) {
+                                            if (failedCm.length === 0) {
+                                                badges.push(`<span class="tech-badge tech-coolmaster tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="CoolMasterNet Online (${escapeHtml(cmTitle)}) • Click for diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>CoolMaster (${cmEntries.length}x HVAC Online)</span>`);
+                                            } else if (runningCm.length > 0) {
+                                                badges.push(`<span class="tech-badge tech-status-degraded" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="CoolMaster Degraded • ${escapeHtml(effectiveReason)} • Click for diagnostics"><span class="tech-dot" style="background:#f59e0b; box-shadow: 0 0 6px #f59e0b;"></span>CoolMaster (${runningCm.length}/${cmEntries.length} Online)</span>`);
+                                            } else {
+                                                badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="CoolMaster Offline / Faulty • Reason: ${escapeHtml(effectiveReason)} • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>CoolMaster (${cmEntries.length}x Offline)</span>`);
+                                            }
                                         } else if (isCmOffline) {
                                             badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="CoolMaster Offline / Faulty • Reason: ${escapeHtml(effectiveReason)} • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>CoolMaster Offline</span>`);
                                         } else {
@@ -7156,10 +7178,37 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                         }
                                     }
 
-                                    // 6. Generic Failed Integrations
+                                    // 7. Generic Core Integrations (Grouped by Domain, identical to multiple Zigbee2MQTT pattern)
                                     if (tech.failed_core_entries && tech.failed_core_entries.length > 0) {
+                                        const dedicatedDomains = new Set(['knx', 'lutron', 'lutron_caseta', 'lutron_homeworks', 'matter', 'coolmaster', 'coolmasternet', 'coolautomation', 'zha', 'zigbee']);
+                                        const grouped = {};
                                         for (const fentry of tech.failed_core_entries) {
-                                            badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'core_${fentry.domain}', event)" style="cursor: pointer;" title="${escapeHtml(fentry.title)}: ${escapeHtml(fentry.reason)}"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444;"></span>${escapeHtml(fentry.domain)} Failed</span>`);
+                                            if (!fentry || !fentry.domain || dedicatedDomains.has(fentry.domain)) continue;
+                                            if (!grouped[fentry.domain]) grouped[fentry.domain] = [];
+                                            grouped[fentry.domain].push(fentry);
+                                        }
+                                        const domainPrettyNames = {
+                                            'bluesound': 'Bluesound',
+                                            'sonos': 'Sonos',
+                                            'denonavr': 'Denon AVR',
+                                            'heos': 'HEOS',
+                                            'samsungtv': 'Samsung TV',
+                                            'lg_webos': 'LG webOS TV',
+                                            'apple_tv': 'Apple TV',
+                                            'androidtv': 'Android TV',
+                                            'tuya': 'Tuya',
+                                            'shelly': 'Shelly',
+                                            'yeelight': 'Yeelight',
+                                            'tasmota': 'Tasmota',
+                                            'mqtt': 'MQTT',
+                                            'wled': 'WLED'
+                                        };
+                                        for (const [fDomain, fEntries] of Object.entries(grouped)) {
+                                            const pretty = domainPrettyNames[fDomain] || (fDomain.charAt(0).toUpperCase() + fDomain.slice(1));
+                                            const count = fEntries.length;
+                                            const badgeLabel = count > 1 ? `${pretty} (${count}x Offline)` : `${pretty} Offline`;
+                                            const summary = fEntries.map(e => `${e.title || fDomain}: ${e.reason || e.state || 'Failed'}`).join(' • ');
+                                            badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'core_${fDomain}', event)" style="cursor: pointer;" title="${escapeHtml(pretty)} Offline (${count} endpoint${count > 1 ? 's' : ''}) • ${escapeHtml(summary)} • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>${escapeHtml(badgeLabel)}</span>`);
                                         }
                                     }
 
@@ -8964,11 +9013,13 @@ All active sessions for this integrator will be terminated immediately.` : '';
                 }
             } else if (techKey === 'lutron') {
                 techName = 'Lutron Subsystem';
-                isOnline = !(lutron.status === 'offline' || lutron.offline_reason);
-                endpoint = lutron.entries && lutron.entries.length > 0 ? lutron.entries.map(e => e.title || e.domain).join(', ') : 'Lutron Smart Bridge';
+                const lEntries = lutron.entries || [];
+                const failedL = lEntries.filter(e => e.state !== 'loaded' && e.online === false);
+                isOnline = !(lutron.status === 'offline' || lutron.offline_reason || failedL.length > 0);
+                endpoint = lEntries.length > 0 ? lEntries.map(e => `${e.title || e.domain} (${e.state || (e.online ? 'loaded' : 'offline')})`).join(', ') : 'Lutron Smart Bridge';
                 if (!isOnline) {
-                    reason = lutron.offline_reason || 'Lutron Smart Bridge / Repeater unreachable';
-                    fixAction = 'Verify the IP address of the Lutron Smart Bridge/Repeater and ensure ethernet cabling to the router is active.';
+                    reason = lutron.offline_reason || (failedL.length > 0 ? failedL.map(e => `${e.title || 'Bridge'}: ${e.reason || e.state || 'offline'}`).join('; ') : 'Lutron Smart Bridge / Repeater unreachable');
+                    fixAction = 'Verify the IP address and power of each Lutron Smart Bridge/Repeater and ensure ethernet cabling to the router/switch is active.';
                 } else {
                     fixAction = 'Lutron bridge integration is loaded and responding to Home Assistant commands.';
                 }
@@ -8994,6 +9045,35 @@ All active sessions for this integrator will be terminated immediately.` : '';
                     fixAction = 'Verify RS485 communication line between CoolMasterNet and VRF/VRV indoor units (check for "No UID" / Line error), confirm unit addressing, check power to the bridge, and verify TCP port 10102 reachability.';
                 } else {
                     fixAction = 'CoolMasterNet HVAC bridge is connected and communicating with VRF/VRV air conditioning units.';
+                }
+            } else if (techKey.startsWith('core_')) {
+                const coreDomain = techKey.slice(5);
+                const domainPrettyNames = {
+                    'bluesound': 'Bluesound Multi-Room Audio',
+                    'sonos': 'Sonos Multi-Room Audio',
+                    'denonavr': 'Denon AVR Audio',
+                    'heos': 'HEOS Multi-Room Audio',
+                    'samsungtv': 'Samsung Smart TV',
+                    'lg_webos': 'LG webOS Smart TV',
+                    'apple_tv': 'Apple TV',
+                    'androidtv': 'Android TV',
+                    'tuya': 'Tuya Smart IoT',
+                    'shelly': 'Shelly Smart Relays',
+                    'yeelight': 'Yeelight Smart Lighting',
+                    'tasmota': 'Tasmota Smart IoT',
+                    'mqtt': 'MQTT Broker Connection',
+                    'wled': 'WLED Addressable LEDs'
+                };
+                techName = domainPrettyNames[coreDomain] || `${coreDomain.charAt(0).toUpperCase() + coreDomain.slice(1)} Subsystem`;
+                const allFailed = (tech.failed_core_entries || []).filter(e => e.domain === coreDomain);
+                isOnline = allFailed.length === 0;
+                if (allFailed.length > 0) {
+                    endpoint = allFailed.map(e => `${e.title || coreDomain} (${e.state || 'offline'})`).join(', ');
+                    reason = allFailed.map(e => `${e.title || coreDomain}: ${e.reason || e.state || 'offline'}`).join('; ');
+                    fixAction = `Verify local network connectivity, IP addressing, and power status for ${techName} device(s) on the client LAN. Check if device is powered on and accessible.`;
+                } else {
+                    endpoint = `${techName} Entry`;
+                    fixAction = `${techName} integration is loaded and communicating normally.`;
                 }
             }
 
