@@ -5,6 +5,14 @@ All notable changes to the **Gavasah Cloud Agent** Home Assistant Add-on will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.7] - 2026-10-16
+
+### Fixed
+- **Complete Ignored Integration Purge**: Comprehensive suppression of all ignored (`source: "ignore"`, `state: "ignored"`) and user-disabled (`disabled_by`) integrations across HA Core config entries, Lutron bridges, CoolMaster HVAC, and ZHA discovery. Ignored integrations are completely excluded from telemetry and dashboard badges.
+- **Strict 5-Attempt Self-Healing Cap & Counter Lock**: Autonomous self-healing now strictly stops after 5 attempts and dispatches a persistent alert notification to Home Assistant Core. In-memory attempt counter is permanently locked and will NEVER retry or reset during the add-on runtime; the counter only resets when the client gateway or add-on container restarts.
+
+---
+
 ## [1.2.6] - 2026-10-16
 
 ### Fixed

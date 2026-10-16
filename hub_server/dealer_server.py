@@ -6692,6 +6692,14 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
             }
         });
 
+        function isEntryIgnored(e) {
+            if (!e || typeof e !== 'object') return true;
+            if (String(e.source || '').trim().toLowerCase() === 'ignore') return true;
+            if (String(e.state || '').trim().toLowerCase() === 'ignored') return true;
+            if (e.disabled_by) return true;
+            return false;
+        }
+
         function renderTable(data) {
             if (!Array.isArray(data)) return;
 
@@ -6913,6 +6921,17 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                 if (c.technologies) {
                                     for (const [techKey, techVal] of Object.entries(c.technologies)) {
                                         if (techVal && techVal.detected) {
+                                            if (techKey === 'lutron') {
+                                                const validL = (techVal.entries || []).filter(e => !isEntryIgnored(e));
+                                                if (validL.length > 0 && validL.every(e => e.state === 'loaded' || e.online === true)) {
+                                                    continue;
+                                                }
+                                            } else if (techKey === 'coolmaster') {
+                                                const validCm = (techVal.entries || []).filter(e => !isEntryIgnored(e));
+                                                if (validCm.length > 0 && validCm.every(e => e.state === 'loaded' || e.online === true)) {
+                                                    continue;
+                                                }
+                                            }
                                             if (techVal.status === 'error' || techVal.status === 'offline' || techVal.healthy === false || techVal.state === 'failed') {
                                                 const prettyName = techKey === 'coolmaster' ? 'CoolMaster HVAC' : techKey.toUpperCase();
                                                 integrationIssues.push(`${prettyName} failure`);
@@ -6928,10 +6947,10 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                 const exhaustedHealing = [];
 
                                 for (const [subKey, subInfo] of Object.entries(shSubsystems)) {
-                                    if (subInfo && subInfo.status === 'healing' && (subInfo.attempts || 0) <= 5) {
+                                    if (subInfo && subInfo.status === 'healing' && (subInfo.attempts || 0) < 5) {
                                         const pretty = subKey === 'coolmaster' ? 'CoolMaster HVAC' : (subKey === 'failed_core_entries' ? 'Core Entry' : subKey.toUpperCase());
                                         activeHealing.push({ key: subKey, name: pretty, attempt: subInfo.attempts || 1, maxAttempts: subInfo.max_attempts || 5, action: subInfo.last_action });
-                                    } else if (subInfo && (subInfo.status === 'escalated' || (subInfo.attempts || 0) >= 5)) {
+                                    } else if (subInfo && (subInfo.status === 'exhausted' || subInfo.status === 'escalated' || (subInfo.attempts || 0) >= 5)) {
                                         const pretty = subKey === 'coolmaster' ? 'CoolMaster HVAC' : (subKey === 'failed_core_entries' ? 'Core Entry' : subKey.toUpperCase());
                                         exhaustedHealing.push({ key: subKey, name: pretty, attempt: subInfo.attempts || 5, maxAttempts: subInfo.max_attempts || 5 });
                                     }
@@ -6988,16 +7007,16 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                         </div>
                                     `;
                                 } else if (diff <= delayedLimit && isHealingExhausted) {
-                                    // Self-Healing exhausted after 5 attempts: Escalate to partners & HQ
+                                    // Self-Healing exhausted after 5 attempts: Halted & Notified
                                     const primaryExh = exhaustedHealing[0];
                                     return `
-                                        <div class="heartbeat-status-wrap" title="Autonomous Self-Healing Exhausted: 5/5 remediation attempts failed for ${escapeHtml(primaryExh.name)} • Escalated to Integrator, Dealer, and Manufacturer HQ">
+                                        <div class="heartbeat-status-wrap" title="Autonomous Self-Healing Halted: 5/5 remediation attempts failed for ${escapeHtml(primaryExh.name)} • Halted &amp; Notified • Resets only on gateway or add-on restart">
                                             <span class="heartbeat-pill-badge hb-pill-offline" style="background: rgba(239, 68, 68, 0.2); color: #f87171; border-color: rgba(239, 68, 68, 0.4);">
                                                 <span class="hb-ball hb-ball-offline"></span>
                                                 <span>HEALING FAILED</span>
                                             </span>
                                             <div class="hb-timing-sub hb-timing-offline">${escapeHtml(primaryExh.name)} (5/5 Failed)</div>
-                                            <div class="hb-timestamp-sub" style="color: #f87171; font-size: 10px; font-weight: 600;">🚨 Escalated to Partners &amp; Mfg</div>
+                                            <div class="hb-timestamp-sub" style="color: #f87171; font-size: 10px; font-weight: 600;">🛑 Halted • Awaiting Restart</div>
                                             <div class="hb-timestamp-sub" style="color: #64748b; font-size: 9px;">Pulse ${humanDiff}</div>
                                         </div>
                                     `;
@@ -7118,14 +7137,19 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                     }
 
                                     // 4. Lutron (Grouped & status aware: online / degraded / offline)
-                                    if (lutron.detected || (lutron.entries && lutron.entries.length > 0)) {
-                                        const lEntries = lutron.entries || [];
+                                    const lEntries = (lutron.entries || []).filter(e => !isEntryIgnored(e));
+                                    if (lutron.detected && lEntries.length > 0) {
                                         const runningL = lEntries.filter(e => e.state === 'loaded' || e.online === true);
                                         const failedL = lEntries.filter(e => e.state !== 'loaded' && e.online === false);
                                         const isLutronOffline = Boolean(lutron.status === 'offline' || lutron.offline_reason || (lEntries.length > 0 && runningL.length === 0));
                                         const lTitle = lEntries.length > 0 ? lEntries.map(e => e.title || e.domain).join(', ') : 'Lutron Repeater';
-                                        
-                                        if (lEntries.length > 1) {
+                                        const lutHealing = shSubsystems['lutron'];
+
+                                        if (lutHealing && lutHealing.status === 'healing' && (lutHealing.attempts || 0) < 5) {
+                                            badges.push(`<span class="tech-badge tech-status-healing" onclick="openIntegrationDiagnostics('${c.client_id}', 'lutron', event)" style="cursor: pointer;" title="Autonomous Self-Healing in Progress (Attempt ${lutHealing.attempts}/5: ${escapeHtml(lutHealing.last_action || 'Remediating')}) • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#facc15; box-shadow: 0 0 6px #facc15;"></span>Lutron Healing (${lutHealing.attempts}/5)</span>`);
+                                        } else if (lutHealing && (lutHealing.status === 'exhausted' || (lutHealing.attempts || 0) >= 5)) {
+                                            badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'lutron', event)" style="cursor: pointer;" title="Autonomous Self-Healing Halted (5/5 Attempts Failed) • Notified • Resets on restart • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>Lutron (5/5 Healing Failed)</span>`);
+                                        } else if (lEntries.length > 1) {
                                             if (failedL.length === 0) {
                                                 badges.push(`<span class="tech-badge tech-lutron tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'lutron', event)" style="cursor: pointer;" title="Lutron Online (${escapeHtml(lTitle)}) • Click for diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>Lutron (${lEntries.length}x Online)</span>`);
                                             } else if (runningL.length > 0) {
@@ -7153,16 +7177,18 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
 
                                     // 6. CoolMaster (CoolMasterNet / CoolAutomation VRV/VRF HVAC)
                                     const coolmaster = tech.coolmaster || {};
-                                    if (coolmaster.detected || (coolmaster.entries && coolmaster.entries.length > 0)) {
-                                        const cmEntries = coolmaster.entries || [];
+                                    const cmEntries = (coolmaster.entries || []).filter(e => !isEntryIgnored(e));
+                                    if (coolmaster.detected && cmEntries.length > 0) {
                                         const runningCm = cmEntries.filter(e => e.state === 'loaded' || e.online === true);
                                         const failedCm = cmEntries.filter(e => e.state === 'setup_error' || e.state === 'setup_retry' || e.state === 'not_loaded' || e.online === false);
                                         const isCmOffline = Boolean(coolmaster.status === 'offline' || coolmaster.status === 'setup_retry' || coolmaster.status === 'setup_error' || coolmaster.offline_reason || failedCm.length > 0);
                                         const cmTitle = cmEntries.length > 0 ? cmEntries.map(e => e.title || `${e.host || ''}:${e.port || 10102}`).join(', ') : 'CoolMaster Gateway';
                                         const cmHealing = shSubsystems['coolmaster'];
                                         const effectiveReason = coolmaster.offline_reason || (failedCm.length > 0 ? (failedCm[0].reason || `Integration in '${failedCm[0].state}' state`) : 'HVAC Gateway / Line Faulty');
-                                        if (cmHealing && cmHealing.status === 'healing' && (cmHealing.attempts || 0) <= 5) {
+                                        if (cmHealing && cmHealing.status === 'healing' && (cmHealing.attempts || 0) < 5) {
                                             badges.push(`<span class="tech-badge tech-status-healing" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="Autonomous Self-Healing in Progress (Attempt ${cmHealing.attempts}/5: ${escapeHtml(cmHealing.last_action || 'Remediating')}) • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#facc15; box-shadow: 0 0 6px #facc15;"></span>CoolMaster Healing (${cmHealing.attempts}/5)</span>`);
+                                        } else if (cmHealing && (cmHealing.status === 'exhausted' || (cmHealing.attempts || 0) >= 5)) {
+                                            badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="Autonomous Self-Healing Halted (5/5 Attempts Failed) • Notified • Resets on restart • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>CoolMaster (5/5 Healing Failed)</span>`);
                                         } else if (cmEntries.length > 1) {
                                             if (failedCm.length === 0) {
                                                 badges.push(`<span class="tech-badge tech-coolmaster tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="CoolMasterNet Online (${escapeHtml(cmTitle)}) • Click for diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>CoolMaster (${cmEntries.length}x HVAC Online)</span>`);
@@ -7183,7 +7209,7 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                         const dedicatedDomains = new Set(['knx', 'lutron', 'lutron_caseta', 'lutron_homeworks', 'matter', 'coolmaster', 'coolmasternet', 'coolautomation', 'zha', 'zigbee']);
                                         const grouped = {};
                                         for (const fentry of tech.failed_core_entries) {
-                                            if (!fentry || !fentry.domain || dedicatedDomains.has(fentry.domain)) continue;
+                                            if (!fentry || !fentry.domain || dedicatedDomains.has(fentry.domain) || isEntryIgnored(fentry)) continue;
                                             if (!grouped[fentry.domain]) grouped[fentry.domain] = [];
                                             grouped[fentry.domain].push(fentry);
                                         }
@@ -9013,7 +9039,7 @@ All active sessions for this integrator will be terminated immediately.` : '';
                 }
             } else if (techKey === 'lutron') {
                 techName = 'Lutron Subsystem';
-                const lEntries = lutron.entries || [];
+                const lEntries = (lutron.entries || []).filter(e => !isEntryIgnored(e));
                 const failedL = lEntries.filter(e => e.state !== 'loaded' && e.online === false);
                 isOnline = !(lutron.status === 'offline' || lutron.offline_reason || failedL.length > 0);
                 endpoint = lEntries.length > 0 ? lEntries.map(e => `${e.title || e.domain} (${e.state || (e.online ? 'loaded' : 'offline')})`).join(', ') : 'Lutron Smart Bridge';
@@ -9036,7 +9062,7 @@ All active sessions for this integrator will be terminated immediately.` : '';
             } else if (techKey === 'coolmaster') {
                 techName = 'CoolMaster HVAC Subsystem';
                 const coolmaster = tech.coolmaster || {};
-                const cmEntries = coolmaster.entries || [];
+                const cmEntries = (coolmaster.entries || []).filter(e => !isEntryIgnored(e));
                 const failedCm = cmEntries.find(e => e.state === 'setup_error' || e.state === 'setup_retry' || e.state === 'not_loaded' || e.online === false);
                 isOnline = !(coolmaster.status === 'offline' || coolmaster.status === 'setup_retry' || coolmaster.status === 'setup_error' || coolmaster.offline_reason || failedCm);
                 endpoint = cmEntries.length > 0 ? cmEntries.map(e => e.title || `${e.host || ''}:${e.port || 10102}`).join(', ') : 'CoolMasterNet Bridge';
@@ -9065,7 +9091,7 @@ All active sessions for this integrator will be terminated immediately.` : '';
                     'wled': 'WLED Addressable LEDs'
                 };
                 techName = domainPrettyNames[coreDomain] || `${coreDomain.charAt(0).toUpperCase() + coreDomain.slice(1)} Subsystem`;
-                const allFailed = (tech.failed_core_entries || []).filter(e => e.domain === coreDomain);
+                const allFailed = (tech.failed_core_entries || []).filter(e => e.domain === coreDomain && !isEntryIgnored(e));
                 isOnline = allFailed.length === 0;
                 if (allFailed.length > 0) {
                     endpoint = allFailed.map(e => `${e.title || coreDomain} (${e.state || 'offline'})`).join(', ');
@@ -9141,7 +9167,7 @@ All active sessions for this integrator will be terminated immediately.` : '';
                         const shSub = (shData.subsystems && shData.subsystems[techKey]) || {};
                         const recs = (shData.recent_recoveries || []).filter(r => r.subsystem === techKey || techKey === 'all');
 
-                        if (shSub && shSub.status === 'healing') {
+                        if (shSub && shSub.status === 'healing' && (shSub.attempts || 0) < 5) {
                             return `
                                 <div style="margin-top: 14px; background: rgba(234, 179, 8, 0.1); border: 1px solid rgba(234, 179, 8, 0.3); border-radius: 8px; padding: 12px;">
                                     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
@@ -9152,6 +9178,19 @@ All active sessions for this integrator will be terminated immediately.` : '';
                                     </div>
                                     <div style="font-size: 11px; color: #cbd5e1; margin-bottom: 4px;"><strong>Remediation Action:</strong> ${escapeHtml(shSub.last_action || 'Executing auto-recovery reload')}</div>
                                     <div style="font-size: 10px; color: #94a3b8;">Cooldown delay: 60s between attempts. Alarms to dealers/integrators are suppressed while healing.</div>
+                                </div>
+                            `;
+                        } else if (shSub && (shSub.status === 'exhausted' || shSub.status === 'escalated' || (shSub.attempts || 0) >= 5)) {
+                            return `
+                                <div style="margin-top: 14px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 12px;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                                        <strong style="color: #f87171; font-size: 13px; display: flex; align-items: center; gap: 6px;">
+                                            <span class="tech-dot tech-dot-pulsing" style="background: #ef4444;"></span> Autonomous Self-Healing Halted (5/5 Attempts Failed)
+                                        </strong>
+                                        <span style="background: rgba(239, 68, 68, 0.2); color: #f87171; border-radius: 4px; padding: 2px 6px; font-size: 10px; font-weight: 700;">Halted &amp; Notified</span>
+                                    </div>
+                                    <div style="font-size: 11px; color: #cbd5e1; margin-bottom: 4px;"><strong>Remediation Status:</strong> Self-healing completed 5 attempts and halted. Notification dispatched to HA Core. Counter is locked to prevent endless retry loops.</div>
+                                    <div style="font-size: 10px; color: #94a3b8;">Manual inspection required. Counter and self-healing will only reset after the Gavasah Gateway or add-on restarts.</div>
                                 </div>
                             `;
                         } else if (recs.length > 0) {
@@ -11812,10 +11851,71 @@ PersistentKeepalive = 25
                 try: tech_dict = json.loads(client.get('technologies_json') or '{}')
                 except: tech_dict = {}
 
+            if tech_dict and isinstance(tech_dict, dict):
+                # Hard server-side filter: Completely strip and ignore any entries marked source == 'ignore', state == 'ignored', or disabled_by
+                def _is_entry_ignored(e):
+                    if not isinstance(e, dict): return True
+                    if str(e.get('source', '')).strip().lower() == 'ignore': return True
+                    if str(e.get('state', '')).strip().lower() == 'ignored': return True
+                    if e.get('disabled_by'): return True
+                    return False
+
+                # 1. Sanitize Lutron entries
+                if 'lutron' in tech_dict and isinstance(tech_dict['lutron'], dict):
+                    raw_entries = tech_dict['lutron'].get('entries') or []
+                    clean_entries = [e for e in raw_entries if not _is_entry_ignored(e)]
+                    tech_dict['lutron']['entries'] = clean_entries
+                    if not clean_entries:
+                        tech_dict['lutron']['detected'] = False
+                        tech_dict['lutron']['status'] = 'not_configured'
+                        tech_dict['lutron']['offline_reason'] = ''
+                    else:
+                        all_online = all(e.get('state') == 'loaded' or e.get('online') is True for e in clean_entries)
+                        any_online = any(e.get('state') == 'loaded' or e.get('online') is True for e in clean_entries)
+                        if all_online:
+                            tech_dict['lutron']['status'] = 'online'
+                            tech_dict['lutron']['offline_reason'] = ''
+                        elif any_online:
+                            tech_dict['lutron']['status'] = 'degraded'
+                        else:
+                            tech_dict['lutron']['status'] = 'offline'
+
+                # 2. Sanitize CoolMaster entries
+                if 'coolmaster' in tech_dict and isinstance(tech_dict['coolmaster'], dict):
+                    raw_cm = tech_dict['coolmaster'].get('entries') or []
+                    clean_cm = [e for e in raw_cm if not _is_entry_ignored(e)]
+                    tech_dict['coolmaster']['entries'] = clean_cm
+                    if not clean_cm:
+                        tech_dict['coolmaster']['detected'] = False
+                        tech_dict['coolmaster']['status'] = 'not_configured'
+                        tech_dict['coolmaster']['offline_reason'] = ''
+
+                # 3. Sanitize failed_core_entries
+                if 'failed_core_entries' in tech_dict and isinstance(tech_dict['failed_core_entries'], list):
+                    tech_dict['failed_core_entries'] = [e for e in tech_dict['failed_core_entries'] if not _is_entry_ignored(e)]
+
+                # 4. Sanitize self_healing
+                sh_data = body.get('self_healing')
+                if sh_data and isinstance(sh_data, dict):
+                    sh_subs = sh_data.get('subsystems') or {}
+                    # If lutron is healthy, ensure its self_healing status is not stuck in healing/escalated
+                    if tech_dict.get('lutron', {}).get('status') == 'online' and 'lutron' in sh_subs:
+                        sh_subs['lutron']['status'] = 'idle'
+                        sh_subs['lutron']['attempts'] = 0
+                    
+                    # For all subsystems: enforce user directive: after 5 attempts, status is exhausted, do not retry
+                    for s_k, s_v in sh_subs.items():
+                        if isinstance(s_v, dict):
+                            if s_v.get('attempts', 0) >= 5 or s_v.get('status') in ['escalated', 'exhausted']:
+                                s_v['status'] = 'exhausted'
+                                s_v['attempts'] = max(5, s_v.get('attempts', 5))
+                    tech_dict['self_healing'] = sh_data
+            elif body.get('self_healing') and isinstance(body.get('self_healing'), dict):
+                tech_dict['self_healing'] = body.get('self_healing')
+
             # Capture Autonomous Self-Healing Engine telemetry
-            sh_data = body.get('self_healing')
+            sh_data = tech_dict.get('self_healing')
             if sh_data and isinstance(sh_data, dict):
-                tech_dict['self_healing'] = sh_data
                 recs = sh_data.get('recent_recoveries') or []
                 if recs:
                     latest = recs[0]
