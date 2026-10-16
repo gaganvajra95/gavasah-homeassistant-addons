@@ -281,6 +281,33 @@ if cid:
 EOF
 
 # 4. Optional KNX UDP & TCP forwarders for remote ETS programming (supports dedicated LAN KNX devices)
+if [ -z "$KNX_IP" ] || [ "$KNX_IP" = "null" ] || [ "$KNX_IP" = "none" ] || [ "$KNX_IP" = "empty" ]; then
+    DETECTED_KNX=$(python3 -c "
+import json, os
+for path in ['/homeassistant/.storage/core.config_entries', '/config/.storage/core.config_entries']:
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                d = json.load(f)
+            for e in d.get('data', {}).get('entries', []):
+                if e.get('domain') == 'knx':
+                    edata = e.get('data', {})
+                    eopts = e.get('options', {})
+                    host = edata.get('host') or edata.get('gateway_ip') or eopts.get('host') or eopts.get('gateway_ip')
+                    port = edata.get('port') or edata.get('gateway_port') or eopts.get('port') or eopts.get('gateway_port') or 3671
+                    if host and str(host).strip() not in ['', '127.0.0.1', 'localhost', '0.0.0.0', 'None']:
+                        print(f'{str(host).strip()}:{int(port)}')
+                        break
+        except Exception:
+            pass
+" 2>/dev/null)
+    if [ -n "$DETECTED_KNX" ]; then
+        KNX_IP=$(echo "$DETECTED_KNX" | cut -d':' -f1)
+        KNX_PORT=$(echo "$DETECTED_KNX" | cut -d':' -f2)
+        echo "[+] Auto-discovered external KNX IP gateway from Home Assistant config: $KNX_IP:$KNX_PORT"
+    fi
+fi
+
 KNX_PORT="${KNX_PORT:-3671}"
 if [ -n "$KNX_IP" ] && [ "$KNX_IP" != "127.0.0.1" ] && [ "$KNX_IP" != "localhost" ] && [ "$KNX_IP" != "null" ] && [ "$KNX_IP" != "none" ] && [ "$KNX_IP" != "—" ] && [ "$KNX_IP" != "0.0.0.0" ]; then
     echo "[+] Starting KNXnet/IP UDP Bridge to LAN device $KNX_IP:$KNX_PORT..."
