@@ -40,9 +40,43 @@ def get_public_key():
             log(f"Notice: Could not read {SSH_PUBKEY_PATH}: {e}")
     return ""
 
-ADDON_VERSION = "1.2.7"
+ADDON_VERSION = "1.2.8"
 MAX_HEALING_ATTEMPTS = 5
 HEALING_COOLDOWN_SEC = 60
+
+UNMONITORED_CACHE_FILE = "/data/unmonitored_integrations.json"
+
+def get_unmonitored_integrations():
+    try:
+        if os.path.exists(UNMONITORED_CACHE_FILE):
+            with open(UNMONITORED_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, list) else []
+    except Exception:
+        pass
+    return []
+
+def update_unmonitored_integrations(unmon_list):
+    global _healing_registry
+    if not isinstance(unmon_list, list):
+        return
+    try:
+        current = get_unmonitored_integrations()
+        if set(current) != set(unmon_list):
+            os.makedirs(os.path.dirname(UNMONITORED_CACHE_FILE), exist_ok=True)
+            with open(UNMONITORED_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(unmon_list, f)
+            log(f"[Self-Healing Engine] Updated unmonitored integrations from Dealer Hub: {unmon_list}")
+        
+        # Halt and disable self-healing for any disabled integrations immediately
+        for sub in unmon_list:
+            if sub in _healing_registry:
+                _healing_registry[sub]["status"] = "disabled"
+                _healing_registry[sub]["attempts"] = 0
+                _healing_registry[sub]["exhausted"] = False
+                _healing_registry[sub]["last_action"] = "Monitoring muted from Dealer Dashboard. Auto-recovery paused."
+    except Exception as e:
+        log(f"[!] Error updating unmonitored integrations: {e}")
 
 # In-memory Autonomous Self-Healing Registry & History
 _healing_registry = {}
@@ -315,8 +349,25 @@ def run_autonomous_self_healing_engine(tech_data, opts):
 
     # Process all tracked subsystems
     all_tracked = set(subsystem_checks.keys()).union(_healing_registry.keys())
+    unmonitored = set(get_unmonitored_integrations())
 
     for sub in all_tracked:
+        if sub in unmonitored:
+            st = _healing_registry.setdefault(sub, {
+                "attempts": 0,
+                "max_attempts": MAX_HEALING_ATTEMPTS,
+                "cooldown_sec": HEALING_COOLDOWN_SEC,
+                "first_failed": None,
+                "last_attempt_time": 0,
+                "last_action": "Monitoring muted from Dealer Dashboard. Auto-recovery paused.",
+                "status": "disabled"
+            })
+            st["status"] = "disabled"
+            st["attempts"] = 0
+            st["exhausted"] = False
+            st["last_action"] = "Monitoring muted from Dealer Dashboard. Auto-recovery paused."
+            continue
+
         is_failing = subsystem_checks.get(sub, False)
         st = _healing_registry.setdefault(sub, {
             "attempts": 0,
@@ -1859,6 +1910,8 @@ def main():
         init_ok, init_st = send_heartbeat(hub_host, init_payload)
         if init_ok:
             log(f"Immediate second-0 startup heartbeat acknowledged by hub: {init_st}")
+            if isinstance(init_st, dict) and "unmonitored_integrations" in init_st:
+                update_unmonitored_integrations(init_st["unmonitored_integrations"])
     except Exception as e:
         log(f"Initial startup heartbeat notice: {e}")
 
@@ -1885,6 +1938,8 @@ def main():
             if success:
                 log(f"Heartbeat OK | Slot: {slot}{recovery} | IP: {payload['network']['local_ipv4']} | KNX: {payload['knx_status'].get('reachable')}")
                 if isinstance(hub_resp, dict):
+                    if "unmonitored_integrations" in hub_resp:
+                        update_unmonitored_integrations(hub_resp["unmonitored_integrations"])
                     if hub_resp.get("backup_trigger"):
                         handle_backup_trigger_async(hub_host, opts, hub_resp["backup_trigger"])
                     if hub_resp.get("command"):

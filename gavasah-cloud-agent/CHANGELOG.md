@@ -5,6 +5,14 @@ All notable changes to the **Gavasah Cloud Agent** Home Assistant Add-on will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.8] - 2026-10-16
+
+### Added
+- **Dynamic Muted/Disabled Integrations Support**: Synchronizes `unmonitored_integrations` list from the Dealer Hub on every heartbeat pulse and at startup.
+- **Immediate Self-Healing Halt on Disable**: If an integration is disabled or muted from the Dealer Operations Portal, all active self-healing remediation routines for that subsystem immediately cease, attempts are reset to 0, and status is locked to `disabled` until re-activated by the dealer.
+
+---
+
 ## [1.2.7] - 2026-10-16
 
 ### Fixed
