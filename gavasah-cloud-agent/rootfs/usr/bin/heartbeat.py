@@ -100,19 +100,28 @@ def supervisor_post(endpoint, payload_dict=None, timeout=15):
 def get_ha_config_entries():
     """Retrieves all active config entries with live runtime state from Home Assistant Core."""
     res = supervisor_get("core/api/config/config_entries/entry")
+    entries = []
     if isinstance(res, list):
-        return res
-    if isinstance(res, dict) and isinstance(res.get("data"), list):
-        return res["data"]
-    for spath in ["/homeassistant/.storage/core.config_entries", "/config/.storage/core.config_entries"]:
-        if os.path.exists(spath):
-            try:
-                with open(spath, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                return data.get("data", {}).get("entries", [])
-            except Exception:
-                pass
-    return []
+        entries = res
+    elif isinstance(res, dict) and isinstance(res.get("data"), list):
+        entries = res["data"]
+    else:
+        for spath in ["/homeassistant/.storage/core.config_entries", "/config/.storage/core.config_entries"]:
+            if os.path.exists(spath):
+                try:
+                    with open(spath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    entries = data.get("data", {}).get("entries", [])
+                    break
+                except Exception:
+                    pass
+    # Filter out ignored discoveries (e.g. source == 'ignore') and disabled entries
+    return [
+        e for e in entries 
+        if isinstance(e, dict) 
+        and e.get("source") != "ignore" 
+        and not e.get("disabled_by")
+    ]
 
 def reload_ha_config_entry(entry_id):
     """Reloads a specific integration config entry via Core REST API."""

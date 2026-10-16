@@ -5,6 +5,13 @@ All notable changes to the **Gavasah Cloud Agent** Home Assistant Add-on will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.6] - 2026-10-16
+
+### Fixed
+- **Filter Ignored Zeroconf Discoveries & Disabled Entries**: Filtered out config entries marked with `source: 'ignore'` (such as ignored Zeroconf discoveries for adjacent/old bridges) and entries with `disabled_by` at the root of `get_ha_config_entries()`. Eliminates phantom subsystem reporting, false "degraded" counts (e.g. Lutron 1/2 Online), and spurious autonomous self-healing escalation loops.
+
+---
+
 ## [1.2.5] - 2026-10-16
 
 ### Fixed
