@@ -1,4 +1,4 @@
-import os, sys, json, time, datetime, subprocess, base64, re, secrets, threading, hashlib, sqlite3
+import os, sys, json, time, datetime, subprocess, base64, re, secrets, threading, hashlib, sqlite3, socket, select, struct
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -229,62 +229,178 @@ def release_ets_port(client_id):
             print(f"[!] Error releasing ETS port for {client_id}: {e}")
             return False
 
+# ==============================================================================
+# KNXnet/IP Application Layer Gateway (ALG) Proxy for Remote ETS Programming
+# ==============================================================================
+class KnxAlgProxyManager:
+    """
+    Autonomous KNXnet/IP Application Layer Gateway (ALG) Proxy for Remote ETS Programming.
+    Intercepts and manages remote UDP ETS sessions across the WireGuard mesh.
+    Normalizes Server Data Endpoint HPAI in CONNECT_RESPONSE frames from internal LAN IPs (e.g. 192.168.1.111:0)
+    to RFC-compliant NAT route-back (0.0.0.0:0).
+    Ensures ETS Falcon stack communicates reliably without packet drops or timeout aborts.
+    """
+    def __init__(self):
+        self.proxies = {} # port -> dict
+        self.lock = threading.Lock()
+        self.running = True
+        self.thread = threading.Thread(target=self._run_loop, daemon=True, name="KnxAlgProxyManager")
+        self.thread.start()
+
+    def sync(self, port_targets):
+        """
+        port_targets: dict of {port: (wg_ip, client_id)}
+        """
+        with self.lock:
+            # 1. Close obsolete or re-routed proxies
+            for port in list(self.proxies.keys()):
+                if port not in port_targets or self.proxies[port]['target_ip'] != port_targets[port][0]:
+                    p = self.proxies.pop(port)
+                    try: p['client_sock'].close()
+                    except Exception: pass
+                    try: p['gw_sock'].close()
+                    except Exception: pass
+                    print(f"[KNX-ALG] Closed proxy on port {port}")
+
+            # 2. Add or maintain active proxies
+            for port, (wg_ip, cid) in port_targets.items():
+                if port not in self.proxies:
+                    try:
+                        cs = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        cs.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        cs.bind(('0.0.0.0', int(port)))
+
+                        gs = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        # Bind gateway-facing socket to wg0 IP if possible, else 0.0.0.0
+                        try:
+                            gs.bind(('10.42.0.1', 0))
+                        except Exception:
+                            gs.bind(('0.0.0.0', 0))
+
+                        self.proxies[port] = {
+                            'client_sock': cs,
+                            'gw_sock': gs,
+                            'target_ip': wg_ip,
+                            'target_port': 3671,
+                            'client_id': cid,
+                            'client_addr': None,
+                            'channel_map': {}, # chan_id -> client_addr
+                            'last_seen': time.time()
+                        }
+                        print(f"[KNX-ALG] Started proxy on 0.0.0.0:{port} -> {wg_ip}:3671 (Client: {cid})")
+                    except Exception as e:
+                        print(f"[KNX-ALG] Failed binding port {port}: {e}")
+
+    def _run_loop(self):
+        while self.running:
+            with self.lock:
+                socks_map = {}
+                for port, p in self.proxies.items():
+                    socks_map[p['client_sock']] = (port, 'client')
+                    socks_map[p['gw_sock']] = (port, 'gw')
+
+            if not socks_map:
+                time.sleep(0.5)
+                continue
+
+            try:
+                r, _, _ = select.select(list(socks_map.keys()), [], [], 0.5)
+            except Exception:
+                continue
+
+            now = time.time()
+            for s in r:
+                info = socks_map.get(s)
+                if not info:
+                    continue
+                port, role = info
+                with self.lock:
+                    p = self.proxies.get(port)
+                    if not p:
+                        continue
+
+                try:
+                    data, addr = s.recvfrom(2048)
+                except Exception:
+                    continue
+
+                if role == 'client':
+                    p['client_addr'] = addr
+                    p['last_seen'] = now
+                    try:
+                        p['gw_sock'].sendto(data, (p['target_ip'], p['target_port']))
+                    except Exception as e:
+                        print(f"[KNX-ALG] Forward to GW ({p['target_ip']}) failed: {e}", flush=True)
+
+                elif role == 'gw':
+                    if p['client_addr']:
+                        # Intercept CONNECT_RESPONSE (0x0206)
+                        if len(data) >= 16 and data[2] == 0x02 and data[3] == 0x06:
+                            orig_ip = socket.inet_ntoa(data[10:14])
+                            orig_port = struct.unpack('>H', data[14:16])[0]
+                            chan_id = data[6]
+                            status = data[7]
+                            # Rewrite Data Endpoint HPAI (bytes 10..15) to 0.0.0.0:0 (route-back)
+                            mod = bytearray(data)
+                            mod[10:16] = bytes([0, 0, 0, 0, 0, 0])
+                            data = bytes(mod)
+                            print(f"[KNX-ALG] Port {port} ({p['client_id']}): Intercepted CONNECT_RESPONSE (CH={chan_id}, Status={status}) - Rewrote DataEndpoint {orig_ip}:{orig_port} -> 0.0.0.0:0 (route-back)", flush=True)
+
+                        try:
+                            p['client_sock'].sendto(data, p['client_addr'])
+                        except Exception as e:
+                            print(f"[KNX-ALG] Forward to Client {p['client_addr']} failed: {e}", flush=True)
+
+KNX_ALG_MANAGER = KnxAlgProxyManager()
+
 def sync_ets_nat_rules():
     """
-    Synchronizes Linux iptables NAT rules on CT 150 for remote ETS UDP programming.
-    Uses dedicated chain GAVASAH_ETS_NAT in nat table.
-    Ensures:
-    1. GAVASAH_ETS_NAT chain exists and is linked at top of PREROUTING.
-    2. POSTROUTING masquerade on wg0 so client replies traverse wg0 cleanly back to CT 150 un-NAT.
-    3. Each client with an assigned ets_port gets a DNAT rule:
-       UDP dport [ets_port] -> [wg_ip]:3671
+    Synchronizes KNX ALG User-Space Proxies and underlying Linux firewall state for remote ETS UDP programming.
+    1. Flushes iptables GAVASAH_ETS_NAT chain so incoming UDP traffic on assigned ETS ports hits local ALG sockets.
+    2. Ensures POSTROUTING masquerade on wg0 for transparent gateway communication.
+    3. Queries DB and registers all active clients with KnxAlgProxyManager.
     """
     if os.name == 'nt' or os.environ.get('MOCK_NAT') == '1':
         return True
     try:
-        # 1. Enable IP forwarding
         try:
             with open('/proc/sys/net/ipv4/ip_forward', 'w') as f:
                 f.write('1\n')
         except Exception:
             pass
 
-        # 2. Ensure GAVASAH_ETS_NAT chain exists
+        # 1. Flush DNAT rules so packets reach CT 150 local proxy sockets
         subprocess.run(['iptables', '-t', 'nat', '-N', 'GAVASAH_ETS_NAT'], capture_output=True)
-        # Flush existing rules in chain
         subprocess.run(['iptables', '-t', 'nat', '-F', 'GAVASAH_ETS_NAT'], check=True)
 
-        # 3. Ensure PREROUTING jumps to GAVASAH_ETS_NAT
         check_jump = subprocess.run(['iptables', '-t', 'nat', '-C', 'PREROUTING', '-j', 'GAVASAH_ETS_NAT'], capture_output=True)
         if check_jump.returncode != 0:
             subprocess.run(['iptables', '-t', 'nat', '-I', 'PREROUTING', '1', '-j', 'GAVASAH_ETS_NAT'], check=True)
 
-        # 4. Ensure POSTROUTING MASQUERADE for wg0
+        # 2. Ensure POSTROUTING MASQUERADE for wg0
         check_masq = subprocess.run(['iptables', '-t', 'nat', '-C', 'POSTROUTING', '-o', WG_INTERFACE, '-j', 'MASQUERADE'], capture_output=True)
         if check_masq.returncode != 0:
             subprocess.run(['iptables', '-t', 'nat', '-A', 'POSTROUTING', '-o', WG_INTERFACE, '-j', 'MASQUERADE'], check=True)
 
-        # 5. Fetch all active clients with an ets_port
+        # 3. Fetch all active clients with an ets_port and sync ALG proxy
         with DB_LOCK:
             conn = get_db_connection()
             rows = conn.execute("SELECT client_id, ets_port, wg_ip FROM clients WHERE ets_port IS NOT NULL AND wg_ip IS NOT NULL AND (knx_remote_enabled IS NULL OR knx_remote_enabled != 0)").fetchall()
             conn.close()
 
-        count = 0
+        port_targets = {}
         for r in rows:
             port = r['ets_port']
             wg_ip = r['wg_ip']
+            cid = r['client_id']
             if port and wg_ip:
-                subprocess.run([
-                    'iptables', '-t', 'nat', '-A', 'GAVASAH_ETS_NAT',
-                    '-p', 'udp', '--dport', str(port),
-                    '-j', 'DNAT', '--to-destination', f"{wg_ip}:3671"
-                ], check=True)
-                count += 1
-        print(f"[OK] Synchronized {count} ETS UDP NAT rules in GAVASAH_ETS_NAT chain")
+                port_targets[int(port)] = (wg_ip, cid)
+
+        KNX_ALG_MANAGER.sync(port_targets)
+        print(f"[OK] Synchronized {len(port_targets)} KNX ALG UDP proxies in KnxAlgProxyManager")
         return True
     except Exception as e:
-        print(f"[!] Warning syncing ETS NAT rules: {e}")
+        print(f"[!] Warning syncing KNX ALG rules: {e}")
         return False
 
 def init_sqlite_database():
