@@ -5,6 +5,15 @@ All notable changes to the **Gavasah Cloud Agent** Home Assistant Add-on will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.5] - 2026-10-16
+
+### Fixed
+- **Live Home Assistant Core Integration State Telemetry**: Fixed `supervisor_get` to correctly process raw JSON list responses returned by Home Assistant Core REST API endpoints (`/core/api/config/config_entries/entry`), eliminating an `AttributeError` that previously forced fallback to static on-disk files.
+- **CoolMaster Subsystem Diagnostics & Accurate Error Reporting**: Refactored CoolMaster detection to inspect live in-memory entry states (`setup_retry`, `setup_error`, `not_loaded`) and capture detailed failure reasons (e.g., `Unexpected status line format: ['No', 'UID']` from disconnected RS485 HVAC lines) instead of falsely reporting "online" based solely on raw TCP socket connectivity.
+- **Generic Failed Integration Auditing**: Connected `failed_core_entries` to live Core API responses so that all broken or retrying integrations across the gateway fleet are immediately reported to the Central Hub.
+
+---
+
 ## [1.2.4] - 2026-10-16
 
 ### Added

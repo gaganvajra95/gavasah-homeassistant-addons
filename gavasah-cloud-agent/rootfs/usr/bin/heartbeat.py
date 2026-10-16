@@ -40,7 +40,7 @@ def get_public_key():
             log(f"Notice: Could not read {SSH_PUBKEY_PATH}: {e}")
     return ""
 
-ADDON_VERSION = "1.2.2"
+ADDON_VERSION = "1.2.5"
 MAX_HEALING_ATTEMPTS = 5
 HEALING_COOLDOWN_SEC = 60
 
@@ -70,7 +70,11 @@ def supervisor_get(endpoint):
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode())
-            return data.get("data", {})
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                return data.get("data", data)
+            return data
     except Exception as e:
         return {"error": str(e)}
 
@@ -87,15 +91,19 @@ def supervisor_post(endpoint, payload_dict=None, timeout=15):
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
-            return True, data.get("data", {})
+            if isinstance(data, dict):
+                return True, data.get("data", data)
+            return True, data
     except Exception as e:
         return False, {"error": str(e)}
 
 def get_ha_config_entries():
-    """Retrieves all active config entries from Home Assistant Core."""
+    """Retrieves all active config entries with live runtime state from Home Assistant Core."""
     res = supervisor_get("core/api/config/config_entries/entry")
     if isinstance(res, list):
         return res
+    if isinstance(res, dict) and isinstance(res.get("data"), list):
+        return res["data"]
     for spath in ["/homeassistant/.storage/core.config_entries", "/config/.storage/core.config_entries"]:
         if os.path.exists(spath):
             try:
@@ -1131,32 +1139,36 @@ def detect_all_technologies(opts):
         "offline_reason": zigbee_offline_reason
     }
 
-    # 3. Lutron Subsystem Detection
+    # 3. Lutron Subsystem Detection & Core Integration Status
+    core_entries = get_ha_config_entries()
     lutron_entries = []
     failed_core_entries = []
-    for spath in ['/homeassistant/.storage/core.config_entries', '/config/.storage/core.config_entries']:
-        if os.path.exists(spath):
-            try:
-                with open(spath, 'r', encoding='utf-8') as f:
-                    entries = json.load(f).get('data', {}).get('entries', [])
-                    for e in entries:
-                        domain = e.get('domain', '')
-                        if domain in ['lutron', 'lutron_caseta', 'lutron_homeworks']:
-                            lutron_entries.append({
-                                "domain": domain,
-                                "title": e.get('title', 'Lutron System'),
-                                "state": e.get('state', 'loaded')
-                            })
-                        # Also track any integration in failed/error state
-                        if e.get('state') in ['setup_error', 'setup_retry', 'migration_error'] and not e.get('disabled_by'):
-                            failed_core_entries.append({
-                                "domain": domain,
-                                "title": e.get('title', domain),
-                                "state": e.get('state'),
-                                "reason": f"Core integration failed with state '{e.get('state')}'"
-                            })
-            except Exception:
-                pass
+
+    for e in core_entries:
+        if not isinstance(e, dict):
+            continue
+        domain = e.get('domain', '')
+        state = e.get('state', 'loaded')
+        
+        # Track Lutron integrations
+        if domain in ['lutron', 'lutron_caseta', 'lutron_homeworks']:
+            lutron_entries.append({
+                "entry_id": e.get('entry_id'),
+                "domain": domain,
+                "title": e.get('title', 'Lutron System'),
+                "state": state,
+                "reason": e.get('reason', '')
+            })
+
+        # Track any failed/error integration (ignore user-disabled or discovery-ignored)
+        if state in ['setup_error', 'setup_retry', 'migration_error', 'not_loaded', 'failed_unload'] and not e.get('disabled_by') and e.get('source') != 'ignore':
+            failed_core_entries.append({
+                "entry_id": e.get('entry_id'),
+                "domain": domain,
+                "title": e.get('title', domain),
+                "state": state,
+                "reason": e.get('reason') or f"Core integration in '{state}' state"
+            })
 
     lutron_status = "not_configured"
     lutron_offline_reason = ""
@@ -1176,12 +1188,16 @@ def detect_all_technologies(opts):
                             break
                     except Exception:
                         pass
-                ent["online"] = is_ok
+                ent["online"] = is_ok and (ent.get("state") == "loaded")
                 if not is_ok:
                     unreachable_bridges.append(f"{ent_ip} (unreachable)")
             else:
                 ent["online"] = (ent.get("state") == "loaded")
-        if unreachable_bridges:
+        failed_lutron = [e for e in lutron_entries if e.get("state") in ["setup_error", "setup_retry", "failed_unload", "not_loaded"]]
+        if failed_lutron:
+            lutron_status = "offline" if len(failed_lutron) == len(lutron_entries) else "degraded"
+            lutron_offline_reason = " | ".join([f"{e.get('title', 'Lutron')}: {e.get('reason') or e.get('state')}" for e in failed_lutron])
+        elif unreachable_bridges:
             lutron_status = "offline" if len(unreachable_bridges) == len(lutron_entries) else "degraded"
             lutron_offline_reason = f"Bridge unreachable: {', '.join(unreachable_bridges)}"
         else:
@@ -1207,17 +1223,9 @@ def detect_all_technologies(opts):
             break
 
     if not matter_detected:
-        for spath in ['/homeassistant/.storage/core.config_entries', '/config/.storage/core.config_entries']:
-            if os.path.exists(spath):
-                try:
-                    with open(spath, 'r', encoding='utf-8') as f:
-                        entries = json.load(f).get('data', {}).get('entries', [])
-                        if any(e.get('domain') == 'matter' for e in entries):
-                            matter_detected = True
-                            matter_state = "configured"
-                            break
-                except Exception:
-                    pass
+        if any(e.get('domain') == 'matter' for e in core_entries if isinstance(e, dict)):
+            matter_detected = True
+            matter_state = "configured"
 
     matter_status = "not_configured"
     matter_offline_reason = ""
@@ -1239,30 +1247,28 @@ def detect_all_technologies(opts):
 
     # 5. CoolMaster Subsystem Detection (CoolMasterNet / CoolAutomation HVAC)
     coolmaster_entries = []
-    for spath in ['/homeassistant/.storage/core.config_entries', '/config/.storage/core.config_entries']:
-        if os.path.exists(spath):
-            try:
-                with open(spath, 'r', encoding='utf-8') as f:
-                    entries = json.load(f).get('data', {}).get('entries', [])
-                    for e in entries:
-                        domain = e.get('domain', '')
-                        if domain in ['coolmaster', 'coolmasternet', 'coolautomation']:
-                            data = e.get('data', {})
-                            host = data.get('host') or ''
-                            port = data.get('port') or 10102
-                            coolmaster_entries.append({
-                                "domain": domain,
-                                "title": e.get('title', 'CoolMasterNet HVAC'),
-                                "host": host,
-                                "port": port,
-                                "state": e.get('state', 'loaded')
-                            })
-            except Exception:
-                pass
+    for e in core_entries:
+        if not isinstance(e, dict):
+            continue
+        domain = e.get('domain', '')
+        if domain in ['coolmaster', 'coolmasternet', 'coolautomation']:
+            data = e.get('data', {})
+            host = data.get('host') or ''
+            port = data.get('port') or 10102
+            coolmaster_entries.append({
+                "entry_id": e.get('entry_id'),
+                "domain": domain,
+                "title": e.get('title', 'CoolMasterNet HVAC'),
+                "host": host,
+                "port": port,
+                "state": e.get('state', 'loaded'),
+                "reason": e.get('reason', '')
+            })
 
     coolmaster_status = "not_configured"
     coolmaster_offline_reason = ""
     if coolmaster_entries:
+        failed_cms = [e for e in coolmaster_entries if e.get("state") in ["setup_error", "setup_retry", "failed_unload", "not_loaded"]]
         unreachable_cms = []
         for ent in coolmaster_entries:
             ent_host = ent.get("host")
@@ -1271,20 +1277,22 @@ def detect_all_technologies(opts):
                 if m: ent_host = m.group(0)
             if ent_host:
                 is_ok = False
-                for probe_port in [ent.get("port", 10102), 10102, 4321, 23]:
-                    try:
-                        with socket.create_connection((ent_host, probe_port), timeout=1.0):
-                            is_ok = True
-                            break
-                    except Exception:
-                        pass
-                ent["online"] = is_ok
+                try:
+                    with socket.create_connection((ent_host, int(ent.get("port", 10102))), timeout=1.5):
+                        is_ok = True
+                except Exception:
+                    pass
+                ent["online"] = is_ok and (ent.get("state") == "loaded")
                 if not is_ok:
                     unreachable_cms.append(f"{ent_host}:{ent.get('port', 10102)} (unreachable)")
             else:
                 ent["online"] = (ent.get("state") == "loaded")
 
-        if unreachable_cms:
+        if failed_cms:
+            coolmaster_status = "offline" if len(failed_cms) == len(coolmaster_entries) else "degraded"
+            reasons = [f"{e.get('title', 'CoolMaster')}: {e.get('reason') or e.get('state')}" for e in failed_cms]
+            coolmaster_offline_reason = " | ".join(reasons)
+        elif unreachable_cms:
             coolmaster_status = "offline" if len(unreachable_cms) == len(coolmaster_entries) else "degraded"
             coolmaster_offline_reason = f"CoolMaster unreachable: {', '.join(unreachable_cms)}"
         else:

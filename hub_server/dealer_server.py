@@ -7141,13 +7141,16 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                     // 6. CoolMaster (CoolMasterNet / CoolAutomation VRV/VRF HVAC)
                                     const coolmaster = tech.coolmaster || {};
                                     if (coolmaster.detected || (coolmaster.entries && coolmaster.entries.length > 0)) {
-                                        const isCmOffline = Boolean(coolmaster.status === 'offline' || coolmaster.offline_reason);
-                                        const cmTitle = coolmaster.entries && coolmaster.entries.length > 0 ? coolmaster.entries.map(e => e.title || `${e.host || ''}:${e.port || 10102}`).join(', ') : 'CoolMaster Gateway';
+                                        const cmEntries = coolmaster.entries || [];
+                                        const failedCm = cmEntries.find(e => e.state === 'setup_error' || e.state === 'setup_retry' || e.state === 'not_loaded' || e.online === false);
+                                        const isCmOffline = Boolean(coolmaster.status === 'offline' || coolmaster.status === 'setup_retry' || coolmaster.status === 'setup_error' || coolmaster.offline_reason || failedCm);
+                                        const cmTitle = cmEntries.length > 0 ? cmEntries.map(e => e.title || `${e.host || ''}:${e.port || 10102}`).join(', ') : 'CoolMaster Gateway';
                                         const cmHealing = shSubsystems['coolmaster'];
+                                        const effectiveReason = coolmaster.offline_reason || (failedCm ? (failedCm.reason || `Integration in '${failedCm.state}' state`) : 'HVAC Gateway / Line Faulty');
                                         if (cmHealing && cmHealing.status === 'healing' && (cmHealing.attempts || 0) <= 5) {
                                             badges.push(`<span class="tech-badge tech-status-healing" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="Autonomous Self-Healing in Progress (Attempt ${cmHealing.attempts}/5: ${escapeHtml(cmHealing.last_action || 'Remediating')}) • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#facc15; box-shadow: 0 0 6px #facc15;"></span>CoolMaster Healing (${cmHealing.attempts}/5)</span>`);
                                         } else if (isCmOffline) {
-                                            badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="CoolMaster Offline • Reason: ${escapeHtml(coolmaster.offline_reason || 'HVAC Gateway unreachable')} • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>CoolMaster Offline</span>`);
+                                            badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="CoolMaster Offline / Faulty • Reason: ${escapeHtml(effectiveReason)} • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>CoolMaster Offline</span>`);
                                         } else {
                                             badges.push(`<span class="tech-badge tech-coolmaster tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="CoolMasterNet Online (${escapeHtml(cmTitle)}) • Click for diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>CoolMaster (HVAC Online)</span>`);
                                         }
@@ -8982,11 +8985,13 @@ All active sessions for this integrator will be terminated immediately.` : '';
             } else if (techKey === 'coolmaster') {
                 techName = 'CoolMaster HVAC Subsystem';
                 const coolmaster = tech.coolmaster || {};
-                isOnline = !(coolmaster.status === 'offline' || coolmaster.offline_reason);
-                endpoint = coolmaster.entries && coolmaster.entries.length > 0 ? coolmaster.entries.map(e => e.title || `${e.host || ''}:${e.port || 10102}`).join(', ') : 'CoolMasterNet Bridge';
+                const cmEntries = coolmaster.entries || [];
+                const failedCm = cmEntries.find(e => e.state === 'setup_error' || e.state === 'setup_retry' || e.state === 'not_loaded' || e.online === false);
+                isOnline = !(coolmaster.status === 'offline' || coolmaster.status === 'setup_retry' || coolmaster.status === 'setup_error' || coolmaster.offline_reason || failedCm);
+                endpoint = cmEntries.length > 0 ? cmEntries.map(e => e.title || `${e.host || ''}:${e.port || 10102}`).join(', ') : 'CoolMasterNet Bridge';
                 if (!isOnline) {
-                    reason = coolmaster.offline_reason || 'CoolMasterNet HVAC gateway unreachable';
-                    fixAction = 'Verify power to the CoolMasterNet bridge, check RS485 HVAC line connectivity, and ensure the TCP/IP network connection (port 10102) is active.';
+                    reason = coolmaster.offline_reason || (failedCm ? (failedCm.reason || `Integration in '${failedCm.state}' state`) : 'CoolMasterNet HVAC gateway or line communication failure');
+                    fixAction = 'Verify RS485 communication line between CoolMasterNet and VRF/VRV indoor units (check for "No UID" / Line error), confirm unit addressing, check power to the bridge, and verify TCP port 10102 reachability.';
                 } else {
                     fixAction = 'CoolMasterNet HVAC bridge is connected and communicating with VRF/VRV air conditioning units.';
                 }
