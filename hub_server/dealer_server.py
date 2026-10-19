@@ -14156,6 +14156,117 @@ PersistentKeepalive = 25
                 self.send_json(500, {'error': f'WhatsApp gateway dispatch error: {str(e)}'})
             return
 
+        elif parsed.path == '/api/whatsapp/inbound':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body_bytes = self.rfile.read(content_length) if content_length > 0 else b'{}'
+            try:
+                data = json.loads(body_bytes.decode('utf-8'))
+                from_phone = re.sub(r'[^0-9]', '', str(data.get('from', '')))
+                user_msg = str(data.get('text', '')).strip()
+                admin_num = get_admin_whatsapp_number()
+                clean_admin = re.sub(r'[^0-9]', '', admin_num)
+
+                is_admin = False
+                if clean_admin and from_phone:
+                    if from_phone == clean_admin or from_phone.endswith(clean_admin[-10:]):
+                        is_admin = True
+
+                if not is_admin:
+                    self.send_json(200, {
+                        'success': False,
+                        'reply': '⚠️ *[GAVASAH CLOUD]* Sender not recognized as authorized Admin.'
+                    })
+                    return
+
+                up_msg = user_msg.upper()
+                appr_match = re.match(r'^APPROVE\s+(\d+)$', up_msg)
+                rej_match = re.match(r'^REJECT\s+(\d+)$', up_msg)
+
+                now = int(time.time())
+                if appr_match:
+                    prop_id = int(appr_match.group(1))
+                    with DB_LOCK:
+                        conn = get_db_connection()
+                        cur = conn.cursor()
+                        cur.execute("UPDATE copilot_proposals SET status = 'approved', reviewed_by = 'admin_whatsapp', reviewed_at = ? WHERE id = ? AND status = 'pending'", (now, prop_id))
+                        rows_affected = cur.rowcount
+                        conn.commit()
+                        conn.close()
+                    if rows_affected > 0:
+                        reply = f"✅ *[GAVASAH AI COPILOT]* Proposal #{prop_id} has been *APPROVED* by Admin.\nScheduled for execution on CT 150."
+                    else:
+                        reply = f"⚠️ *[GAVASAH AI COPILOT]* Proposal #{prop_id} was not found or is already resolved."
+
+                elif rej_match:
+                    prop_id = int(rej_match.group(1))
+                    with DB_LOCK:
+                        conn = get_db_connection()
+                        cur = conn.cursor()
+                        cur.execute("UPDATE copilot_proposals SET status = 'rejected', reviewed_by = 'admin_whatsapp', reviewed_at = ? WHERE id = ? AND status = 'pending'", (now, prop_id))
+                        rows_affected = cur.rowcount
+                        conn.commit()
+                        conn.close()
+                    if rows_affected > 0:
+                        reply = f"❌ *[GAVASAH AI COPILOT]* Proposal #{prop_id} has been *REJECTED* by Admin."
+                    else:
+                        reply = f"⚠️ *[GAVASAH AI COPILOT]* Proposal #{prop_id} was not found or is already resolved."
+
+                elif up_msg in ['STATUS', 'FLEET', 'HEALTH']:
+                    with DB_LOCK:
+                        conn = get_db_connection()
+                        clients = conn.execute("SELECT client_id, status, last_heartbeat FROM clients").fetchall()
+                        conn.close()
+                    total = len(clients)
+                    online = sum(1 for c in clients if c[1] == 'online' and c[2] and (now - c[2]) < 1800)
+                    offline = total - online
+                    reply = (
+                        f"📊 *[GAVASAH FLEET STATUS]*\n"
+                        f"• Total Gateways: {total}\n"
+                        f"• Online: {online} 🟢\n"
+                        f"• Offline / Warning: {offline} 🔴\n"
+                        f"• Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}"
+                    )
+
+                elif up_msg in ['PROPOSALS', 'PENDING']:
+                    with DB_LOCK:
+                        conn = get_db_connection()
+                        props = conn.execute("SELECT id, client_id, title, created_at FROM copilot_proposals WHERE status = 'pending' ORDER BY id ASC LIMIT 5").fetchall()
+                        conn.close()
+                    if not props:
+                        reply = "✅ *[GAVASAH AI COPILOT]* No pending proposals awaiting approval."
+                    else:
+                        lines = ["📋 *[PENDING AI PROPOSALS]*"]
+                        for p in props:
+                            lines.append(f"• #{p[0]}: [{p[1]}] {p[2]}\n  👉 Reply *APPROVE {p[0]}* or *REJECT {p[0]}*")
+                        reply = "\n".join(lines)
+
+                else:
+                    ollama_url = 'http://192.168.6.185:11434/api/chat'
+                    sys_prompt = (
+                        "You are GAVASAH Autonomous AI Copilot responding via WhatsApp to the Admin/Manufacturer. "
+                        "Keep your response concise, clear, and under 150 words. Format with clean emojis and bold text."
+                    )
+                    ollama_payload = json.dumps({
+                        'model': 'qwen2.5-coder:7b',
+                        'messages': [
+                            {'role': 'system', 'content': sys_prompt},
+                            {'role': 'user', 'content': user_msg}
+                        ],
+                        'stream': False
+                    }).encode('utf-8')
+                    try:
+                        oreq = urllib.request.Request(ollama_url, data=ollama_payload, headers={'Content-Type': 'application/json'}, method='POST')
+                        with urllib.request.urlopen(oreq, timeout=20) as oresp:
+                            ores_data = json.loads(oresp.read().decode('utf-8'))
+                            reply = ores_data.get('message', {}).get('content', '')
+                    except Exception as ex:
+                        reply = f"🤖 *[GAVASAH AI COPILOT]*: Acknowledged: \"{user_msg}\". (LLM note: {ex})"
+
+                self.send_json(200, {'success': True, 'reply': reply})
+            except Exception as e:
+                self.send_json(500, {'error': str(e)})
+            return
+
         elif parsed.path == '/api/copilot/chat':
             user = self.get_authenticated_user()
             if not user:
