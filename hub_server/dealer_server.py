@@ -501,9 +501,9 @@ def init_sqlite_database():
             network_json TEXT,
             knx_json TEXT,
             onboarded_at INTEGER,
-            hb_delayed_interval INTEGER DEFAULT 900,
-            hb_warning_interval INTEGER DEFAULT 1800,
-            hb_offline_interval INTEGER DEFAULT 3600,
+            hb_delayed_interval INTEGER DEFAULT 1800,
+            hb_warning_interval INTEGER DEFAULT 21600,
+            hb_offline_interval INTEGER DEFAULT 86400,
             approval_status TEXT DEFAULT 'approved',
             rejection_reason TEXT,
             knx_remote_enabled INTEGER NOT NULL DEFAULT 1,
@@ -536,10 +536,49 @@ def init_sqlite_database():
             value TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS system_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS copilot_proposals (
+            id TEXT PRIMARY KEY,
+            client_id TEXT,
+            subsystem TEXT,
+            action_type TEXT,
+            summary TEXT,
+            payload_json TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at INTEGER,
+            resolved_at INTEGER,
+            resolved_by TEXT,
+            result_log TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS copilot_events (
+            id TEXT PRIMARY KEY,
+            client_id TEXT,
+            subsystem TEXT,
+            event_type TEXT,
+            attempt_count INTEGER DEFAULT 1,
+            details_json TEXT,
+            timestamp INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS copilot_chat_history (
+            id TEXT PRIMARY KEY,
+            sender TEXT,
+            message TEXT,
+            timestamp INTEGER
+        );
+
         CREATE INDEX IF NOT EXISTS idx_clients_dealer ON clients(dealer_id);
         CREATE INDEX IF NOT EXISTS idx_clients_integrator ON clients(integrator_id);
         CREATE INDEX IF NOT EXISTS idx_logs_client_time ON client_logs(client_id, timestamp DESC);
         CREATE INDEX IF NOT EXISTS idx_ets_port_pool_status ON ets_port_pool(status, released_at);
+        CREATE INDEX IF NOT EXISTS idx_copilot_proposals_status ON copilot_proposals(status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_copilot_events_time ON copilot_events(client_id, timestamp DESC);
         """)
 
         # Ensure WireGuard columns exist for upgrade
@@ -567,11 +606,11 @@ def init_sqlite_database():
             conn.execute("ALTER TABLE clients ADD COLUMN onboarded_at INTEGER")
             conn.execute("UPDATE clients SET onboarded_at = last_heartbeat WHERE last_heartbeat > 0 AND onboarded_at IS NULL")
         if 'hb_delayed_interval' not in cols:
-            conn.execute("ALTER TABLE clients ADD COLUMN hb_delayed_interval INTEGER DEFAULT 900")
+            conn.execute("ALTER TABLE clients ADD COLUMN hb_delayed_interval INTEGER DEFAULT 1800")
         if 'hb_warning_interval' not in cols:
-            conn.execute("ALTER TABLE clients ADD COLUMN hb_warning_interval INTEGER DEFAULT 1800")
+            conn.execute("ALTER TABLE clients ADD COLUMN hb_warning_interval INTEGER DEFAULT 21600")
         if 'hb_offline_interval' not in cols:
-            conn.execute("ALTER TABLE clients ADD COLUMN hb_offline_interval INTEGER DEFAULT 3600")
+            conn.execute("ALTER TABLE clients ADD COLUMN hb_offline_interval INTEGER DEFAULT 86400")
         if 'approval_status' not in cols:
             conn.execute("ALTER TABLE clients ADD COLUMN approval_status TEXT DEFAULT 'approved'")
         if 'rejection_reason' not in cols:
@@ -959,12 +998,12 @@ def load_clients_state():
             except: c['technologies'] = {}
             try: c['backups'] = json.loads(c.get('backups_json') or '[]')
             except: c['backups'] = []
-            try: c['hb_delayed_interval'] = int(c.get('hb_delayed_interval') or 900)
-            except: c['hb_delayed_interval'] = 900
-            try: c['hb_warning_interval'] = int(c.get('hb_warning_interval') or 1800)
-            except: c['hb_warning_interval'] = 1800
-            try: c['hb_offline_interval'] = int(c.get('hb_offline_interval') or 3600)
-            except: c['hb_offline_interval'] = 600
+            try: c['hb_delayed_interval'] = int(c.get('hb_delayed_interval') or 1800)
+            except: c['hb_delayed_interval'] = 1800
+            try: c['hb_warning_interval'] = int(c.get('hb_warning_interval') or 21600)
+            except: c['hb_warning_interval'] = 21600
+            try: c['hb_offline_interval'] = int(c.get('hb_offline_interval') or 86400)
+            except: c['hb_offline_interval'] = 86400
             c['approval_status'] = c.get('approval_status') or 'approved'
             c['rejection_reason'] = c.get('rejection_reason') or ''
             c['call_alert_enabled'] = int(c.get('call_alert_enabled', 1) if c.get('call_alert_enabled') is not None else 1)
@@ -1040,9 +1079,9 @@ def save_clients_state(data):
                          tech_json, backups_json, c.get('pending_backup'),
                          c.get('ets_port'), c.get('ets_target_type'), c.get('ets_target_ip'), c.get('ets_target_port'), c.get('ets_port_assigned_at'),
                          c.get('onboarded_at'),
-                         int(c.get('hb_delayed_interval') or 900),
-                         int(c.get('hb_warning_interval') or 1800),
-                         int(c.get('hb_offline_interval') or 3600),
+                         int(c.get('hb_delayed_interval') or 1800),
+                         int(c.get('hb_warning_interval') or 21600),
+                         int(c.get('hb_offline_interval') or 86400),
                          c.get('approval_status', 'approved'),
                          c.get('rejection_reason', ''),
                          1 if c.get('knx_remote_enabled', True) else 0,
@@ -3979,6 +4018,14 @@ HTML_PAGE = """<!DOCTYPE html>
                     <span id="badge-wa-dot" class="status-indicator-dot" style="margin-left: auto; width: 8px; height: 8px; background: #64748b;" title="WhatsApp Gateway Status"></span>
                 </div>
 
+                <div class="nav-item" id="nav-copilot" onclick="switchTab('copilot')" style="display: none;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span class="nav-item-icon">🤖</span>
+                        <span>AI Copilot & Console</span>
+                    </div>
+                    <span id="badge-copilot-dot" class="status-indicator-dot online" style="margin-left: auto; width: 8px; height: 8px; background: #a855f7;" title="RTX 3060 AI Copilot"></span>
+                </div>
+
                 <div class="nav-item" id="nav-account" onclick="switchTab('account')">
                     <div style="display: flex; align-items: center; gap: 10px;">
                         <span class="nav-item-icon">⚙️</span>
@@ -4426,16 +4473,26 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- 3-Column / Grid Status Cards -->
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px;">
+                    <!-- 4-Column Status Grid with Admin WhatsApp Recipient -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px;">
                         <!-- WhatsApp Card -->
                         <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 12px; padding: 18px;">
                             <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <div style="font-size: 11px; color: #94a3b8; font-weight: 700; text-transform: uppercase;">WhatsApp Engine</div>
+                                <div style="font-size: 11px; color: #94a3b8; font-weight: 700; text-transform: uppercase;">WhatsApp Sender Engine</div>
                                 <span id="wa-status-pill" class="status-indicator-dot degraded" style="font-size: 11px; font-weight: 700; color: #f59e0b; display: flex; align-items: center; gap: 6px;">● Initializing...</span>
                             </div>
                             <div style="font-size: 16px; font-weight: 800; color: #fff; margin-top: 6px;" id="wa-card-title">Baileys WebSocket</div>
-                            <div style="font-size: 11px; color: #10b981; margin-top: 4px;">Zero Cost &bull; Instant Delivery &bull; Official Web Engine</div>
+                            <div style="font-size: 11px; color: #10b981; margin-top: 4px;">Zero Cost &bull; QR Session Bot</div>
+                        </div>
+
+                        <!-- Admin Alert Recipient Card -->
+                        <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 12px; padding: 18px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div style="font-size: 11px; color: #94a3b8; font-weight: 700; text-transform: uppercase;">Admin Alert Receiver</div>
+                                <span id="admin-wa-top-pill" class="status-indicator-dot online" style="font-size: 11px; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 6px;">● Active Target</span>
+                            </div>
+                            <div style="font-size: 16px; font-weight: 800; color: #38bdf8; margin-top: 6px;" id="admin-wa-top-display">+91 7396263322</div>
+                            <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">System & Ecosystem Alerts &bull; AI Escalation</div>
                         </div>
 
                         <!-- Voice / Audio Alert Card -->
@@ -4502,6 +4559,34 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <div style="font-size: 11px; color: #94a3b8; margin-top: 10px; line-height: 1.4;">
                                     Clicking Logout unlinks this number immediately and regenerates a fresh QR code so you can link another phone.
                                 </div>
+                            </div>
+
+                            <!-- Dedicated Admin Destination Number Config Box -->
+                            <div style="margin-top: 20px; padding: 16px; background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 12px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                    <div style="font-size: 13px; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 6px;">
+                                        <span>👑 Admin WhatsApp Recipient</span>
+                                    </div>
+                                    <span id="badge-admin-wa-status" style="font-size: 9.5px; font-weight: 700; color: #10b981; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); padding: 2px 7px; border-radius: 10px;">Alert Target</span>
+                                </div>
+                                <div style="font-size: 11px; color: #94a3b8; line-height: 1.45; margin-bottom: 12px;">
+                                    Emergency system alerts, autonomous diagnostics, and AI Copilot notifications are delivered to this phone number. (Note: QR pairing above is the <em>sender bot</em>; this field is the <em>admin receiver</em>).
+                                </div>
+                                <div style="margin-bottom: 10px;">
+                                    <label class="form-label" style="font-size: 10px; margin-bottom: 4px;">ADMIN / MANUFACTURER PHONE</label>
+                                    <div style="display: flex; gap: 8px;">
+                                        <input type="text" id="admin-wa-phone-input" class="form-input" placeholder="e.g. 7396263322" style="font-weight: 700; font-size: 13px; letter-spacing: 0.5px; padding: 7px 10px;">
+                                        <button type="button" class="btn-action" style="padding: 7px 14px; font-size: 12px; white-space: nowrap; background: linear-gradient(135deg, #0284c7, #0369a1); border-color: #38bdf8;" onclick="saveAdminWhatsAppNumber()">
+                                            💾 Save
+                                        </button>
+                                    </div>
+                                </div>
+                                <div style="display: flex; gap: 6px;">
+                                    <button type="button" class="btn-sm" style="flex: 1; padding: 6px 10px; font-size: 11px; font-weight: 600; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); color: #38bdf8;" onclick="testAdminWhatsAppPing()">
+                                        📲 Test Admin Alert Ping
+                                    </button>
+                                </div>
+                                <div id="admin-wa-feedback" style="display: none; margin-top: 10px; font-size: 11px; padding: 8px 10px; border-radius: 6px; line-height: 1.4;"></div>
                             </div>
                         </div>
 
@@ -4641,6 +4726,128 @@ HTML_PAGE = """<!DOCTYPE html>
 
                         <div id="smtp-cfg-feedback" style="display: none; margin-top: 14px; padding: 12px 16px; border-radius: 8px; font-size: 12px; line-height: 1.5;"></div>
                     </div>
+                    </div>
+                </div>
+
+                <!-- ==============================================================
+                     TAB: AI COPILOT & ECOSYSTEM CONSOLE (MANUFACTURER ONLY)
+                     ============================================================== -->
+                <div class="tab-pane" id="tab-copilot">
+                    <div class="section-header" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px;">
+                        <div>
+                            <div class="section-title">🤖 Autonomous AI Copilot & Ecosystem Console</div>
+                            <div style="font-size: 13px; color: #94a3b8; margin-top: 4px;">
+                                Dedicated AI operational intelligence powered by NVIDIA GeForce RTX 3060 (12GB VRAM) on VM 307 with Qwen 2.5 Coder. 24/7 autonomous ecosystem self-healing, telemetry intelligence, and fleet operations with human-in-the-loop approval gates.
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn-action" type="button" onclick="loadCopilotStatus(); loadCopilotProposals();">🔄 Refresh Copilot</button>
+                        </div>
+                    </div>
+
+                    <!-- Copilot Architecture Status Banner -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px;">
+                        <div style="background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(168, 85, 247, 0.35); border-radius: 12px; padding: 18px;">
+                            <div style="font-size: 11px; color: #94a3b8; font-weight: 700; text-transform: uppercase;">AI Acceleration Node</div>
+                            <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
+                                <span class="status-indicator-dot online" style="width: 10px; height: 10px; background: #a855f7;"></span>
+                                <span style="font-size: 16px; font-weight: 800; color: #fff;">VM 307 (ai-server-2)</span>
+                            </div>
+                            <div style="font-size: 11px; color: #c084fc; margin-top: 4px;">NVIDIA GeForce RTX 3060 12GB VRAM</div>
+                        </div>
+
+                        <div style="background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(0, 240, 255, 0.3); border-radius: 12px; padding: 18px;">
+                            <div style="font-size: 11px; color: #94a3b8; font-weight: 700; text-transform: uppercase;">Autonomous Reasoning Model</div>
+                            <div style="font-size: 15px; font-weight: 700; color: #fff; margin-top: 6px;">
+                                <code>qwen2.5-coder:7b</code>
+                            </div>
+                            <div style="font-size: 11px; color: #00f0ff; margin-top: 4px;">Ollama Tool Calling & API Reasoning Active</div>
+                        </div>
+
+                        <div style="background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 12px; padding: 18px;">
+                            <div style="font-size: 11px; color: #94a3b8; font-weight: 700; text-transform: uppercase;">Self-Healing Safety Gate</div>
+                            <div style="font-size: 15px; font-weight: 700; color: #10b981; margin-top: 6px;">
+                                🛡️ Strict Human-in-the-Loop
+                            </div>
+                            <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">Edge 5 attempts &bull; AI 5 attempts &bull; Approval Gate</div>
+                        </div>
+
+                        <div style="background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 12px; padding: 18px;">
+                            <div style="font-size: 11px; color: #94a3b8; font-weight: 700; text-transform: uppercase;">Pending Action Proposals</div>
+                            <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
+                                <span id="copilot-proposals-count" style="font-size: 20px; font-weight: 800; color: #fbbf24;">0</span>
+                                <span style="font-size: 13px; color: #94a3b8;">Awaiting Approval</span>
+                            </div>
+                            <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Direct execution blocked until confirmed</div>
+                        </div>
+                    </div>
+
+                    <!-- Proposals Review Section -->
+                    <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 16px; padding: 22px; margin-bottom: 24px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+                            <div style="font-size: 15px; font-weight: 700; color: #fbbf24; display: flex; align-items: center; gap: 8px;">
+                                <span>📋 Pending Autonomous Proposals (Human Approval Gate)</span>
+                            </div>
+                            <span class="badge-role" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3);">Mandatory Confirmation</span>
+                        </div>
+                        <div id="copilot-proposals-container">
+                            <div style="text-align: center; padding: 24px; color: #94a3b8; font-size: 13px;">
+                                ✓ All ecosystem components operating nominally. No system or gateway proposals pending approval.
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Interactive Copilot Console & Chat -->
+                    <div style="display: grid; grid-template-columns: 1fr 340px; gap: 24px;">
+                        <!-- Left: Live Chat / Command Stream -->
+                        <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(168, 85, 247, 0.3); border-radius: 16px; padding: 22px; display: flex; flex-direction: column; height: 580px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+                                <div style="font-size: 15px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+                                    <span>💬 Live Operations AI Terminal</span>
+                                </div>
+                                <span style="font-size: 11px; color: #c084fc; background: rgba(168, 85, 247, 0.15); padding: 3px 8px; border-radius: 12px; border: 1px solid rgba(168, 85, 247, 0.3);">VM 307 Stream</span>
+                            </div>
+
+                            <div id="copilot-messages-log" style="flex: 1; overflow-y: auto; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 14px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 12px; font-family: 'JetBrains Mono', monospace; font-size: 12.5px;">
+                                <div style="color: #94a3b8; line-height: 1.5;">
+                                    <strong style="color: #a855f7;">[GAVASAH AI COPILOT]:</strong> System initialized. Ready to execute fleet diagnostics, telemetry correlation, and self-healing analysis across the entire ecosystem.
+                                </div>
+                            </div>
+
+                            <form onsubmit="handleCopilotChatSubmit(event)" style="display: flex; gap: 10px;">
+                                <input type="text" id="copilot-user-input" class="form-input" placeholder="Ask Copilot or command fleet operations (e.g. 'Audit offline gateways', 'Check MQTT telemetry')..." style="flex: 1; font-size: 13px;">
+                                <button type="submit" id="copilot-send-btn" class="btn-action" style="background: linear-gradient(135deg, #7c3aed, #6d28d9); border-color: #a78bfa; padding: 10px 20px;">
+                                    ⚡ Send
+                                </button>
+                            </form>
+                        </div>
+
+                        <!-- Right: Quick Diagnostic Probes & Rules -->
+                        <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 16px; padding: 22px;">
+                            <div style="font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 12px;">⚡ Quick Diagnostic Probes</div>
+                            <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px;">
+                                <button type="button" class="btn-sm" style="text-align: left; padding: 10px 14px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); color: #cbd5e1;" onclick="sendCopilotQuickCmd('Audit ecosystem telemetry and report offline gateways')">
+                                    📊 Audit Ecosystem Telemetry
+                                </button>
+                                <button type="button" class="btn-sm" style="text-align: left; padding: 10px 14px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); color: #cbd5e1;" onclick="sendCopilotQuickCmd('Inspect broken integrations and recent gateway events')">
+                                    🔍 Inspect Failed Integrations
+                                </button>
+                                <button type="button" class="btn-sm" style="text-align: left; padding: 10px 14px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); color: #cbd5e1;" onclick="sendCopilotQuickCmd('Test NVIDIA RTX 3060 inference and model latency')">
+                                    ⚡ Probe RTX 3060 Inference
+                                </button>
+                                <button type="button" class="btn-sm" style="text-align: left; padding: 10px 14px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); color: #cbd5e1;" onclick="sendCopilotQuickCmd('Review pending action proposals and safety gates')">
+                                    🛡️ Review Proposal Safety Gates
+                                </button>
+                            </div>
+
+                            <div style="font-size: 13px; font-weight: 700; color: #fff; margin-bottom: 8px;">📜 Autonomous Rules</div>
+                            <div style="font-size: 11.5px; color: #94a3b8; line-height: 1.6;">
+                                • <strong>Tier 1 (Edge)</strong>: Gateway add-on attempts 5 local self-healing cycles.<br>
+                                • <strong>Tier 2 (AI Cloud)</strong>: If edge fails, AI intervenes up to 5 attempts and notifies Admin WhatsApp.<br>
+                                • <strong>Tier 3 (Escalation)</strong>: If all 5 AI attempts fail, alerts escalate to Integrator, Dealer, and Manufacturer.<br>
+                                • <strong>Zero-Surprise Gate</strong>: System & ecosystem modifications require explicit Admin approval.
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -5641,7 +5848,10 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (navMqtt) navMqtt.style.display = 'flex';
                 const navAlerts = document.getElementById('nav-alerts');
                 if (navAlerts) navAlerts.style.display = 'flex';
+                const navCopilot = document.getElementById('nav-copilot');
+                if (navCopilot) navCopilot.style.display = 'flex';
                 loadWhatsAppStatus();
+                loadAdminWhatsAppNumber();
                 applyDealerBranding(currentUser.branding);
                 switchTab('overview');
                 fetchDealers();
@@ -5870,7 +6080,261 @@ HTML_PAGE = """<!DOCTYPE html>
                 populateMqttDispatcherClients();
             } else if (tabId === 'alerts') {
                 loadWhatsAppStatus();
+                loadAdminWhatsAppNumber();
+            } else if (tabId === 'copilot') {
+                loadCopilotStatus();
+                loadCopilotProposals();
+                loadCopilotHistory();
             }
+        }
+
+        // ======================================================================
+        // ADMIN WHATSAPP DESTINATION & RECIPIENT MANAGEMENT
+        // ======================================================================
+        async function loadAdminWhatsAppNumber() {
+            try {
+                const res = await apiFetch('/api/whatsapp/admin_number?t=' + Date.now());
+                if (!res.ok) return;
+                const data = await res.json();
+                if (data.admin_whatsapp_number) {
+                    const input = document.getElementById('admin-wa-phone-input');
+                    const topDisplay = document.getElementById('admin-wa-top-display');
+                    if (input && !input.matches(':focus')) input.value = data.admin_whatsapp_number;
+                    if (topDisplay) topDisplay.innerText = '+' + data.admin_whatsapp_number.replace(/^\+/, '');
+                }
+            } catch (e) {
+                console.error("Failed to load admin WhatsApp number:", e);
+            }
+        }
+
+        async function saveAdminWhatsAppNumber() {
+            const input = document.getElementById('admin-wa-phone-input');
+            const feedback = document.getElementById('admin-wa-feedback');
+            if (!input) return;
+            const phone = input.value.trim();
+            if (!phone) {
+                showToast("Please enter a valid WhatsApp phone number", "error");
+                return;
+            }
+            try {
+                if (feedback) {
+                    feedback.style.display = 'block';
+                    feedback.style.background = 'rgba(56, 189, 248, 0.1)';
+                    feedback.style.color = '#38bdf8';
+                    feedback.innerText = 'Saving admin number...';
+                }
+                const res = await apiFetch('/api/whatsapp/admin_number', {
+                    method: 'POST',
+                    body: JSON.stringify({ admin_whatsapp_number: phone })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(data.message || "Admin WhatsApp number saved", "success");
+                    if (feedback) {
+                        feedback.style.display = 'block';
+                        feedback.style.background = 'rgba(16, 185, 129, 0.15)';
+                        feedback.style.color = '#10b981';
+                        feedback.innerText = '✓ ' + (data.message || 'Saved successfully');
+                    }
+                    loadAdminWhatsAppNumber();
+                } else {
+                    showToast(data.error || "Failed to save", "error");
+                    if (feedback) {
+                        feedback.style.display = 'block';
+                        feedback.style.background = 'rgba(239, 68, 68, 0.15)';
+                        feedback.style.color = '#f87171';
+                        feedback.innerText = '✗ ' + (data.error || 'Failed to save');
+                    }
+                }
+            } catch (e) {
+                showToast("Error: " + e.message, "error");
+            }
+        }
+
+        async function testAdminWhatsAppPing() {
+            const feedback = document.getElementById('admin-wa-feedback');
+            const input = document.getElementById('admin-wa-phone-input');
+            const phone = input ? input.value.trim() : '';
+            showToast("Dispatching test alert to Admin WhatsApp...", "info");
+            if (feedback) {
+                feedback.style.display = 'block';
+                feedback.style.background = 'rgba(56, 189, 248, 0.1)';
+                feedback.style.color = '#38bdf8';
+                feedback.innerText = 'Sending test verification message...';
+            }
+            try {
+                const res = await apiFetch('/api/whatsapp/admin_test_ping', {
+                    method: 'POST',
+                    body: JSON.stringify({ admin_whatsapp_number: phone })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast("Test ping dispatched to Admin WhatsApp!", "success");
+                    if (feedback) {
+                        feedback.style.display = 'block';
+                        feedback.style.background = 'rgba(16, 185, 129, 0.15)';
+                        feedback.style.color = '#10b981';
+                        feedback.innerText = '✓ Test alert delivered to +' + data.recipient;
+                    }
+                } else {
+                    showToast(data.error || "Failed to dispatch test ping", "error");
+                    if (feedback) {
+                        feedback.style.display = 'block';
+                        feedback.style.background = 'rgba(239, 68, 68, 0.15)';
+                        feedback.style.color = '#f87171';
+                        feedback.innerText = '✗ ' + (data.error || 'Dispatch failed');
+                    }
+                }
+            } catch (e) {
+                showToast("Error: " + e.message, "error");
+            }
+        }
+
+        // ======================================================================
+        // AI COPILOT CONSOLE & APPROVAL GATE LOGIC
+        // ======================================================================
+        async function loadCopilotStatus() {
+            try {
+                const res = await apiFetch('/api/copilot/status?t=' + Date.now());
+                if (!res.ok) return;
+                const data = await res.json();
+                const pCountEl = document.getElementById('copilot-proposals-count');
+                if (pCountEl) pCountEl.innerText = data.pending_proposals_count || 0;
+            } catch (e) {
+                console.error("Failed to load Copilot status:", e);
+            }
+        }
+
+        async function loadCopilotProposals() {
+            try {
+                const res = await apiFetch('/api/copilot/proposals?t=' + Date.now());
+                if (!res.ok) return;
+                const data = await res.json();
+                const container = document.getElementById('copilot-proposals-container');
+                if (!container) return;
+                const proposals = data.proposals || [];
+                const pCountEl = document.getElementById('copilot-proposals-count');
+                if (pCountEl) pCountEl.innerText = proposals.length;
+
+                if (proposals.length === 0) {
+                    container.innerHTML = `<div style="text-align: center; padding: 24px; color: #94a3b8; font-size: 13px;">
+                        ✓ All ecosystem components operating nominally. No system or gateway proposals pending approval.
+                    </div>`;
+                    return;
+                }
+
+                container.innerHTML = proposals.map(p => `
+                    <div style="background: rgba(0,0,0,0.4); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 12px; padding: 16px; margin-bottom: 12px;">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
+                            <div>
+                                <span style="font-size: 11px; font-weight: 700; color: #fbbf24; background: rgba(245, 158, 11, 0.15); padding: 2px 8px; border-radius: 6px; border: 1px solid rgba(245, 158, 11, 0.3);">PROPOSAL #${escapeHtml(p.id)}</span>
+                                <strong style="color: #fff; font-size: 14px; margin-left: 8px;">${escapeHtml(p.summary || 'Ecosystem Modification')}</strong>
+                            </div>
+                            <span style="font-size: 11px; color: #94a3b8;">${new Date((p.created_at || Date.now()/1000)*1000).toLocaleTimeString()}</span>
+                        </div>
+                        <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 12px; line-height: 1.5;">
+                            <strong>Target:</strong> <code>${escapeHtml(p.client_id || 'System Server')}</code> &bull; <strong>Action:</strong> ${escapeHtml(p.action_type || 'Remediation')}
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <button type="button" class="btn-action" style="padding: 8px 16px; font-size: 12px; background: linear-gradient(135deg, #059669, #047857); border-color: #34d399;" onclick="handleCopilotApproval('${p.id}', true)">
+                                ✓ Approve & Execute
+                            </button>
+                            <button type="button" class="btn-sm" style="padding: 8px 16px; font-size: 12px; background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; color: #f87171;" onclick="handleCopilotApproval('${p.id}', false)">
+                                ✗ Reject Proposal
+                            </button>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error("Failed to load proposals:", e);
+            }
+        }
+
+        async function handleCopilotApproval(propId, approved) {
+            const action = approved ? 'approve' : 'reject';
+            if (!confirm(`Are you sure you want to ${action.toUpperCase()} proposal #${propId}?`)) return;
+            try {
+                const res = await apiFetch(`/api/copilot/proposals/${action}`, {
+                    method: 'POST',
+                    body: JSON.stringify({ proposal_id: propId })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`Proposal #${propId} ${action}d successfully`, "success");
+                    loadCopilotProposals();
+                    loadCopilotHistory();
+                } else {
+                    showToast(data.error || "Failed to process proposal", "error");
+                }
+            } catch (e) {
+                showToast("Error: " + e.message, "error");
+            }
+        }
+
+        async function loadCopilotHistory() {
+            try {
+                const res = await apiFetch('/api/copilot/history?t=' + Date.now());
+                if (!res.ok) return;
+                const data = await res.json();
+                const log = document.getElementById('copilot-messages-log');
+                if (!log || !data.history) return;
+                log.innerHTML = data.history.map(m => {
+                    const isAi = m.sender === 'ai';
+                    const color = isAi ? '#a855f7' : '#38bdf8';
+                    const label = isAi ? '[GAVASAH AI COPILOT]' : '[MANUFACTURER]';
+                    return `<div style="line-height: 1.5;"><strong style="color: ${color};">${label}:</strong> ${escapeHtml(m.message)}</div>`;
+                }).join('');
+                log.scrollTop = log.scrollHeight;
+            } catch (e) {
+                console.error("Failed to load Copilot history:", e);
+            }
+        }
+
+        async function handleCopilotChatSubmit(e) {
+            e.preventDefault();
+            const input = document.getElementById('copilot-user-input');
+            if (!input) return;
+            const msg = input.value.trim();
+            if (!msg) return;
+            input.value = '';
+            appendCopilotChatMessage('user', msg);
+            try {
+                const res = await apiFetch('/api/copilot/chat', {
+                    method: 'POST',
+                    body: JSON.stringify({ message: msg })
+                });
+                const data = await res.json();
+                if (data.reply) {
+                    appendCopilotChatMessage('ai', data.reply);
+                    if (data.proposal_created) loadCopilotProposals();
+                } else if (data.error) {
+                    appendCopilotChatMessage('ai', "⚠️ Error: " + data.error);
+                }
+            } catch (err) {
+                appendCopilotChatMessage('ai', "⚠️ Communication error: " + err.message);
+            }
+        }
+
+        function sendCopilotQuickCmd(cmd) {
+            const input = document.getElementById('copilot-user-input');
+            if (input) {
+                input.value = cmd;
+                const form = input.closest('form');
+                if (form) form.dispatchEvent(new Event('submit', { cancelable: true }));
+            }
+        }
+
+        function appendCopilotChatMessage(sender, msg) {
+            const log = document.getElementById('copilot-messages-log');
+            if (!log) return;
+            const isAi = sender === 'ai';
+            const color = isAi ? '#a855f7' : '#38bdf8';
+            const label = isAi ? '[GAVASAH AI COPILOT]' : '[MANUFACTURER]';
+            const div = document.createElement('div');
+            div.style.lineHeight = '1.5';
+            div.innerHTML = `<strong style="color: ${color};">${label}:</strong> ${escapeHtml(msg)}`;
+            log.appendChild(div);
+            log.scrollTop = log.scrollHeight;
         }
 
         // ======================================================================
@@ -10651,14 +11115,14 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             owner = auth.get('owner', {})
             owner_clients = [c for c in c_data.values() if c.get('dealer_id') in ['owner_master', '', None]]
             owner_ints = [it for it in integrators_dict.values() if it.get('dealer_id') in ['owner_master', '', None]]
-            mfg_online_c = sum(1 for c in owner_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 3600))
+            mfg_online_c = sum(1 for c in owner_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 86400))
             mfg_lost_c = len(owner_clients) - mfg_online_c
 
             mfg_clients_list = [{
                 'client_id': c.get('client_id'),
                 'name': c.get('name', c.get('client_id')),
                 'domain': c.get('domain', ''),
-                'status': 'online' if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 3600) else 'offline',
+                'status': 'online' if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 86400) else 'offline',
                 'last_heartbeat': c.get('last_heartbeat', 0)
             } for c in sorted(owner_clients, key=lambda x: str(x.get('name', '')).lower())]
 
@@ -10685,14 +11149,14 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                 dealer_clients = [c for c in c_data.values() if c.get('dealer_id') == did]
                 dealer_ints = [it for it in integrators_dict.values() if it.get('dealer_id') == did]
                 
-                online_c = sum(1 for c in dealer_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 3600))
+                online_c = sum(1 for c in dealer_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 86400))
                 lost_c = len(dealer_clients) - online_c
 
                 dlr_clients_list = [{
                     'client_id': c.get('client_id'),
                     'name': c.get('name', c.get('client_id')),
                     'domain': c.get('domain', ''),
-                    'status': 'online' if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 3600) else 'offline',
+                    'status': 'online' if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 86400) else 'offline',
                     'last_heartbeat': c.get('last_heartbeat', 0)
                 } for c in sorted(dealer_clients, key=lambda x: str(x.get('name', '')).lower())]
 
@@ -10741,7 +11205,7 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                     d_name = 'Master Manufacturer (Direct)'
 
                 supervised_clients = [c for c in c_data.values() if c.get('integrator_id') == iid]
-                online_c = sum(1 for c in supervised_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 3600))
+                online_c = sum(1 for c in supervised_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 86400))
                 lost_c = len(supervised_clients) - online_c
 
                 res.append({
@@ -11204,6 +11668,72 @@ PersistentKeepalive = 25
                 ]
             }
             self.send_json(200, topics)
+            return
+
+        elif parsed.path == '/api/whatsapp/admin_number':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+            admin_num = get_admin_whatsapp_number()
+            self.send_json(200, {'success': True, 'admin_whatsapp_number': admin_num})
+            return
+
+        elif parsed.path == '/api/copilot/status':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+            if user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer permission required'})
+                return
+            with DB_LOCK:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) as cnt FROM copilot_proposals WHERE status = 'pending'")
+                p_cnt = cur.fetchone()['cnt']
+                conn.close()
+            self.send_json(200, {
+                'success': True,
+                'model': 'qwen2.5-coder:7b',
+                'node': 'VM 307 (ai-server-2)',
+                'gpu': 'NVIDIA GeForce RTX 3060 12GB',
+                'pending_proposals_count': p_cnt
+            })
+            return
+
+        elif parsed.path == '/api/copilot/proposals':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+            if user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer permission required'})
+                return
+            with DB_LOCK:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT id, client_id, subsystem, action_type, summary, status, created_at FROM copilot_proposals WHERE status = 'pending' ORDER BY created_at DESC")
+                proposals = [dict(r) for r in cur.fetchall()]
+                conn.close()
+            self.send_json(200, {'success': True, 'proposals': proposals})
+            return
+
+        elif parsed.path == '/api/copilot/history':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+            if user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer permission required'})
+                return
+            with DB_LOCK:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT sender, message, timestamp FROM copilot_chat_history ORDER BY timestamp ASC LIMIT 50")
+                history = [dict(r) for r in cur.fetchall()]
+                conn.close()
+            self.send_json(200, {'success': True, 'history': history})
             return
 
         else:
@@ -13548,6 +14078,72 @@ PersistentKeepalive = 25
                 self.send_json(500, {'error': str(e)})
             return
 
+        elif parsed.path == '/api/whatsapp/admin_number':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+            admin_num = get_admin_whatsapp_number()
+            self.send_json(200, {'success': True, 'admin_whatsapp_number': admin_num})
+            return
+
+        elif parsed.path == '/api/copilot/status':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+            if user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer permission required'})
+                return
+            with DB_LOCK:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) as cnt FROM copilot_proposals WHERE status = 'pending'")
+                p_cnt = cur.fetchone()['cnt']
+                conn.close()
+            self.send_json(200, {
+                'success': True,
+                'model': 'qwen2.5-coder:7b',
+                'node': 'VM 307 (ai-server-2)',
+                'gpu': 'NVIDIA GeForce RTX 3060 12GB',
+                'pending_proposals_count': p_cnt
+            })
+            return
+
+        elif parsed.path == '/api/copilot/proposals':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+            if user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer permission required'})
+                return
+            with DB_LOCK:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT id, client_id, subsystem, action_type, summary, status, created_at FROM copilot_proposals WHERE status = 'pending' ORDER BY created_at DESC")
+                proposals = [dict(r) for r in cur.fetchall()]
+                conn.close()
+            self.send_json(200, {'success': True, 'proposals': proposals})
+            return
+
+        elif parsed.path == '/api/copilot/history':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+            if user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer permission required'})
+                return
+            with DB_LOCK:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT sender, message, timestamp FROM copilot_chat_history ORDER BY timestamp ASC LIMIT 50")
+                history = [dict(r) for r in cur.fetchall()]
+                conn.close()
+            self.send_json(200, {'success': True, 'history': history})
+            return
+
         else:
             self.send_response(404)
             self.end_headers()
@@ -13564,8 +14160,24 @@ PREV_HEARTBEAT_STATUS = {}       # client_id -> 'ONLINE' | 'DELAYED' | 'WARNING'
 NOTIFIED_FAILED_RECOVERY = set() # set of (client_id, tech_key)
 WATCHDOG_INITIALIZED = False
 
+def get_admin_whatsapp_number():
+    admin_phone = '7396263322'
+    try:
+        with DB_LOCK:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM system_settings WHERE key = 'admin_whatsapp_number'")
+            row = cur.fetchone()
+            if row and row['value']:
+                admin_phone = row['value'].strip()
+            conn.close()
+    except Exception:
+        pass
+    return admin_phone
+
 def send_whatsapp_alert_to_contacts(client_id, message):
-    recipients = set(['7396263322'])
+    admin_num = get_admin_whatsapp_number()
+    recipients = set([admin_num])
     try:
         with DB_LOCK:
             conn = get_db_connection()
@@ -13734,9 +14346,9 @@ def start_telemetry_alert_watchdog():
                 is_pending = not last_hb or last_hb == 0 or c.get('status') == 'pending'
                 diff = -1 if is_pending else (now - last_hb)
 
-                delayed_limit = int(c.get('hb_delayed_interval') or 900)
-                warn_limit = int(c.get('hb_warning_interval') or 1800)
-                off_limit = int(c.get('hb_offline_interval') or 3600)
+                delayed_limit = int(c.get('hb_delayed_interval') or 1800)
+                warn_limit = int(c.get('hb_warning_interval') or 21600)
+                off_limit = int(c.get('hb_offline_interval') or 86400)
 
                 # Determine current status
                 if is_pending or c.get('approval_status') == 'pending':
