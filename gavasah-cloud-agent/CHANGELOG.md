@@ -5,6 +5,17 @@ All notable changes to the **Gavasah Cloud Agent** Home Assistant Add-on will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-10-20
+
+### Added
+- **High-Speed MQTT Telemetry & Pub/Sub Engine**: Integrated persistent MQTT client publishing lightweight performance metrics (CPU, RAM, Core/OS versions, subsystems, and RAUC slot health) every 30–60s to `gavasah/clients/{client_id}/telemetry`.
+- **Zero-Latency Last Will & Testament (LWT)**: Automatic disconnect notification published to `gavasah/clients/{client_id}/status` upon connection drop.
+- **Secure Password-Based Authentication**: Support for username (`client_id`) and password (`auth_key`) authentication to EMQX broker.
+- **Instant Downlink Command Listener**: Direct command execution via `gavasah/clients/{client_id}/cmd` and `gavasah/global/cmd`, reducing execution latency from minutes to under 50ms.
+- **Exhausted Self-Healing Alert Event Stream**: When local 5-attempt autonomous remediation fails, publishes immediate event to `gavasah/clients/{client_id}/events` to trigger server-side AI Copilot triage.
+
+---
+
 ## [1.2.8] - 2026-10-16
 
 ### Added

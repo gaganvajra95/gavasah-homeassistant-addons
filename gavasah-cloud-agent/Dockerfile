@@ -10,6 +10,7 @@ RUN apk add --no-cache \
     py3-pip \
     py3-requests \
     py3-websocket-client \
+    py3-paho-mqtt \
     autossh \
     openssh-client \
     socat \

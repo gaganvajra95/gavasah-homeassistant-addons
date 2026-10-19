@@ -40,7 +40,7 @@ def get_public_key():
             log(f"Notice: Could not read {SSH_PUBKEY_PATH}: {e}")
     return ""
 
-ADDON_VERSION = "1.2.8"
+ADDON_VERSION = "1.3.0"
 MAX_HEALING_ATTEMPTS = 5
 HEALING_COOLDOWN_SEC = 60
 
@@ -1865,6 +1865,154 @@ def publish_local_entities(payload):
         }
     )
 
+class MqttTelemetryEngine:
+    def __init__(self, opts, collect_telemetry_fn, handle_cmd_fn, log_fn):
+        self.opts = opts
+        self.collect_telemetry = collect_telemetry_fn
+        self.handle_cmd = handle_cmd_fn
+        self.log = log_fn
+        self.client_id = opts.get("client_id", "unknown-gateway")
+        self.auth_key = opts.get("auth_key", "")
+        self.mqtt_host = opts.get("mqtt_host", "10.42.0.1")
+        self.mqtt_port = int(opts.get("mqtt_port", 1883))
+        self.interval = max(30, min(120, int(opts.get("mqtt_interval", 45))))
+        self.running = False
+        self.client = None
+        self.connected = False
+
+    def start(self):
+        if not self.opts.get("mqtt_enabled", True):
+            self.log("[MQTT] Telemetry engine disabled in options.")
+            return
+        self.running = True
+        import threading
+        t = threading.Thread(target=self._run_loop, daemon=True, name="GavasahMqttTelemetry")
+        t.start()
+        self.log(f"[MQTT] Telemetry engine started | Host: {self.mqtt_host}:{self.mqtt_port} | Interval: {self.interval}s | Client: {self.client_id}")
+
+    def _run_loop(self):
+        while self.running:
+            try:
+                import paho.mqtt.client as mqtt
+                self._connect_and_loop_paho(mqtt)
+            except ImportError:
+                self.log("[MQTT] Notice: paho-mqtt not available in container, telemetry running via HTTPS REST fallback.")
+                break
+            except Exception as e:
+                self.log(f"[MQTT] Loop error: {e}. Reconnecting in 15s...")
+                time.sleep(15)
+
+    def _connect_and_loop_paho(self, mqtt):
+        client = mqtt.Client(client_id=f"{self.client_id}-agent", protocol=mqtt.MQTTv311)
+        if self.auth_key:
+            client.username_pw_set(self.client_id, self.auth_key)
+
+        # LWT (Last Will & Testament)
+        lwt_topic = f"gavasah/clients/{self.client_id}/status"
+        lwt_payload = json.dumps({
+            "client_id": self.client_id,
+            "status": "offline",
+            "timestamp": int(time.time()),
+            "lwt": True
+        })
+        client.will_set(lwt_topic, lwt_payload, qos=1, retain=True)
+
+        def on_connect(c, userdata, flags, rc):
+            if rc == 0:
+                self.connected = True
+                self.log(f"[MQTT] Connected successfully to {self.mqtt_host}:{self.mqtt_port}")
+                online_payload = json.dumps({
+                    "client_id": self.client_id,
+                    "status": "online",
+                    "timestamp": int(time.time()),
+                    "lwt": False
+                })
+                c.publish(lwt_topic, online_payload, qos=1, retain=True)
+                # Subscribe to instant command topics
+                c.subscribe([(f"gavasah/clients/{self.client_id}/cmd", 1), ("gavasah/global/cmd", 1)])
+            else:
+                self.connected = False
+                self.log(f"[MQTT] Connect returned code {rc} (Auth/Permission check needed)")
+
+        def on_disconnect(c, userdata, rc):
+            self.connected = False
+            self.log(f"[MQTT] Disconnected from broker (rc={rc})")
+
+        def on_message(c, userdata, msg):
+            try:
+                raw = msg.payload.decode("utf-8")
+                cmd = json.loads(raw)
+                self.log(f"[MQTT] Received instant command on {msg.topic}: {cmd.get('action')}")
+                hub_host = self.opts.get("hub_host", "dealer.gavasah.com")
+                self.handle_cmd(hub_host, self.opts, cmd)
+            except Exception as e:
+                self.log(f"[MQTT] Error handling incoming command: {e}")
+
+        client.on_connect = on_connect
+        client.on_disconnect = on_disconnect
+        client.on_message = on_message
+
+        client.connect(self.mqtt_host, self.mqtt_port, keepalive=60)
+        client.loop_start()
+        self.client = client
+
+        last_pub = 0
+        last_alert_events = set()
+
+        while self.running:
+            time.sleep(1)
+            now = time.time()
+            if self.connected and (now - last_pub >= self.interval):
+                last_pub = now
+                try:
+                    payload = self.collect_telemetry(self.opts)
+                    sys_p = payload.get("system", {})
+                    tech_p = payload.get("technologies", {})
+                    light = {
+                        "client_id": self.client_id,
+                        "timestamp": int(now),
+                        "boot_slot": sys_p.get("boot_slot"),
+                        "slot_a_status": sys_p.get("slot_a_status"),
+                        "slot_b_status": sys_p.get("slot_b_status"),
+                        "is_recovery_mode": sys_p.get("is_recovery_mode", False),
+                        "os_version": sys_p.get("os_version"),
+                        "core_version": sys_p.get("core_version"),
+                        "supervisor_version": sys_p.get("supervisor_version"),
+                        "cpu_percent": sys_p.get("cpu_percent"),
+                        "memory_percent": sys_p.get("memory_percent"),
+                        "disk_free_gb": sys_p.get("disk_free_gb"),
+                        "uptime_seconds": sys_p.get("uptime_seconds"),
+                        "knx_reachable": payload.get("knx_status", {}).get("reachable", False),
+                        "subsystems": tech_p,
+                        "self_healing": tech_p.get("self_healing", {})
+                    }
+                    telem_topic = f"gavasah/clients/{self.client_id}/telemetry"
+                    client.publish(telem_topic, json.dumps(light), qos=0)
+
+                    # Event dispatch: Check for exhausted self-healing (5 attempts failed locally)
+                    sh = tech_p.get("self_healing", {}).get("subsystems", {})
+                    for sub_name, sub_info in sh.items():
+                        if sub_info.get("exhausted") or sub_info.get("attempts", 0) >= 5:
+                            ev_key = f"{sub_name}:{sub_info.get('first_failed')}"
+                            if ev_key not in last_alert_events:
+                                last_alert_events.add(ev_key)
+                                event_payload = {
+                                    "client_id": self.client_id,
+                                    "event": "subsystem_exhausted",
+                                    "subsystem": sub_name,
+                                    "attempts": sub_info.get("attempts"),
+                                    "reason": sub_info.get("last_action") or "5 self-healing attempts failed locally",
+                                    "timestamp": int(now)
+                                }
+                                event_topic = f"gavasah/clients/{self.client_id}/events"
+                                client.publish(event_topic, json.dumps(event_payload), qos=1)
+                                self.log(f"[MQTT] Dispatched exhausted alert event for subsystem '{sub_name}'")
+                except Exception as ex:
+                    self.log(f"[MQTT] Telemetry publish error: {ex}")
+
+        client.loop_stop()
+        client.disconnect()
+
 def send_heartbeat(hub_host, payload):
     import ssl
     ctx = ssl._create_unverified_context()
@@ -1902,6 +2050,13 @@ def main():
     ensure_external_url(opts)
     ensure_supervisor_toggles()
     auto_heal_ip_bans_and_proxy()
+
+    # Start High-Speed MQTT Telemetry Engine (publishes every 30-60s)
+    try:
+        mqtt_engine = MqttTelemetryEngine(opts, collect_telemetry, handle_remote_command, log)
+        mqtt_engine.start()
+    except Exception as e:
+        log(f"Notice: Could not start MQTT telemetry engine: {e}")
 
     # Immediate Second-0 Initial Pulse on Startup (Eliminates 60s onboarding wait)
     try:
