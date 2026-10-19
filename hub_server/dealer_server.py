@@ -14083,11 +14083,37 @@ PersistentKeepalive = 25
             if not user:
                 self.send_json(401, {'error': 'Authentication required'})
                 return
-            admin_num = get_admin_whatsapp_number()
-            self.send_json(200, {'success': True, 'admin_whatsapp_number': admin_num})
+            if user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer permission required'})
+                return
+            content_length = int(self.headers.get('Content-Length', 0))
+            body_bytes = self.rfile.read(content_length)
+            try:
+                data = json.loads(body_bytes.decode('utf-8'))
+                raw_phone = str(data.get('admin_whatsapp_number', '')).strip()
+                clean_phone = re.sub(r'[^0-9]', '', raw_phone)
+                if len(clean_phone) == 10 and clean_phone[0] in ['6', '7', '8', '9']:
+                    clean_phone = '91' + clean_phone
+                if len(clean_phone) < 10:
+                    self.send_json(400, {'error': 'Invalid phone number format. Must contain at least 10 digits.'})
+                    return
+                now = int(time.time())
+                with DB_LOCK:
+                    conn = get_db_connection()
+                    conn.execute("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                                 ('admin_whatsapp_number', clean_phone, now))
+                    conn.commit()
+                    conn.close()
+                self.send_json(200, {
+                    'success': True,
+                    'message': f'Admin WhatsApp destination number updated to +{clean_phone}',
+                    'admin_whatsapp_number': clean_phone
+                })
+            except Exception as e:
+                self.send_json(500, {'error': str(e)})
             return
 
-        elif parsed.path == '/api/copilot/status':
+        elif parsed.path == '/api/whatsapp/admin_test_ping':
             user = self.get_authenticated_user()
             if not user:
                 self.send_json(401, {'error': 'Authentication required'})
@@ -14095,22 +14121,42 @@ PersistentKeepalive = 25
             if user.get('role') != 'manufacturer':
                 self.send_json(403, {'error': 'Manufacturer permission required'})
                 return
-            with DB_LOCK:
-                conn = get_db_connection()
-                cur = conn.cursor()
-                cur.execute("SELECT COUNT(*) as cnt FROM copilot_proposals WHERE status = 'pending'")
-                p_cnt = cur.fetchone()['cnt']
-                conn.close()
-            self.send_json(200, {
-                'success': True,
-                'model': 'qwen2.5-coder:7b',
-                'node': 'VM 307 (ai-server-2)',
-                'gpu': 'NVIDIA GeForce RTX 3060 12GB',
-                'pending_proposals_count': p_cnt
-            })
+            content_length = int(self.headers.get('Content-Length', 0))
+            body_bytes = self.rfile.read(content_length) if content_length > 0 else b'{}'
+            try:
+                data = json.loads(body_bytes.decode('utf-8')) if body_bytes else {}
+                override_phone = str(data.get('admin_whatsapp_number', '')).strip()
+                target_phone = override_phone if override_phone else get_admin_whatsapp_number()
+                clean_phone = re.sub(r'[^0-9]', '', target_phone)
+                if len(clean_phone) == 10 and clean_phone[0] in ['6', '7', '8', '9']:
+                    clean_phone = '91' + clean_phone
+                if len(clean_phone) < 10:
+                    self.send_json(400, {'error': 'Valid recipient phone number required'})
+                    return
+                
+                test_msg = (
+                    "🔔 *[GAVASAH CLOUD] Admin WhatsApp Verification Ping*\n\n"
+                    "✅ System alerts, ecosystem health diagnostics, and AI Copilot proposals "
+                    f"will be routed to this Admin WhatsApp number (+{clean_phone}).\n\n"
+                    f"🕒 Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}\n"
+                    "🛡️ Cloud Node: CT 150 (gavasah-cloud-hub)"
+                )
+                
+                wa_payload = json.dumps({'phone': clean_phone, 'message': test_msg}).encode('utf-8')
+                req = urllib.request.Request(
+                    'http://127.0.0.1:3005/send',
+                    data=wa_payload,
+                    headers={'Content-Type': 'application/json'},
+                    method='POST'
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    resp_data = json.loads(resp.read().decode('utf-8'))
+                    self.send_json(200, {'success': True, 'result': resp_data, 'recipient': clean_phone})
+            except Exception as e:
+                self.send_json(500, {'error': f'WhatsApp gateway dispatch error: {str(e)}'})
             return
 
-        elif parsed.path == '/api/copilot/proposals':
+        elif parsed.path == '/api/copilot/chat':
             user = self.get_authenticated_user()
             if not user:
                 self.send_json(401, {'error': 'Authentication required'})
@@ -14118,16 +14164,64 @@ PersistentKeepalive = 25
             if user.get('role') != 'manufacturer':
                 self.send_json(403, {'error': 'Manufacturer permission required'})
                 return
-            with DB_LOCK:
-                conn = get_db_connection()
-                cur = conn.cursor()
-                cur.execute("SELECT id, client_id, subsystem, action_type, summary, status, created_at FROM copilot_proposals WHERE status = 'pending' ORDER BY created_at DESC")
-                proposals = [dict(r) for r in cur.fetchall()]
-                conn.close()
-            self.send_json(200, {'success': True, 'proposals': proposals})
+            content_length = int(self.headers.get('Content-Length', 0))
+            body_bytes = self.rfile.read(content_length)
+            try:
+                req_data = json.loads(body_bytes.decode('utf-8'))
+                user_msg = req_data.get('message', '').strip()
+                if not user_msg:
+                    self.send_json(400, {'error': 'Message cannot be empty'})
+                    return
+                now = int(time.time())
+                with DB_LOCK:
+                    conn = get_db_connection()
+                    conn.execute("INSERT INTO copilot_chat_history (id, sender, message, timestamp) VALUES (?, ?, ?, ?)",
+                                 (f"msg_{now}_{os.urandom(2).hex()}", 'user', user_msg, now))
+                    conn.commit()
+                    conn.close()
+
+                # Call Ollama on VM 307
+                ollama_url = 'http://192.168.6.185:11434/api/chat'
+                sys_prompt = (
+                    "You are GAVASAH Autonomous AI Copilot, the master operations AI for the GAVASAH Ecosystem "
+                    "(Server System + Client Gateway Fleet). Current cloud node: CT 150 (gavasah-cloud-hub). "
+                    "Rules: 1) Edge gateways handle 5 local attempts first; if failed, AI intervenes for up to 5 attempts. "
+                    "2) YOU HAVE AUTONOMOUS CONTROL to plan and propose changes to the server system, dashboard, addon, and gateways, "
+                    "BUT YOU MUST NEVER EXECUTE ECOSYSTEM MODIFICATIONS DIRECTLY WITHOUT EXPLICIT HUMAN APPROVAL. "
+                    "Always present structured proposals for system updates or slot changes. Keep responses ultra-dense and technical."
+                )
+                ollama_payload = json.dumps({
+                    'model': 'qwen2.5-coder:7b',
+                    'messages': [
+                        {'role': 'system', 'content': sys_prompt},
+                        {'role': 'user', 'content': user_msg}
+                    ],
+                    'stream': False
+                }).encode('utf-8')
+                
+                ai_reply = "AI response unavailable."
+                try:
+                    oreq = urllib.request.Request(ollama_url, data=ollama_payload, headers={'Content-Type': 'application/json'}, method='POST')
+                    with urllib.request.urlopen(oreq, timeout=25) as oresp:
+                        ores_data = json.loads(oresp.read().decode('utf-8'))
+                        ai_reply = ores_data.get('message', {}).get('content', '')
+                except Exception as ex:
+                    ai_reply = f"⚠️ [Ollama Inference Notice]: {ex}. Please verify VM 307 (192.168.6.185:11434)."
+
+                now_ai = int(time.time())
+                with DB_LOCK:
+                    conn = get_db_connection()
+                    conn.execute("INSERT INTO copilot_chat_history (id, sender, message, timestamp) VALUES (?, ?, ?, ?)",
+                                 (f"msg_{now_ai}_{os.urandom(2).hex()}", 'ai', ai_reply, now_ai))
+                    conn.commit()
+                    conn.close()
+
+                self.send_json(200, {'success': True, 'reply': ai_reply})
+            except Exception as e:
+                self.send_json(500, {'error': str(e)})
             return
 
-        elif parsed.path == '/api/copilot/history':
+        elif parsed.path in ['/api/copilot/proposals/approve', '/api/copilot/proposals/reject']:
             user = self.get_authenticated_user()
             if not user:
                 self.send_json(401, {'error': 'Authentication required'})
@@ -14135,13 +14229,23 @@ PersistentKeepalive = 25
             if user.get('role') != 'manufacturer':
                 self.send_json(403, {'error': 'Manufacturer permission required'})
                 return
-            with DB_LOCK:
-                conn = get_db_connection()
-                cur = conn.cursor()
-                cur.execute("SELECT sender, message, timestamp FROM copilot_chat_history ORDER BY timestamp ASC LIMIT 50")
-                history = [dict(r) for r in cur.fetchall()]
-                conn.close()
-            self.send_json(200, {'success': True, 'history': history})
+            is_approve = parsed.path.endswith('/approve')
+            content_length = int(self.headers.get('Content-Length', 0))
+            body_bytes = self.rfile.read(content_length)
+            try:
+                data = json.loads(body_bytes.decode('utf-8'))
+                prop_id = data.get('proposal_id', '').strip()
+                now = int(time.time())
+                new_status = 'approved' if is_approve else 'rejected'
+                with DB_LOCK:
+                    conn = get_db_connection()
+                    conn.execute("UPDATE copilot_proposals SET status = ?, resolved_at = ?, resolved_by = ? WHERE id = ?",
+                                 (new_status, now, user.get('name', 'admin'), prop_id))
+                    conn.commit()
+                    conn.close()
+                self.send_json(200, {'success': True, 'proposal_id': prop_id, 'status': new_status})
+            except Exception as e:
+                self.send_json(500, {'error': str(e)})
             return
 
         else:
