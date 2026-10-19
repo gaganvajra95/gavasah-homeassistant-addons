@@ -1,6 +1,27 @@
 import os, sys, json, time, datetime, subprocess, base64, re, secrets, threading, hashlib, sqlite3, socket, select, struct
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+import urllib.request, urllib.parse, urllib.error
 from urllib.parse import urlparse, parse_qs
+
+
+def is_call_allowed_now(client):
+    """
+    Checks if voice phone call alert is enabled and current local time is within permitted time slot.
+    Default slot: 10:00 AM - 6:00 PM (10:00 to 18:00) IST.
+    """
+    if not client.get('call_alert_enabled', 1):
+        return False, "Voice phone call alerts disabled for this client"
+    start_str = str(client.get('call_window_start') or '10:00').strip()
+    end_str = str(client.get('call_window_end') or '18:00').strip()
+    ist_now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+    curr_hm = ist_now.strftime('%H:%M')
+    if start_str <= end_str:
+        allowed = start_str <= curr_hm <= end_str
+    else:
+        allowed = curr_hm >= start_str or curr_hm <= end_str
+    if not allowed:
+        return False, f"Outside calling window ({start_str} - {end_str}). Current time is {curr_hm} IST"
+    return True, f"Within calling window ({start_str} - {end_str})"
 
 # Base directory setup: supports /srv/gavasah-cloud on Linux with local fallback
 if 'BASE_DIR' in os.environ:
@@ -480,12 +501,16 @@ def init_sqlite_database():
             network_json TEXT,
             knx_json TEXT,
             onboarded_at INTEGER,
-            hb_delayed_interval INTEGER DEFAULT 180,
-            hb_warning_interval INTEGER DEFAULT 300,
-            hb_offline_interval INTEGER DEFAULT 600,
+            hb_delayed_interval INTEGER DEFAULT 900,
+            hb_warning_interval INTEGER DEFAULT 1800,
+            hb_offline_interval INTEGER DEFAULT 3600,
             approval_status TEXT DEFAULT 'approved',
             rejection_reason TEXT,
-            knx_remote_enabled INTEGER NOT NULL DEFAULT 1
+            knx_remote_enabled INTEGER NOT NULL DEFAULT 1,
+            call_alert_enabled INTEGER DEFAULT 1,
+            msg_alert_enabled INTEGER DEFAULT 1,
+            call_window_start TEXT DEFAULT '10:00',
+            call_window_end TEXT DEFAULT '18:00'
         );
 
         CREATE TABLE IF NOT EXISTS client_logs (
@@ -542,17 +567,25 @@ def init_sqlite_database():
             conn.execute("ALTER TABLE clients ADD COLUMN onboarded_at INTEGER")
             conn.execute("UPDATE clients SET onboarded_at = last_heartbeat WHERE last_heartbeat > 0 AND onboarded_at IS NULL")
         if 'hb_delayed_interval' not in cols:
-            conn.execute("ALTER TABLE clients ADD COLUMN hb_delayed_interval INTEGER DEFAULT 180")
+            conn.execute("ALTER TABLE clients ADD COLUMN hb_delayed_interval INTEGER DEFAULT 900")
         if 'hb_warning_interval' not in cols:
-            conn.execute("ALTER TABLE clients ADD COLUMN hb_warning_interval INTEGER DEFAULT 300")
+            conn.execute("ALTER TABLE clients ADD COLUMN hb_warning_interval INTEGER DEFAULT 1800")
         if 'hb_offline_interval' not in cols:
-            conn.execute("ALTER TABLE clients ADD COLUMN hb_offline_interval INTEGER DEFAULT 600")
+            conn.execute("ALTER TABLE clients ADD COLUMN hb_offline_interval INTEGER DEFAULT 3600")
         if 'approval_status' not in cols:
             conn.execute("ALTER TABLE clients ADD COLUMN approval_status TEXT DEFAULT 'approved'")
         if 'rejection_reason' not in cols:
             conn.execute("ALTER TABLE clients ADD COLUMN rejection_reason TEXT")
         if 'knx_remote_enabled' not in cols:
             conn.execute("ALTER TABLE clients ADD COLUMN knx_remote_enabled INTEGER NOT NULL DEFAULT 1")
+        if 'call_alert_enabled' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN call_alert_enabled INTEGER DEFAULT 1")
+        if 'msg_alert_enabled' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN msg_alert_enabled INTEGER DEFAULT 1")
+        if 'call_window_start' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN call_window_start TEXT DEFAULT '10:00'")
+        if 'call_window_end' not in cols:
+            conn.execute("ALTER TABLE clients ADD COLUMN call_window_end TEXT DEFAULT '18:00'")
 
         # Ensure Remote ETS UDP Port Forwarding columns exist
         if 'ets_port' not in cols:
@@ -926,14 +959,20 @@ def load_clients_state():
             except: c['technologies'] = {}
             try: c['backups'] = json.loads(c.get('backups_json') or '[]')
             except: c['backups'] = []
-            try: c['hb_delayed_interval'] = int(c.get('hb_delayed_interval') or 180)
-            except: c['hb_delayed_interval'] = 180
-            try: c['hb_warning_interval'] = int(c.get('hb_warning_interval') or 300)
-            except: c['hb_warning_interval'] = 300
-            try: c['hb_offline_interval'] = int(c.get('hb_offline_interval') or 600)
+            try: c['hb_delayed_interval'] = int(c.get('hb_delayed_interval') or 900)
+            except: c['hb_delayed_interval'] = 900
+            try: c['hb_warning_interval'] = int(c.get('hb_warning_interval') or 1800)
+            except: c['hb_warning_interval'] = 1800
+            try: c['hb_offline_interval'] = int(c.get('hb_offline_interval') or 3600)
             except: c['hb_offline_interval'] = 600
             c['approval_status'] = c.get('approval_status') or 'approved'
             c['rejection_reason'] = c.get('rejection_reason') or ''
+            c['call_alert_enabled'] = int(c.get('call_alert_enabled', 1) if c.get('call_alert_enabled') is not None else 1)
+            c['msg_alert_enabled'] = int(c.get('msg_alert_enabled', 1) if c.get('msg_alert_enabled') is not None else 1)
+            c['call_window_start'] = str(c.get('call_window_start') or '10:00')
+            c['call_window_end'] = str(c.get('call_window_end') or '18:00')
+            try: c['unmonitored_integrations'] = json.loads(c.get('unmonitored_integrations') or '[]')
+            except: c['unmonitored_integrations'] = []
             res[c['client_id']] = c
         conn.close()
         return res
@@ -975,6 +1014,7 @@ def save_clients_state(data):
                     knx_json = json.dumps(c.get('knx_status', {}))
                     tech_json = json.dumps(c.get('technologies', {}))
                     backups_json = json.dumps(c.get('backups', []))
+                    unmon_json = json.dumps(c.get('unmonitored_integrations', []))
                     conn.execute("""INSERT OR REPLACE INTO clients (
                         client_id, name, dealer_id, dealer_name, integrator_id, integrator_name,
                         domain, auth_secret, dashboard_port, ssh_port, knx_ip, knx_port,
@@ -985,8 +1025,9 @@ def save_clients_state(data):
                         onboarded_at,
                         hb_delayed_interval, hb_warning_interval, hb_offline_interval,
                         approval_status, rejection_reason,
-                        knx_remote_enabled
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        knx_remote_enabled,
+                        call_alert_enabled, msg_alert_enabled, call_window_start, call_window_end, unmonitored_integrations
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (c.get('client_id', cid), c.get('name', cid), c.get('dealer_id', 'owner_master'), c.get('dealer_name', 'Master Manufacturer (Direct)'),
                          c.get('integrator_id'), c.get('integrator_name', 'Direct Dealer Supervision'), c.get('domain', f"{cid}.gavasah.com"),
                          c.get('auth_secret', ''), int(c.get('dashboard_port', d_port)), int(c.get('ssh_port', s_port)),
@@ -999,12 +1040,16 @@ def save_clients_state(data):
                          tech_json, backups_json, c.get('pending_backup'),
                          c.get('ets_port'), c.get('ets_target_type'), c.get('ets_target_ip'), c.get('ets_target_port'), c.get('ets_port_assigned_at'),
                          c.get('onboarded_at'),
-                         int(c.get('hb_delayed_interval') or 180),
-                         int(c.get('hb_warning_interval') or 300),
-                         int(c.get('hb_offline_interval') or 600),
+                         int(c.get('hb_delayed_interval') or 900),
+                         int(c.get('hb_warning_interval') or 1800),
+                         int(c.get('hb_offline_interval') or 3600),
                          c.get('approval_status', 'approved'),
                          c.get('rejection_reason', ''),
-                         1 if c.get('knx_remote_enabled', True) else 0)
+                         1 if c.get('knx_remote_enabled', True) else 0,
+                         1 if c.get('call_alert_enabled', 1) in [1, True, '1'] else 0,
+                         1 if c.get('msg_alert_enabled', 1) in [1, True, '1'] else 0,
+                         str(c.get('call_window_start') or '10:00'),
+                         str(c.get('call_window_end') or '18:00'), unmon_json)
                     )
             conn.close()
             return True
@@ -2343,8 +2388,8 @@ HTML_PAGE = """<!DOCTYPE html>
             display: flex;
             flex-direction: column;
             gap: 4px;
-            max-height: 155px;
-            overflow-y: auto;
+            max-height: none !important;
+            overflow-y: visible !important;
             padding-right: 4px;
         }
         .ov-clients-container::-webkit-scrollbar {
@@ -3105,8 +3150,9 @@ HTML_PAGE = """<!DOCTYPE html>
             width: 100%;
             max-width: 100%;
             min-width: 0 !important;
-            max-height: min(68vh, calc(100vh - 260px));
-            overflow: auto !important;
+            max-height: none !important;
+            overflow-x: auto !important;
+            overflow-y: visible !important;
             -webkit-overflow-scrolling: touch;
             backdrop-filter: blur(12px);
             margin-bottom: 24px;
@@ -3214,7 +3260,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
         /* Sleek Cyberpunk Scrollbars (Both Horizontal & Vertical) */
         .table-wrap::-webkit-scrollbar {
-            width: 7px;
+            width: 0px !important;
             height: 9px;
         }
         .table-wrap::-webkit-scrollbar-track {
@@ -3925,6 +3971,14 @@ HTML_PAGE = """<!DOCTYPE html>
                     </div>
                 </div>
 
+                <div class="nav-item" id="nav-alerts" onclick="switchTab('alerts')" style="display: none;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span class="nav-item-icon">📱</span>
+                        <span>WhatsApp & Alerts</span>
+                    </div>
+                    <span id="badge-wa-dot" class="status-indicator-dot" style="margin-left: auto; width: 8px; height: 8px; background: #64748b;" title="WhatsApp Gateway Status"></span>
+                </div>
+
                 <div class="nav-item" id="nav-account" onclick="switchTab('account')">
                     <div style="display: flex; align-items: center; gap: 10px;">
                         <span class="nav-item-icon">⚙️</span>
@@ -4194,14 +4248,15 @@ HTML_PAGE = """<!DOCTYPE html>
                             <thead>
                                 <tr>
                                     <th>Client Site / Slug</th>
+                                    <th>Heartbeat Status</th>
+                                    <th>Integration Status</th>
+                                    <th style="min-width: 180px;">Technologies & Subsystems</th>
+                                    <th>Boot Slot (RAUC)</th>
+                                    <th>Remote Ingress</th>
+                                    <th>Hardware Metrics</th>
+                                    <th id="th-onboarded-col" style="min-width: 145px;">Onboarded At</th>
                                     <th id="th-dealer-col">Dealer Partner</th>
                                     <th id="th-integrator-col">Assigned Integrator</th>
-                                    <th id="th-onboarded-col" style="min-width: 145px;">Onboarded At</th>
-                                    <th>Heartbeat Status</th>
-                                    <th>Remote Ingress</th>
-                                    <th>Boot Slot (RAUC)</th>
-                                    <th style="min-width: 180px;">Technologies & Subsystems</th>
-                                    <th>Hardware Metrics</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
@@ -4260,7 +4315,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
                         <div style="display: flex; gap: 10px;">
-                            <a href="http://dealer.gavasah.com:18083" target="_blank" class="btn-action" style="display: inline-flex; align-items: center; gap: 6px; text-decoration: none;">
+                            <a href="https://emqx.gavasah.com" target="_blank" class="btn-action" style="display: inline-flex; align-items: center; gap: 6px; text-decoration: none;">
                                 <span>🚀 Launch EMQX Web GUI (Console)</span>
                                 <span style="font-size: 11px;">↗</span>
                             </a>
@@ -4289,7 +4344,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 12px; padding: 16px;">
                             <div style="font-size: 11px; color: #94a3b8; font-weight: 700; text-transform: uppercase;">Management Console</div>
                             <div style="font-size: 14px; font-weight: 700; color: #fff; margin-top: 6px;">
-                                Port <code>:18083</code>
+                                <code>emqx.gavasah.com</code>
                             </div>
                             <div style="font-size: 11px; color: #10b981; margin-top: 4px;">User: <code>admin</code> / Password: <code>vajju2175</code></div>
                         </div>
@@ -4352,6 +4407,240 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <button type="button" class="btn-sm" onclick="setSampleMqttCmd('reload')">Sample: Reload</button>
                             </div>
                         </div>
+                    </div>
+                </div>
+
+                <!-- ==============================================================
+                     TAB: AUTONOMOUS NOTIFICATIONS & WHATSAPP ENGINE
+                     ============================================================== -->
+                <div class="tab-pane" id="tab-alerts">
+                    <div class="section-header" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px;">
+                        <div>
+                            <div class="section-title">📱 Autonomous Dispatch & WhatsApp Gateway</div>
+                            <div style="font-size: 13px; color: #94a3b8; margin-top: 4px;">
+                                100% Free, zero-app notifications engine dispatching instant WhatsApp alerts, automated phone calls, and email directly to dealers and integrators.
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn-action" type="button" onclick="loadWhatsAppStatus()">🔄 Refresh Status</button>
+                        </div>
+                    </div>
+
+                    <!-- 3-Column / Grid Status Cards -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px;">
+                        <!-- WhatsApp Card -->
+                        <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 12px; padding: 18px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div style="font-size: 11px; color: #94a3b8; font-weight: 700; text-transform: uppercase;">WhatsApp Engine</div>
+                                <span id="wa-status-pill" class="status-indicator-dot degraded" style="font-size: 11px; font-weight: 700; color: #f59e0b; display: flex; align-items: center; gap: 6px;">● Initializing...</span>
+                            </div>
+                            <div style="font-size: 16px; font-weight: 800; color: #fff; margin-top: 6px;" id="wa-card-title">Baileys WebSocket</div>
+                            <div style="font-size: 11px; color: #10b981; margin-top: 4px;">Zero Cost &bull; Instant Delivery &bull; Official Web Engine</div>
+                        </div>
+
+                        <!-- Voice / Audio Alert Card -->
+                        <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(0, 240, 255, 0.25); border-radius: 12px; padding: 18px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div style="font-size: 11px; color: #94a3b8; font-weight: 700; text-transform: uppercase;">Voice Alert Calls</div>
+                                <span class="status-indicator-dot online" style="font-size: 11px; font-weight: 700; color: #10b981; display: flex; align-items: center; gap: 6px;">● Active</span>
+                            </div>
+                            <div style="font-size: 16px; font-weight: 800; color: #fff; margin-top: 6px;">Voice Note & TTS Dispatch</div>
+                            <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">Audible Human Speech &bull; WhatsApp PTT Audio Memo</div>
+                        </div>
+
+                        <!-- Email Relay Card -->
+                        <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 12px; padding: 18px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div style="font-size: 11px; color: #94a3b8; font-weight: 700; text-transform: uppercase;">Email Dispatch</div>
+                                <span class="status-indicator-dot online" style="font-size: 11px; font-weight: 700; color: #10b981; display: flex; align-items: center; gap: 6px;">● Active</span>
+                            </div>
+                            <div style="font-size: 16px; font-weight: 800; color: #fff; margin-top: 6px;">SMTP Autonomous Relay</div>
+                            <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Standard Inbox &bull; Rich HTML Formatting</div>
+                        </div>
+                    </div>
+
+                    <!-- Main WhatsApp Pair & Test Console -->
+                    <div style="display: grid; grid-template-columns: minmax(320px, 420px) 1fr; gap: 24px; margin-bottom: 24px;">
+                        <!-- QR Code Pairing Box -->
+                        <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(0, 240, 255, 0.3); border-radius: 16px; padding: 24px;">
+                            <div style="font-size: 15px; font-weight: 700; color: #fff; margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+                                <span>💬 WhatsApp Pairing & Session Manager</span>
+                            </div>
+                            <div style="font-size: 12px; color: #94a3b8; line-height: 1.5; margin-bottom: 18px;">
+                                Scan with any WhatsApp account on your company operations phone. You can logout and change this number at any time below.
+                            </div>
+
+                            <!-- QR Container (Shown when QR ready) -->
+                            <div id="wa-qr-box" style="text-align: center; padding: 16px; background: rgba(0, 0, 0, 0.4); border: 1px dashed rgba(0, 240, 255, 0.4); border-radius: 14px;">
+                                <div style="display: inline-block; position: relative; background: #fff; padding: 12px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); min-width: 220px; min-height: 220px;">
+                                    <div id="wa-qr-loading" style="display: flex; flex-direction: column; align-items: center; justify-content: center; width: 220px; height: 220px; color: #0f172a; font-size: 13px; font-weight: 700; gap: 8px;">
+                                        <div style="font-size: 24px;">⚡</div>
+                                        <div>Generating Pairing QR...</div>
+                                    </div>
+                                    <img id="wa-qr-img" src="" alt="WhatsApp Pairing QR" style="width: 220px; height: 220px; display: none;">
+                                </div>
+                                <div style="margin-top: 14px; font-size: 12px; color: #00f0ff; font-weight: 600;">
+                                    📸 Scan this QR with WhatsApp &rarr; Linked Devices
+                                </div>
+                                <div style="margin-top: 6px; font-size: 11px; color: #64748b;">
+                                    Auto-refreshes every few seconds. Once scanned, this card instantly switches to Active status.
+                                </div>
+                            </div>
+
+                            <!-- Connected Container (Shown when linked) -->
+                            <div id="wa-connected-box" style="display: none; text-align: center; padding: 24px 16px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.35); border-radius: 14px;">
+                                <div style="width: 56px; height: 56px; border-radius: 50%; background: rgba(16, 185, 129, 0.2); border: 2px solid #10b981; display: flex; align-items: center; justify-content: center; margin: 0 auto 12px; font-size: 24px;">
+                                    ✓
+                                </div>
+                                <div style="font-size: 13px; color: #94a3b8; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">Active WhatsApp Dispatcher</div>
+                                <div id="wa-connected-phone" style="font-size: 22px; font-weight: 800; color: #10b981; margin: 6px 0;">+91 ...</div>
+                                <div id="wa-connected-name" style="font-size: 12px; color: #cbd5e1; margin-bottom: 18px;">Gavasah Operations</div>
+
+                                <button type="button" class="btn-sm" style="background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; color: #f87171; font-weight: 700; padding: 8px 16px;" onclick="handleWhatsAppLogout()">
+                                    🚪 Logout / Change Phone Number
+                                </button>
+                                <div style="font-size: 11px; color: #94a3b8; margin-top: 10px; line-height: 1.4;">
+                                    Clicking Logout unlinks this number immediately and regenerates a fresh QR code so you can link another phone.
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Test Dispatcher & Notification Rules Box -->
+                        <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(0, 240, 255, 0.3); border-radius: 16px; padding: 24px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                <div style="font-size: 16px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+                                    <span>🎙️ Text-To-Speech (TTS) Voice Call &amp; Message Testing Station</span>
+                                </div>
+                                <span class="badge-role" style="background: rgba(0, 240, 255, 0.15); color: #00f0ff; border: 1px solid rgba(0, 240, 255, 0.3);">Live Audio &amp; VoIP</span>
+                            </div>
+                            <div style="font-size: 12px; color: #94a3b8; line-height: 1.5; margin-bottom: 18px;">
+                                Test automated spoken voice phone calls (TTS) and instant text messages to any mobile number. Spoken audio preview plays directly through your browser, while cellular phone calls ring through your configured telephony node.
+                            </div>
+
+                            <div style="margin-bottom: 14px;">
+                                <label class="form-label">DESTINATION PHONE NUMBER OR EMAIL ADDRESS</label>
+                                <input type="text" id="wa-test-phone" class="form-input" placeholder="e.g. 7396263322 (for Phone / WA) or alerts@client.com (for Email)" style="font-size: 14px; font-weight: 700; letter-spacing: 0.5px;">
+                            </div>
+
+                            <div style="margin-bottom: 14px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                    <label class="form-label" style="margin-bottom: 0;">TEXT-TO-SPEECH (TTS) &amp; MESSAGE CONTENT</label>
+                                    <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                                        <button type="button" class="btn-sm" style="font-size: 10px; padding: 3px 8px;" onclick="setSampleAlert('offline')">Gateway Offline</button>
+                                        <button type="button" class="btn-sm" style="font-size: 10px; padding: 3px 8px;" onclick="setSampleAlert('lutron')">Lutron Fault</button>
+                                        <button type="button" class="btn-sm" style="font-size: 10px; padding: 3px 8px;" onclick="setSampleAlert('heal')">Self-Heal Exceeded</button>
+                                        <button type="button" class="btn-sm" style="font-size: 10px; padding: 3px 8px;" onclick="setSampleAlert('restored')">Pulse Restored</button>
+                                    </div>
+                                </div>
+                                <textarea id="wa-test-msg" class="form-input" rows="4" placeholder="Type message to speak on voice phone call or send as text..." style="font-family: inherit; font-size: 13px;"></textarea>
+                            </div>
+
+                            <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                                <button type="button" id="tts-call-btn" class="btn-action" style="flex: 1; min-width: 150px; background: linear-gradient(135deg, #0284c7, #0369a1); border-color: #38bdf8;" onclick="sendTTSAlert('voice')">
+                                    📞 Place TTS Voice Call
+                                </button>
+                                <button type="button" id="tts-msg-btn" class="btn-action" style="flex: 1; min-width: 150px; background: linear-gradient(135deg, #059669, #047857); border-color: #34d399;" onclick="sendTTSAlert('whatsapp')">
+                                    💬 Send WhatsApp / Text
+                                </button>
+                                <button type="button" id="tts-email-btn" class="btn-action" style="flex: 1; min-width: 150px; background: linear-gradient(135deg, #7c3aed, #6d28d9); border-color: #a78bfa;" onclick="sendTTSAlert('email')">
+                                    ✉️ Send Email Alert
+                                </button>
+                                <button type="button" class="btn-sm" style="padding: 10px 16px; font-weight: 700; background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.2); color: #fff;" onclick="previewTTSLocalSpeech()">
+                                    🔊 Preview Voice (Browser)
+                                </button>
+                            </div>
+
+                            <div id="wa-test-feedback" style="display: none; margin-top: 14px; padding: 12px 16px; border-radius: 8px; font-size: 12px; line-height: 1.5;"></div>
+
+                            <!-- Autonomous Triggers Architecture -->
+                            <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid rgba(255, 255, 255, 0.08);">
+                                <div style="font-size: 13px; font-weight: 700; color: #fff; margin-bottom: 6px;">⚙️ Zero-Touch Autonomous Calling Policy</div>
+                                <div style="font-size: 12px; color: #94a3b8; line-height: 1.6;">
+                                    • <strong>Calling Time Slot</strong>: Server only initiates voice phone calls to Dealers and Integrators between <strong>10:00 AM – 6:00 PM</strong> (configurable per site in Gateway Edit Menu). Calls outside this window are automatically suppressed to respect partner quiet hours.<br>
+                                    • <strong>WhatsApp &amp; Text Alerts</strong>: Dispatched 24/7 for high-priority events, self-healing status, and recovery notifications.<br>
+                                    • <strong>Zero App Needed</strong>: Calls ring directly on cellular phone dialers using TTS synthesis, and messages land in standard WhatsApp.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- SMTP Email Gateway & Alert Testing Station Card -->
+                    <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(167, 139, 250, 0.4); border-radius: 16px; padding: 24px; margin-bottom: 24px; box-shadow: 0 4px 25px rgba(0,0,0,0.4);">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
+                            <div>
+                                <div style="font-size: 16px; font-weight: 800; color: #fff; display: flex; align-items: center; gap: 8px;">
+                                    <span>📧 SMTP Email Gateway &amp; Alert Testing Station</span>
+                                </div>
+                                <div style="font-size: 12px; color: #94a3b8; margin-top: 4px; line-height: 1.5;">
+                                    Configure outbound email notifications and test live email delivery using standard SMTP (Gmail, Microsoft 365, Brevo, Sendgrid, or Private Mail Server).
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <span id="smtp-status-badge" style="font-size: 11px; font-weight: 700; color: #c084fc; background: rgba(192, 132, 252, 0.1); border: 1px solid rgba(192, 132, 252, 0.3); padding: 4px 10px; border-radius: 20px;">● Loading SMTP...</span>
+                            </div>
+                        </div>
+
+                        <!-- SMTP Configuration Fields -->
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 16px;">
+                            <div>
+                                <label class="form-label">SMTP SERVER / HOST</label>
+                                <input type="text" id="smtp-cfg-host" class="form-input" placeholder="e.g. smtp.gmail.com" value="">
+                            </div>
+                            <div>
+                                <label class="form-label">SMTP PORT</label>
+                                <input type="number" id="smtp-cfg-port" class="form-input" placeholder="e.g. 587 or 465" value="587">
+                            </div>
+                            <div>
+                                <label class="form-label">ENCRYPTION PROTOCOL</label>
+                                <select id="smtp-cfg-encryption" class="form-input" style="background: #0f172a; color: #fff;">
+                                    <option value="tls">STARTTLS (Port 587 Recommended)</option>
+                                    <option value="ssl">SSL / TLS (Port 465)</option>
+                                    <option value="none">Unencrypted / Plain (Port 25)</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 16px;">
+                            <div>
+                                <label class="form-label">SMTP USERNAME / EMAIL</label>
+                                <input type="text" id="smtp-cfg-user" class="form-input" placeholder="e.g. alerts@gavasah.com or user@gmail.com" value="">
+                            </div>
+                            <div>
+                                <label class="form-label">SMTP PASSWORD / APP PASSWORD</label>
+                                <div style="position: relative;">
+                                    <input type="password" id="smtp-cfg-pass" class="form-input" placeholder="Enter SMTP password" style="padding-right: 36px;" value="">
+                                    <button type="button" onclick="togglePassVisibility('smtp-cfg-pass')" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; color: #94a3b8; cursor: pointer; font-size: 14px;">👁️</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 16px;">
+                            <div>
+                                <label class="form-label">FROM EMAIL ADDRESS</label>
+                                <input type="text" id="smtp-cfg-from-email" class="form-input" placeholder="e.g. alerts@gavasah.com" value="">
+                            </div>
+                            <div>
+                                <label class="form-label">SENDER DISPLAY NAME</label>
+                                <input type="text" id="smtp-cfg-from-name" class="form-input" placeholder="e.g. GAVASAH Cloud Alerts" value="GAVASAH Cloud Alerts">
+                            </div>
+                            <div>
+                                <label class="form-label">TEST RECIPIENT EMAIL</label>
+                                <input type="email" id="smtp-test-recipient" class="form-input" placeholder="e.g. your-email@gmail.com" value="">
+                            </div>
+                        </div>
+
+                        <!-- Action Buttons -->
+                        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                            <button type="button" id="btn-save-smtp-cfg" class="btn-action" style="flex: 1; min-width: 170px; background: linear-gradient(135deg, #059669, #047857); border-color: #34d399;" onclick="saveSmtpConfig()">
+                                💾 Save SMTP Settings
+                            </button>
+                            <button type="button" id="btn-test-smtp-cfg" class="btn-action" style="flex: 1; min-width: 170px; background: linear-gradient(135deg, #7c3aed, #6d28d9); border-color: #a78bfa;" onclick="testSmtpDirect()">
+                                ⚡ Test SMTP &amp; Send Email
+                            </button>
+                        </div>
+
+                        <div id="smtp-cfg-feedback" style="display: none; margin-top: 14px; padding: 12px 16px; border-radius: 8px; font-size: 12px; line-height: 1.5;"></div>
+                    </div>
                     </div>
                 </div>
 
@@ -4628,7 +4917,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
 
                             <div style="font-size: 11px; font-weight: 700; color: #38bdf8; text-transform: uppercase; margin-bottom: 8px;">Available Site Snapshots</div>
-                            <div class="table-wrap" style="max-height: 280px; overflow-y: auto;">
+                            <div class="table-wrap" style="max-height: none; overflow-x: auto; overflow-y: visible;">
                                 <table style="width: 100%;">
                                     <thead>
                                         <tr>
@@ -4877,7 +5166,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                     </div>
                                 </div>
                                 <div style="display: flex; gap: 8px; align-items: center;">
-                                    <input type="number" id="edit-hb-delayed-val" class="form-input" min="1" max="720" step="1" placeholder="3" style="width: 85px; font-size: 14px; font-family: 'JetBrains Mono', monospace; font-weight: 700; text-align: center; padding: 8px 10px;" required>
+                                    <input type="number" id="edit-hb-delayed-val" class="form-input" min="1" max="720" step="1" placeholder="15" style="width: 85px; font-size: 14px; font-family: 'JetBrains Mono', monospace; font-weight: 700; text-align: center; padding: 8px 10px;" required>
                                     <select id="edit-hb-delayed-unit" class="form-input" style="width: 100px; font-size: 12px; font-weight: 600; padding: 8px 10px;">
                                         <option value="m">Minutes</option>
                                         <option value="h">Hours</option>
@@ -4896,7 +5185,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                     </div>
                                 </div>
                                 <div style="display: flex; gap: 8px; align-items: center;">
-                                    <input type="number" id="edit-hb-warning-val" class="form-input" min="1" max="720" step="1" placeholder="5" style="width: 85px; font-size: 14px; font-family: 'JetBrains Mono', monospace; font-weight: 700; text-align: center; padding: 8px 10px;" required>
+                                    <input type="number" id="edit-hb-warning-val" class="form-input" min="1" max="720" step="1" placeholder="30" style="width: 85px; font-size: 14px; font-family: 'JetBrains Mono', monospace; font-weight: 700; text-align: center; padding: 8px 10px;" required>
                                     <select id="edit-hb-warning-unit" class="form-input" style="width: 100px; font-size: 12px; font-weight: 600; padding: 8px 10px;">
                                         <option value="m">Minutes</option>
                                         <option value="h">Hours</option>
@@ -4915,7 +5204,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                     </div>
                                 </div>
                                 <div style="display: flex; gap: 8px; align-items: center;">
-                                    <input type="number" id="edit-hb-offline-val" class="form-input" min="1" max="720" step="1" placeholder="10" style="width: 85px; font-size: 14px; font-family: 'JetBrains Mono', monospace; font-weight: 700; text-align: center; padding: 8px 10px;" required>
+                                    <input type="number" id="edit-hb-offline-val" class="form-input" min="1" max="720" step="1" placeholder="60" style="width: 85px; font-size: 14px; font-family: 'JetBrains Mono', monospace; font-weight: 700; text-align: center; padding: 8px 10px;" required>
                                     <select id="edit-hb-offline-unit" class="form-input" style="width: 100px; font-size: 12px; font-weight: 600; padding: 8px 10px;">
                                         <option value="m">Minutes</option>
                                         <option value="h">Hours</option>
@@ -4941,6 +5230,69 @@ HTML_PAGE = """<!DOCTYPE html>
                                     <span class="toggle-slider"></span>
                                 </label>
                                 <span id="edit-remote-status-text" class="toggle-pill-badge pill-live" style="min-width: 75px; text-align: center;">🟢 LIVE</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Alert & Escalation Dispatch Channels (Call & Message Toggles + Calling Time Slot) -->
+                    <div class="form-group" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(16, 185, 129, 0.35); border-radius: 10px; padding: 14px 16px; margin-top: 12px;">
+                        <div style="font-size: 13px; font-weight: 700; color: #fff; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;">
+                            <span style="display: flex; align-items: center; gap: 6px;">🔔 AUTOMATED ALERTS &amp; ESCALATION DISPATCH</span>
+                            <span style="font-size: 11px; color: #10b981; font-weight: 600;">Autonomous Engine</span>
+                        </div>
+
+                        <!-- Toggles: Separate Call and Message Options -->
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+                            <!-- Phone Call Alerts Toggle -->
+                            <div style="background: rgba(2, 6, 23, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between;">
+                                <div>
+                                    <div style="font-size: 12px; font-weight: 700; color: #f1f5f9; display: flex; align-items: center; gap: 6px;">
+                                        📞 Phone Call Alerts
+                                    </div>
+                                    <div style="font-size: 10px; color: #94a3b8; margin-top: 2px;">Voice call to Dealer &amp; Integrator</div>
+                                </div>
+                                <label class="toggle-switch" title="Enable or disable automated voice phone calls">
+                                    <input type="checkbox" id="edit-call-alert-toggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+
+                            <!-- Message Alerts Toggle -->
+                            <div style="background: rgba(2, 6, 23, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between;">
+                                <div>
+                                    <div style="font-size: 12px; font-weight: 700; color: #f1f5f9; display: flex; align-items: center; gap: 6px;">
+                                        💬 Message Alerts
+                                    </div>
+                                    <div style="font-size: 10px; color: #94a3b8; margin-top: 2px;">WhatsApp &amp; SMS text dispatch</div>
+                                </div>
+                                <label class="toggle-switch" title="Enable or disable automated WhatsApp and text messages">
+                                    <input type="checkbox" id="edit-msg-alert-toggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Permitted Calling Time Slot -->
+                        <div style="background: rgba(2, 6, 23, 0.6); border: 1px solid rgba(0, 240, 255, 0.25); border-radius: 8px; padding: 12px 14px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                <div style="font-size: 12px; font-weight: 700; color: #00f0ff; display: flex; align-items: center; gap: 6px;">
+                                    ⏰ Permitted Calling Time Slot (Dealer &amp; Integrator)
+                                </div>
+                                <span style="font-size: 11px; color: #94a3b8; font-family: monospace;">IST Window</span>
+                            </div>
+                            <div style="font-size: 11px; color: #94a3b8; line-height: 1.4; margin-bottom: 10px;">
+                                Server will <strong>only place voice phone calls</strong> between these hours. Outside this window, voice calls are suppressed to prevent disturbances.
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span style="font-size: 12px; color: #cbd5e1; font-weight: 600;">From:</span>
+                                    <input type="time" id="edit-call-start-time" class="form-input" value="10:00" style="width: 120px; font-size: 13px; font-weight: 700; text-align: center; padding: 6px 10px;">
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <span style="font-size: 12px; color: #cbd5e1; font-weight: 600;">To:</span>
+                                    <input type="time" id="edit-call-end-time" class="form-input" value="18:00" style="width: 120px; font-size: 13px; font-weight: 700; text-align: center; padding: 6px 10px;">
+                                </div>
+                                <span style="font-size: 11px; color: #64748b;">(Default: 10:00 AM – 6:00 PM)</span>
                             </div>
                         </div>
                     </div>
@@ -5273,6 +5625,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('nav-fleet').style.display = 'flex';
                 document.getElementById('nav-account').style.display = 'flex';
                 document.getElementById('th-dealer-col').style.display = '';
+                const thIntMfg = document.getElementById('th-integrator-col'); if (thIntMfg) thIntMfg.style.display = '';
                 document.getElementById('th-int-dealership-col').style.display = '';
                 document.getElementById('integrator-dealer-filter-wrap').style.display = 'block';
                 const ovCardDealers = document.getElementById('ov-card-dealers');
@@ -5286,6 +5639,9 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (ovApprovalsCard) ovApprovalsCard.style.display = '';
                 const navMqtt = document.getElementById('nav-mqtt');
                 if (navMqtt) navMqtt.style.display = 'flex';
+                const navAlerts = document.getElementById('nav-alerts');
+                if (navAlerts) navAlerts.style.display = 'flex';
+                loadWhatsAppStatus();
                 applyDealerBranding(currentUser.branding);
                 switchTab('overview');
                 fetchDealers();
@@ -5318,6 +5674,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (navMqttD) navMqttD.style.display = 'none';
                 applyDealerBranding(currentUser.branding);
                 document.getElementById('th-dealer-col').style.display = 'none';
+                const thIntDlr = document.getElementById('th-integrator-col'); if (thIntDlr) thIntDlr.style.display = '';
                 document.getElementById('th-int-dealership-col').style.display = 'none';
                 document.getElementById('integrator-dealer-filter-wrap').style.display = 'none';
 
@@ -5474,6 +5831,7 @@ HTML_PAGE = """<!DOCTYPE html>
         // TABS NAVIGATION
         // ======================================================================
         function switchTab(tabId) {
+        if (tabId === 'tab-alerts') loadSmtpConfig();
             if (window.innerWidth <= 900) closeSidebarMobile();
             activeTab = tabId;
 
@@ -5510,8 +5868,262 @@ HTML_PAGE = """<!DOCTYPE html>
                 fetchApprovals();
             } else if (tabId === 'mqtt') {
                 populateMqttDispatcherClients();
+            } else if (tabId === 'alerts') {
+                loadWhatsAppStatus();
             }
         }
+
+        // ======================================================================
+        // AUTONOMOUS ALERTS & WHATSAPP GATEWAY (MANUFACTURER)
+        // ======================================================================
+        let waPollInterval = null;
+
+        function setSampleAlert(type) {
+            const el = document.getElementById('wa-test-msg');
+            if (!el) return;
+            if (type === 'offline') {
+                el.value = `🚨 [GAVASAH FLEET ALERT]
+Client: Sharma Villa (Jubilee Hills)
+Status: GATEWAY OFFLINE
+Duration: 3 minutes
+Ingress: sharma-villa.gavasah.com
+Action: Please verify site internet power.`;
+            } else if (type === 'lutron') {
+                el.value = `⚠️ [GAVASAH SUBSYSTEM ALERT]
+Client: Pranav Chilukuri
+Component: Lutron RadioRA 3 Bridge
+Status: UNREACHABLE (Port 8081)
+Attempting automated self-healing restart.`;
+            } else if (type === 'heal') {
+                el.value = `🛑 [GAVASAH RECOVERY LOCKED]
+Client: Nagaprasad V
+Subsystem: KNX Gateway (192.168.1.111)
+Self-Healing: Max 5 attempts reached.
+Automatic retries stopped to prevent storming.`;
+            } else if (type === 'restored') {
+                el.value = `✅ [GAVASAH FLEET RECOVERY]
+Client: Sharma Villa (Jubilee Hills)
+Status: ALL SUBSYSTEMS OPERATIONAL
+Heartbeat: Telemetry pulse active.
+Automated remediation successful. Normal operations restored.`;
+            }
+        }
+
+        async function loadWhatsAppStatus() {
+            try {
+                const res = await apiFetch('/api/whatsapp/status?t=' + Date.now());
+                if (!res.ok) return;
+                const data = await res.json();
+                renderWhatsAppUI(data);
+            } catch (e) {
+                console.error("WhatsApp status check error:", e);
+            }
+        }
+
+        function renderWhatsAppUI(data) {\n            updateTTSWindowIndicator();
+            const pill = document.getElementById('wa-status-pill');
+            const dot = document.getElementById('badge-wa-dot');
+            const qrBox = document.getElementById('wa-qr-box');
+            const qrImg = document.getElementById('wa-qr-img');
+            const connBox = document.getElementById('wa-connected-box');
+            const phoneEl = document.getElementById('wa-connected-phone');
+            const nameEl = document.getElementById('wa-connected-name');
+            const titleEl = document.getElementById('wa-card-title');
+
+            if (data.connected) {
+                if (pill) {
+                    pill.style.color = '#10b981';
+                    pill.innerText = '● Connected';
+                }
+                if (dot) dot.style.background = '#10b981';
+                if (titleEl) titleEl.innerText = data.phone || 'Connected';
+                if (qrBox) qrBox.style.display = 'none';
+                if (connBox) connBox.style.display = 'block';
+                if (phoneEl) phoneEl.innerText = data.phone || 'Active Number';
+                if (nameEl) nameEl.innerText = data.name || 'Gavasah Operations';
+                if (waPollInterval) {
+                    clearInterval(waPollInterval);
+                    waPollInterval = null;
+                }
+            } else if (data.status === 'qr_ready' && data.qr) {
+                if (pill) {
+                    pill.style.color = '#f59e0b';
+                    pill.innerText = '● Scan QR Code to Link';
+                }
+                if (dot) dot.style.background = '#f59e0b';
+                if (titleEl) titleEl.innerText = 'Awaiting Pairing';
+                if (connBox) connBox.style.display = 'none';
+                if (qrBox) qrBox.style.display = 'block';
+                const loadingEl = document.getElementById('wa-qr-loading');
+                if (loadingEl) loadingEl.style.display = 'none';
+                if (qrImg) {
+                    qrImg.src = data.qr;
+                    qrImg.style.display = 'block';
+                }
+
+                if (!waPollInterval && activeTab === 'alerts') {
+                    waPollInterval = setInterval(loadWhatsAppStatus, 3000);
+                }
+            } else {
+                if (pill) {
+                    pill.style.color = '#94a3b8';
+                    pill.innerText = '● Initializing QR...';
+                }
+                if (dot) dot.style.background = '#64748b';
+                if (titleEl) titleEl.innerText = 'Generating QR';
+                if (connBox) connBox.style.display = 'none';
+                if (qrBox) qrBox.style.display = 'block';
+                if (qrImg) qrImg.style.display = 'none';
+                const loadingEl = document.getElementById('wa-qr-loading');
+                if (loadingEl) loadingEl.style.display = 'flex';
+                if (!waPollInterval && activeTab === 'alerts') {
+                    waPollInterval = setInterval(loadWhatsAppStatus, 2000);
+                }
+            }
+        }
+
+        async function handleWhatsAppLogout() {
+            if (!confirm("Are you sure you want to disconnect this WhatsApp number? A fresh QR code will be generated immediately so you can link another phone.")) {
+                return;
+            }
+            showToast("Unlinking WhatsApp session...", "info");
+            try {
+                const res = await apiFetch('/api/whatsapp/logout', { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    showToast("WhatsApp unlinked! Scan new QR code.", "success");
+                    loadWhatsAppStatus();
+                    if (!waPollInterval) waPollInterval = setInterval(loadWhatsAppStatus, 3000);
+                } else {
+                    showToast(data.error || "Logout failed", "error");
+                }
+            } catch (e) {
+                showToast("Error: " + e.message, "error");
+            }
+        }
+        function updateTTSWindowIndicator() {
+            const textEl = document.getElementById('tts-window-text');
+            const badgeEl = document.getElementById('tts-window-badge');
+            if (!textEl || !badgeEl) return;
+
+            const now = new Date();
+            const hrs = now.getHours();
+            const mins = now.getMinutes();
+            const currMin = hrs * 60 + mins;
+            const startMin = 10 * 60; // 10:00 AM
+            const endMin = 18 * 60;   // 6:00 PM
+            const inWindow = currMin >= startMin && currMin <= endMin;
+            const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+            if (inWindow) {
+                textEl.style.color = '#34d399';
+                textEl.innerText = `Calling Allowed (${timeStr}) • 10:00 AM – 6:00 PM`;
+                badgeEl.className = 'status-indicator-dot online';
+                badgeEl.style.color = '#10b981';
+                badgeEl.innerText = '● Slot Open';
+            } else {
+                textEl.style.color = '#fb923c';
+                textEl.innerText = `Outside Slot (${timeStr}) • Silent Mode`;
+                badgeEl.className = 'status-indicator-dot offline';
+                badgeEl.style.color = '#fb923c';
+                badgeEl.innerText = '● Night Mode';
+            }
+        }
+        setInterval(updateTTSWindowIndicator, 15000);
+
+        function previewTTSLocalSpeech() {
+            const text = (document.getElementById('wa-test-msg').value || '').trim();
+            if (!text) {
+                showToast("Enter some text to preview speech", "warning");
+                return;
+            }
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel();
+                const cleanText = text.replace(/[*_~`]/g, '');
+                const utter = new SpeechSynthesisUtterance(cleanText);
+                utter.rate = 0.95;
+                utter.pitch = 1.0;
+                window.speechSynthesis.speak(utter);
+                showToast("Playing voice speech preview through your browser audio...", "info");
+            } else {
+                showToast("Browser does not support local Web Speech API synthesis", "warning");
+            }
+        }
+
+        async function sendTTSAlert(channel) {
+            const dest = (document.getElementById('wa-test-phone').value || '').trim();
+            const message = (document.getElementById('wa-test-msg').value || '').trim();
+            const fb = document.getElementById('wa-test-feedback');
+            const callBtn = document.getElementById('tts-call-btn');
+            const msgBtn = document.getElementById('tts-msg-btn');
+            const emailBtn = document.getElementById('tts-email-btn');
+
+            const isVoice = channel === 'voice';
+            const isEmail = channel === 'email';
+
+            if (!dest) {
+                showToast(isEmail ? "Please enter a destination email address" : "Please enter a destination phone number", "warning");
+                return;
+            }
+            if (!message) { showToast("Please enter message content", "warning"); return; }
+
+            if (callBtn) callBtn.disabled = true;
+            if (msgBtn) msgBtn.disabled = true;
+            if (emailBtn) emailBtn.disabled = true;
+
+            fb.style.display = 'block';
+            fb.style.background = 'rgba(2, 6, 23, 0.7)';
+            fb.style.border = '1px solid rgba(0, 240, 255, 0.4)';
+            fb.style.color = '#38bdf8';
+            const channelLabel = isVoice ? 'TTS Voice Call' : (isEmail ? 'Alert Email' : 'WhatsApp Text');
+            fb.innerHTML = `⚡ <strong>Dispatching ${channelLabel}</strong> to <code>${escapeHtml(dest)}</code>...`;
+
+            try {
+                let cleanPhone = dest;
+                if (!isEmail) {
+                    cleanPhone = dest.replace(/[^0-9]/g, '');
+                    if (cleanPhone.length === 10 && ['6','7','8','9'].includes(cleanPhone[0])) {
+                        cleanPhone = '91' + cleanPhone;
+                    }
+                }
+                const res = await apiFetch('/api/whatsapp/send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phone: cleanPhone, email: dest, message, channel, manual_test: true })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`${isVoice ? '📞 Voice Call' : (isEmail ? '📧 Email' : '💬 Message')} dispatched to ${data.recipient || dest}!`, "success");
+                    fb.style.background = 'rgba(16, 185, 129, 0.12)';
+                    fb.style.border = '1px solid #10b981';
+                    fb.style.color = '#34d399';
+                    fb.innerHTML = `
+                        <div style="font-weight: 700; margin-bottom: 4px;">✓ ${isVoice ? 'Automated Voice Memo Dispatched' : (isEmail ? 'Email Alert Dispatched via SMTP' : 'WhatsApp Message Delivered')}</div>
+                        <div><strong>Recipient:</strong> ${escapeHtml(data.recipient || dest)}</div>
+                        <div><strong>Tracking ID:</strong> <code>${escapeHtml(data.messageId || 'OK')}</code></div>
+                        <div><strong>Delivery Mode:</strong> ${isVoice ? 'Audible Spoken Voice Memo (WhatsApp PTT Audio)' : (isEmail ? (data.status || 'Delivered via SMTP') : 'Instant WhatsApp Web Relay')}</div>
+                        <div style="margin-top: 4px; font-size: 11px; color: #94a3b8;">${isVoice ? 'Spoken human voice note synthesized and delivered to mobile.' : (isEmail ? 'Rich HTML and plain-text alert delivered to inbox.' : 'Message delivered to recipient.')}</div>
+                    `;
+                } else {
+                    showToast(data.error || "Dispatch failed", "error");
+                    fb.style.background = 'rgba(239, 68, 68, 0.12)';
+                    fb.style.border = '1px solid #ef4444';
+                    fb.style.color = '#f87171';
+                    fb.innerHTML = `✗ <strong>Dispatch Failure:</strong> ${escapeHtml(data.error || 'Server rejected dispatch request')}`;
+                }
+            } catch (e) {
+                showToast("Network dispatch error: " + e.message, "error");
+                fb.style.background = 'rgba(239, 68, 68, 0.12)';
+                fb.style.border = '1px solid #ef4444';
+                fb.style.color = '#f87171';
+                fb.innerHTML = `✗ <strong>Network Error:</strong> ${escapeHtml(e.message)}`;
+            } finally {
+                if (callBtn) callBtn.disabled = false;
+                if (msgBtn) msgBtn.disabled = false;
+                if (emailBtn) emailBtn.disabled = false;
+            }
+        }
+
 
         // ======================================================================
         // CLIENT APPROVALS (MANUFACTURER)
@@ -5791,9 +6403,9 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                         const hb = fresh.last_heartbeat || 0;
                         const isPending = !hb || hb === 0 || fresh.status === 'pending';
                         const diff = isPending ? -1 : nowSec - hb;
-                        const delayedLimit = parseInt(fresh.hb_delayed_interval) || 180;
-                        const warnLimit = parseInt(fresh.hb_warning_interval) || 300;
-                        const offLimit = parseInt(fresh.hb_offline_interval) || 600;
+                        const delayedLimit = parseInt(fresh.hb_delayed_interval) || 900;
+                        const warnLimit = parseInt(fresh.hb_warning_interval) || 1800;
+                        const offLimit = parseInt(fresh.hb_offline_interval) || 3600;
                         if (!isPending && diff <= offLimit) onlineC++;
                         else lostC++;
                         if (!isPending && diff > delayedLimit && diff <= warnLimit) delayedC++;
@@ -5807,9 +6419,9 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                         const hb = fresh.last_heartbeat || 0;
                         const isPending = !hb || hb === 0 || fresh.status === 'pending';
                         const diff = isPending ? -1 : nowSec - hb;
-                        const delayedLimit = parseInt(fresh.hb_delayed_interval) || 180;
-                        const warnLimit = parseInt(fresh.hb_warning_interval) || 300;
-                        const offLimit = parseInt(fresh.hb_offline_interval) || 600;
+                        const delayedLimit = parseInt(fresh.hb_delayed_interval) || 900;
+                        const warnLimit = parseInt(fresh.hb_warning_interval) || 1800;
+                        const offLimit = parseInt(fresh.hb_offline_interval) || 3600;
 
                         const isOnline = !isPending && diff <= delayedLimit;
                         const isDelayed = !isPending && diff > delayedLimit && diff <= warnLimit;
@@ -6701,6 +7313,7 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
         }
 
         function renderTable(data) {
+        window.renderFleetTable = renderTable;
             if (!Array.isArray(data)) return;
 
             const now = Math.floor(Date.now() / 1000);
@@ -6732,9 +7345,9 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
 
                 const isPending = !c.last_heartbeat || c.last_heartbeat === 0 || c.status === 'pending';
                 const diff = isPending ? -1 : now - (c.last_heartbeat || 0);
-                const delayedLimit = parseInt(c.hb_delayed_interval) || 180;
-                const warnLimit = parseInt(c.hb_warning_interval) || 300;
-                const offLimit = parseInt(c.hb_offline_interval) || 600;
+                const delayedLimit = parseInt(c.hb_delayed_interval) || 900;
+                const warnLimit = parseInt(c.hb_warning_interval) || 1800;
+                const offLimit = parseInt(c.hb_offline_interval) || 3600;
 
                 if (isPending) offlineCount++;
                 else if (diff <= delayedLimit) onlineCount++;
@@ -6818,9 +7431,9 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
             tbody.innerHTML = pageData.map(c => {
                 const isPending = !c.last_heartbeat || c.last_heartbeat === 0 || c.status === 'pending';
                 const diff = isPending ? -1 : now - (c.last_heartbeat || 0);
-                const delayedLimit = parseInt(c.hb_delayed_interval) || 180;
-                const warnLimit = parseInt(c.hb_warning_interval) || 300;
-                const offLimit = parseInt(c.hb_offline_interval) || 600;
+                const delayedLimit = parseInt(c.hb_delayed_interval) || 900;
+                const warnLimit = parseInt(c.hb_warning_interval) || 1800;
+                const offLimit = parseInt(c.hb_offline_interval) || 3600;
 
                 let humanDiff = isPending ? 'awaiting pulse' : formatHeartbeatTime(diff);
                 let stClass = 'status-online';
@@ -6836,6 +7449,14 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                 const isRecovery = sys.is_recovery_mode || false;
                 const slot = sys.boot_slot || 'A';
                 const remoteEnabled = Boolean(c.remote_enabled) && c.remote_enabled !== 0 && c.remote_enabled !== '0';
+
+                // Integration monitoring mute/disable check (Row scoped)
+                const unmonList = c.unmonitored_integrations || [];
+                const isMuted = (k) => {
+                    if (!k) return false;
+                    const s = String(k).toLowerCase();
+                    return unmonList.includes(s) || unmonList.includes('core_' + s) || (s.startsWith('core_') && unmonList.includes(s.slice(5)));
+                };
 
                 // Autonomous Self-Healing Engine Inspection (Row scoped)
                 const shData = (c.technologies && c.technologies.self_healing) || {};
@@ -6899,27 +7520,104 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                 ${onb.hasOnboarded ? `📅 Onboarded: ${escapeHtml(onb.fullText)}` : `⏳ Provisioned &bull; Awaiting initial contact`}
                             </div>
                         </td>
-                        ${dealerCell}
-                        ${integratorCell}
-                        ${onboardCell}
+                        <!-- Column 2: Pure Heartbeat Watchdog Status -->
                         <td>
                             ${(() => {
-                                const delayedLimit = parseInt(c.hb_delayed_interval) || 180;
-                                const warnLimit = parseInt(c.hb_warning_interval) || 300;
-                                const offLimit = parseInt(c.hb_offline_interval) || 600;
+                                const delayedLimit = parseInt(c.hb_delayed_interval) || 900;
+                                const warnLimit = parseInt(c.hb_warning_interval) || 1800;
+                                const offLimit = parseInt(c.hb_offline_interval) || 3600;
                                 const delayedHuman = formatIntervalHuman(delayedLimit);
                                 const warnHuman = formatIntervalHuman(warnLimit);
                                 const offHuman = formatIntervalHuman(offLimit);
 
+                                if (c.approval_status === 'pending') {
+                                    return `
+                                        <div class="heartbeat-status-wrap" title="Registration submitted &bull; Awaiting Manufacturer HQ Approval before remote access and monitoring are enabled">
+                                            <span class="heartbeat-pill-badge hb-pill-pending" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border-color: rgba(245, 158, 11, 0.4);">
+                                                <span class="hb-ball hb-ball-pending" style="background: #fbbf24; box-shadow: 0 0 6px #fbbf24;"></span>
+                                                <span>AWAITING APPROVAL</span>
+                                            </span>
+                                            <div class="hb-timing-sub" style="color: #fbbf24; font-weight: 600;">Pending HQ Review</div>
+                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 10px;">🔒 Remote access locked</div>
+                                        </div>
+                                    `;
+                                } else if (isPending) {
+                                    return `
+                                        <div class="heartbeat-status-wrap" title="Client site provisioned - awaiting initial connection from physical gateway">
+                                            <span class="heartbeat-pill-badge hb-pill-pending">
+                                                <span class="hb-ball hb-ball-pending"></span>
+                                                <span>PENDING</span>
+                                            </span>
+                                            <div class="hb-timing-sub hb-timing-pending">awaiting first pulse</div>
+                                        </div>
+                                    `;
+                                } else if (diff > offLimit) {
+                                    const off = formatOfflineDetails(c.last_heartbeat, now);
+                                    return `
+                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns All Users + Manufacturer HQ (> ${offHuman})">
+                                            <span class="heartbeat-pill-badge hb-pill-offline">
+                                                <span class="hb-ball hb-ball-offline"></span>
+                                                <span>OFFLINE</span>
+                                            </span>
+                                            <div class="hb-timing-sub hb-timing-offline">${escapeHtml(off.timeSince)}</div>
+                                            <div class="hb-timestamp-sub" style="color: #f87171; font-size: 10px; font-weight: 600;">🚨 Signal Lost (&gt;${offHuman})</div>
+                                            <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
+                                        </div>
+                                    `;
+                                } else if (diff > warnLimit) {
+                                    const off = formatOfflineDetails(c.last_heartbeat, now);
+                                    return `
+                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Integrators + Dealers (> ${warnHuman})">
+                                            <span class="heartbeat-pill-badge hb-pill-warning">
+                                                <span class="hb-ball hb-ball-warning"></span>
+                                                <span>WARNING</span>
+                                            </span>
+                                            <div class="hb-timing-sub hb-timing-warning">Delayed (${humanDiff})</div>
+                                            <div class="hb-timestamp-sub" style="color: #fb923c; font-size: 10px; font-weight: 600;">🟠 Warns Dealer &amp; Integrator (&gt;${warnHuman})</div>
+                                            <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
+                                        </div>
+                                    `;
+                                } else if (diff > delayedLimit) {
+                                    const off = formatOfflineDetails(c.last_heartbeat, now);
+                                    return `
+                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Integrator (> ${delayedHuman})">
+                                            <span class="heartbeat-pill-badge hb-pill-delayed">
+                                                <span class="hb-ball hb-ball-delayed"></span>
+                                                <span>DELAYED</span>
+                                            </span>
+                                            <div class="hb-timing-sub hb-timing-delayed">Delayed (${humanDiff})</div>
+                                            <div class="hb-timestamp-sub" style="color: #facc15; font-size: 10px; font-weight: 600;">🟡 Warns Integrator (&gt;${delayedHuman})</div>
+                                            <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
+                                        </div>
+                                    `;
+                                } else {
+                                    return `
+                                        <div class="heartbeat-status-wrap" title="Gavasah Gateway connected and streaming telemetry (Last pulse ${humanDiff}) • Watchdog limits: ${delayedHuman} / ${warnHuman} / ${offHuman}">
+                                            <span class="heartbeat-pill-badge hb-pill-online">
+                                                <span class="hb-ball hb-ball-online"></span>
+                                                <span>ONLINE</span>
+                                            </span>
+                                            <div class="hb-timing-sub hb-timing-online">Pulse ${humanDiff}</div>
+                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 10px;">Limits: ${delayedHuman} / ${warnHuman} / ${offHuman}</div>
+                                        </div>
+                                    `;
+                                }
+                            })()}
+                        </td>
+
+                        <!-- Column 6: Pure Smart Automation Integration & Self-Healing Status -->
+                        <td>
+                            ${(() => {
                                 // Check for integration & subsystem issues (KNX, Zigbee, Lutron, Matter, CoolMaster, HA Core)
                                 let integrationIssues = [];
-                                if (c.knx_ip && c.knx_status) {
+                                if (c.knx_ip && c.knx_status && !isMuted('knx')) {
                                     if (c.knx_status.configured && (c.knx_status.reachable === false || c.knx_status.state === 'error' || c.knx_status.state === 'disconnected')) {
                                         integrationIssues.push('KNX Gateway unreachable');
                                     }
                                 }
                                 if (c.technologies) {
                                     for (const [techKey, techVal] of Object.entries(c.technologies)) {
+                                        if (isMuted(techKey)) continue;
                                         if (techVal && techVal.detected) {
                                             if (techKey === 'lutron') {
                                                 const validL = (techVal.entries || []).filter(e => !isEntryIgnored(e));
@@ -6947,6 +7645,12 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                 const exhaustedHealing = [];
 
                                 for (const [subKey, subInfo] of Object.entries(shSubsystems)) {
+                                    if (isMuted(subKey)) continue;
+                                    if (subKey === 'failed_core_entries') {
+                                        const rawEntries = (c.technologies && c.technologies.failed_core_entries) || [];
+                                        const activeUnmuted = rawEntries.filter(e => !isEntryIgnored(e) && !isMuted(e.domain));
+                                        if (activeUnmuted.length === 0 || isMuted('failed_core_entries')) continue;
+                                    }
                                     if (subInfo && subInfo.status === 'healing' && (subInfo.attempts || 0) < 5) {
                                         const pretty = subKey === 'coolmaster' ? 'CoolMaster HVAC' : (subKey === 'failed_core_entries' ? 'Core Entry' : subKey.toUpperCase());
                                         activeHealing.push({ key: subKey, name: pretty, attempt: subInfo.attempts || 1, maxAttempts: subInfo.max_attempts || 5, action: subInfo.last_action });
@@ -6958,42 +7662,31 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                 const isHealingActive = activeHealing.length > 0;
                                 const isHealingExhausted = exhaustedHealing.length > 0;
 
-                                if (c.approval_status === 'pending') {
+                                if (c.approval_status === 'pending' || isPending) {
                                     return `
-                                        <div class="heartbeat-status-wrap" title="Registration submitted &bull; Awaiting Manufacturer HQ Approval before remote access and monitoring are enabled">
-                                            <span class="heartbeat-pill-badge hb-pill-pending" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border-color: rgba(245, 158, 11, 0.4);">
-                                                <span class="hb-ball hb-ball-pending" style="background: #fbbf24; box-shadow: 0 0 6px #fbbf24;"></span>
-                                                <span>AWAITING APPROVAL</span>
+                                        <div class="heartbeat-status-wrap" title="Gateway pending activation &bull; Subsystem telemetry standby">
+                                            <span class="heartbeat-pill-badge" style="background: rgba(148, 163, 184, 0.12); color: #94a3b8; border-color: rgba(148, 163, 184, 0.25);">
+                                                <span class="hb-ball" style="background: #94a3b8;"></span>
+                                                <span>STANDBY</span>
                                             </span>
-                                            <div class="hb-timing-sub" style="color: #fbbf24; font-weight: 600;">Pending HQ Review</div>
-                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 10px;">🔒 Remote access locked</div>
+                                            <div class="hb-timing-sub" style="color: #94a3b8;">Awaiting Setup</div>
+                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 10px;">Offline Telemetry</div>
                                         </div>
                                     `;
-                                } else if (isPending) {
+                                }
+                                if (diff > offLimit) {
                                     return `
-                                        <div class="heartbeat-status-wrap" title="Client site provisioned - awaiting initial connection from physical gateway">
-                                            <span class="heartbeat-pill-badge hb-pill-pending">
-                                                <span class="hb-ball hb-ball-pending"></span>
-                                                <span>PENDING</span>
+                                        <div class="heartbeat-status-wrap" title="Physical gateway heartbeat lost &bull; Subsystems unreachable">
+                                            <span class="heartbeat-pill-badge" style="background: rgba(100, 116, 139, 0.15); color: #94a3b8; border-color: rgba(100, 116, 139, 0.3);">
+                                                <span class="hb-ball" style="background: #64748b;"></span>
+                                                <span>UNREACHABLE</span>
                                             </span>
-                                            <div class="hb-timing-sub hb-timing-pending">awaiting first pulse</div>
+                                            <div class="hb-timing-sub" style="color: #64748b;">Gateway Offline</div>
+                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 10px;">Telemetry Paused</div>
                                         </div>
                                     `;
-                                } else if (diff > offLimit) {
-                                    const off = formatOfflineDetails(c.last_heartbeat, now);
-                                    return `
-                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Everyone including Manufacturer (> ${offHuman})">
-                                            <span class="heartbeat-pill-badge hb-pill-offline">
-                                                <span class="hb-ball hb-ball-offline"></span>
-                                                <span>OFFLINE</span>
-                                            </span>
-                                            <div class="hb-timing-sub hb-timing-offline" title="${escapeHtml(off.tooltip)}">${escapeHtml(off.durationText)}</div>
-                                            <div class="hb-timestamp-sub" style="color: #f87171; font-size: 10px; font-weight: 600;">🚨 Warns All & Mfg (&gt;${offHuman})</div>
-                                            <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
-                                        </div>
-                                    `;
-                                } else if (diff <= delayedLimit && isHealingActive) {
-                                    // Autonomous Self-Healing Active: Suppress alerts and display live recovery progress!
+                                }
+                                if (isHealingActive) {
                                     const primaryHeal = activeHealing[0];
                                     return `
                                         <div class="heartbeat-status-wrap" title="Autonomous Self-Healing Active: ${escapeHtml(primaryHeal.name)} remediation attempt ${primaryHeal.attempt} of ${primaryHeal.maxAttempts} in progress (${escapeHtml(primaryHeal.action || 'Remediating')}) • Partner escalation suppressed while healing">
@@ -7003,11 +7696,10 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                             </span>
                                             <div class="hb-timing-sub" style="color: #facc15; font-weight: 600;">${escapeHtml(primaryHeal.name)} (${primaryHeal.attempt}/${primaryHeal.maxAttempts})</div>
                                             <div class="hb-timestamp-sub" style="color: #94a3b8; font-size: 10px;">🛡️ Escalation suppressed</div>
-                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 9px;">Pulse ${humanDiff}</div>
                                         </div>
                                     `;
-                                } else if (diff <= delayedLimit && isHealingExhausted) {
-                                    // Self-Healing exhausted after 5 attempts: Halted & Notified
+                                }
+                                if (isHealingExhausted) {
                                     const primaryExh = exhaustedHealing[0];
                                     return `
                                         <div class="heartbeat-status-wrap" title="Autonomous Self-Healing Halted: 5/5 remediation attempts failed for ${escapeHtml(primaryExh.name)} • Halted &amp; Notified • Resets only on gateway or add-on restart">
@@ -7017,68 +7709,59 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                             </span>
                                             <div class="hb-timing-sub hb-timing-offline">${escapeHtml(primaryExh.name)} (5/5 Failed)</div>
                                             <div class="hb-timestamp-sub" style="color: #f87171; font-size: 10px; font-weight: 600;">🛑 Halted • Awaiting Restart</div>
-                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 9px;">Pulse ${humanDiff}</div>
                                         </div>
                                     `;
-                                } else if (diff > warnLimit || (hasIntegrationIssue && !isHealingActive && diff > delayedLimit)) {
-                                    const off = formatOfflineDetails(c.last_heartbeat, now);
+                                }
+                                if (hasIntegrationIssue) {
                                     return `
-                                        <div class="heartbeat-status-wrap" title="${escapeHtml(off.tooltip)} • Escalation: Warns Integrators + Dealers (> ${warnHuman})${hasIntegrationIssue ? ' • Issues: ' + escapeHtml(integrationIssueText) : ''}">
+                                        <div class="heartbeat-status-wrap" title="Subsystem fault detected: ${escapeHtml(integrationIssueText)} • Click technology chips for diagnostics">
                                             <span class="heartbeat-pill-badge hb-pill-warning">
                                                 <span class="hb-ball hb-ball-warning"></span>
-                                                <span>WARNING</span>
+                                                <span>FAULT DETECTED</span>
                                             </span>
-                                            <div class="hb-timing-sub hb-timing-warning">${hasIntegrationIssue ? 'Subsystem Alert' : `Delayed (${humanDiff})`}</div>
-                                            <div class="hb-timestamp-sub" style="color: #fb923c; font-size: 10px; font-weight: 600;">${hasIntegrationIssue ? `🟠 Issue: ${escapeHtml(integrationIssueText)}` : `🟠 Warns Dealer & Integrator (&gt;${warnHuman})`}</div>
-                                            <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
+                                            <div class="hb-timing-sub hb-timing-warning">${escapeHtml(integrationIssueText)}</div>
+                                            <div class="hb-timestamp-sub" style="color: #fb923c; font-size: 10px;">Click chip for details</div>
                                         </div>
                                     `;
-                                } else if (diff > delayedLimit || hasIntegrationIssue) {
-                                    const off = formatOfflineDetails(c.last_heartbeat, now);
+                                }
+
+                                // Count configured subsystems
+                                const subs = [];
+                                if (c.knx_ip || (c.knx_status && c.knx_status.configured)) subs.push('KNX');
+                                if (c.technologies) {
+                                    for (const [k, v] of Object.entries(c.technologies)) {
+                                        if (v && (v.detected || v.status === 'online' || (v.entries && v.entries.length > 0))) {
+                                            subs.push(k.toUpperCase());
+                                        }
+                                    }
+                                }
+                                if (subs.length > 0) {
                                     return `
-                                        <div class="heartbeat-status-wrap" title="${hasIntegrationIssue ? 'Integration problem detected: ' + escapeHtml(integrationIssueText) : escapeHtml(off.tooltip)} • Escalation: Warns Integrator (> ${delayedHuman})">
-                                            <span class="heartbeat-pill-badge hb-pill-delayed">
-                                                <span class="hb-ball hb-ball-delayed"></span>
-                                                <span>${hasIntegrationIssue ? 'DEGRADED' : 'DELAYED'}</span>
+                                        <div class="heartbeat-status-wrap" title="${subs.length} smart automation subsystems configured and healthy (${subs.join(', ')})">
+                                            <span class="heartbeat-pill-badge hb-pill-online">
+                                                <span class="hb-ball hb-ball-online"></span>
+                                                <span>ALL HEALTHY</span>
                                             </span>
-                                            <div class="hb-timing-sub hb-timing-delayed">${hasIntegrationIssue ? `Pulse ${humanDiff} (Subsystem Issue)` : `Delayed (${humanDiff})`}</div>
-                                            <div class="hb-timestamp-sub" style="color: #facc15; font-size: 10px; font-weight: 600;">${hasIntegrationIssue ? `🟡 Issue: ${escapeHtml(integrationIssueText)}` : `🟡 Warns Integrator (&gt;${delayedHuman})`}</div>
-                                            <div class="hb-timestamp-sub">${escapeHtml(off.timestampText)}</div>
+                                            <div class="hb-timing-sub hb-timing-online">${subs.length} Subsystem${subs.length > 1 ? 's' : ''} Online</div>
+                                            <div class="hb-timestamp-sub" style="color: #10b981; font-size: 10px;">🟢 Fully Operational</div>
                                         </div>
                                     `;
                                 } else {
                                     return `
-                                        <div class="heartbeat-status-wrap" title="Gavasah Gateway connected and streaming telemetry (Last pulse ${humanDiff}) • Watchdog limits: ${delayedHuman} / ${warnHuman} / ${offHuman}">
-                                            <span class="heartbeat-pill-badge hb-pill-online">
+                                        <div class="heartbeat-status-wrap" title="Home Assistant Core operational • No external automation subsystems configured">
+                                            <span class="heartbeat-pill-badge hb-pill-online" style="background: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.25);">
                                                 <span class="hb-ball hb-ball-online"></span>
-                                                <span>ONLINE</span>
+                                                <span>OPERATIONAL</span>
                                             </span>
-                                            <div class="hb-timing-sub hb-timing-online">Pulse ${humanDiff}</div>
-                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 10px;">Limits: ${delayedHuman} / ${warnHuman} / ${offHuman}</div>
+                                            <div class="hb-timing-sub hb-timing-online">HA Core Online</div>
+                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 10px;">Core Fleet Mode</div>
                                         </div>
                                     `;
                                 }
                             })()}
                         </td>
-                        <td>
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <label class="toggle-switch" title="Toggle Remote Ingress for ${escapeHtml(c.name)}">
-                                    <input type="checkbox" ${remoteEnabled ? 'checked' : ''} onchange="toggleRemoteAccess('${c.client_id}', this.checked)">
-                                    <span class="toggle-slider"></span>
-                                </label>
-                                <span class="toggle-pill-badge ${remoteEnabled ? 'pill-live' : 'pill-off'}" onclick="toggleRemoteAccess('${c.client_id}', ${!remoteEnabled})" title="Click to toggle remote ingress">
-                                    ${remoteEnabled ? '🟢 LIVE' : '🔴 DISABLED'}
-                                </span>
-                            </div>
-                        </td>
-                        <td>
-                            ${isPending || !sys.boot_slot ? `
-                                <span class="badge-slot" style="background: rgba(148, 163, 184, 0.12); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.2);">SLOT —</span>
-                            ` : `
-                                <span class="badge-slot slot-${slot.toLowerCase()}">SLOT ${slot}</span>
-                                ${isRecovery ? '<span class="badge-slot" style="background: rgba(239, 68, 68, 0.2); color: #ef4444; margin-left: 4px;">RECOVERY</span>' : ''}
-                            `}
-                        </td>
+
+                        <!-- Column 4: Technologies & Subsystems -->
                         <td style="font-size: 12px;">
                             <div style="color: #94a3b8; font-family: monospace; font-size: 11px; margin-bottom: 4px;">IP: ${escapeHtml(net.local_ipv4 || '—')}</div>
                             <div class="tech-badge-container">
@@ -7096,14 +7779,16 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                         const ep = knx.gateway_ip ? `${knx.gateway_ip}:${knx.gateway_port || 3671}` : (c.knx_ip ? `${c.knx_ip}:${c.knx_port || 3671}` : 'Bus');
                                         const isKnxOnline = Boolean(knx.reachable || knx.state === 'connected' || knx.status === 'online');
                                         const knxHealing = shSubsystems['knx'];
-                                        if (knxHealing && knxHealing.status === 'healing' && (knxHealing.attempts || 0) <= 5) {
+                                        if (isMuted('knx')) {
+                                            badges.push(`<span class="tech-badge" style="background: rgba(100, 116, 139, 0.15); color: #94a3b8; border: 1px solid rgba(100, 116, 139, 0.3); cursor: pointer;" onclick="openIntegrationDiagnostics('${c.client_id}', 'knx', event)" title="KNXnet/IP Monitoring Muted • Click to manage"><span class="tech-dot" style="background:#64748b;"></span>KNX (Muted)</span>`);
+                                        } else if (knxHealing && knxHealing.status === 'healing' && (knxHealing.attempts || 0) <= 5) {
                                             badges.push(`<span class="tech-badge tech-status-healing" onclick="openIntegrationDiagnostics('${c.client_id}', 'knx', event)" style="cursor: pointer;" title="Autonomous Self-Healing in Progress (Attempt ${knxHealing.attempts}/5: ${escapeHtml(knxHealing.last_action || 'Remediating')}) • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#facc15; box-shadow: 0 0 6px #facc15;"></span>KNX Healing (${knxHealing.attempts}/5)</span>`);
                                         } else if (isKnxOnline) {
                                             const latStr = knx.latency_ms ? ` (${knx.latency_ms}ms)` : '';
                                             badges.push(`<span class="tech-badge tech-knx tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'knx', event)" style="cursor: pointer;" title="KNXnet/IP Online • Endpoint: ${escapeHtml(ep)}${latStr} • Click for full diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>KNX ${escapeHtml(ep)}${escapeHtml(latStr)}</span>`);
                                         } else {
                                             const errReason = knx.error ? (knx.error === 'timeout' ? 'Gateway Unreachable (Timeout)' : knx.error) : (knx.offline_reason || 'Gateway Unreachable');
-                                            badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'knx', event)" style="cursor: pointer;" title="KNXnet/IP Offline • Reason: ${escapeHtml(errReason)} • Click for full diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>KNX Offline (${escapeHtml(errReason)})</span>`);
+                                            badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'knx', event)" style="cursor: pointer;" title="KNXnet/IP Offline • Reason: ${escapeHtml(errReason)} • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>KNX Offline (${escapeHtml(errReason)})</span>`);
                                         }
                                     }
 
@@ -7120,7 +7805,9 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                         const failedInsts = insts.filter(i => !i.running && i.state !== 'started');
                                         const isZha = Boolean(zigbee.zha_detected);
 
-                                        if (insts.length > 0) {
+                                        if (isMuted('zigbee')) {
+                                            badges.push(`<span class="tech-badge" style="background: rgba(100, 116, 139, 0.15); color: #94a3b8; border: 1px solid rgba(100, 116, 139, 0.3); cursor: pointer;" onclick="openIntegrationDiagnostics('${c.client_id}', 'zigbee', event)" title="Zigbee Monitoring Muted • Click to manage"><span class="tech-dot" style="background:#64748b;"></span>Zigbee (Muted)</span>`);
+                                        } else if (insts.length > 0) {
                                             if (failedInsts.length === 0) {
                                                 const zLbl = insts.length > 1 ? `Zigbee (${insts.length}x Z2M Online)` : 'Zigbee (Z2M Online)';
                                                 badges.push(`<span class="tech-badge tech-zigbee tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'zigbee', event)" style="cursor: pointer;" title="Zigbee2MQTT Online (${insts.map(i => i.name).join(', ')}) • Click for diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>${escapeHtml(zLbl)}</span>`);
@@ -7145,7 +7832,9 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                         const lTitle = lEntries.length > 0 ? lEntries.map(e => e.title || e.domain).join(', ') : 'Lutron Repeater';
                                         const lutHealing = shSubsystems['lutron'];
 
-                                        if (lutHealing && lutHealing.status === 'healing' && (lutHealing.attempts || 0) < 5) {
+                                        if (isMuted('lutron')) {
+                                            badges.push(`<span class="tech-badge" style="background: rgba(100, 116, 139, 0.15); color: #94a3b8; border: 1px solid rgba(100, 116, 139, 0.3); cursor: pointer;" onclick="openIntegrationDiagnostics('${c.client_id}', 'lutron', event)" title="Lutron Monitoring Muted • Click to manage"><span class="tech-dot" style="background:#64748b;"></span>Lutron (Muted)</span>`);
+                                        } else if (lutHealing && lutHealing.status === 'healing' && (lutHealing.attempts || 0) < 5) {
                                             badges.push(`<span class="tech-badge tech-status-healing" onclick="openIntegrationDiagnostics('${c.client_id}', 'lutron', event)" style="cursor: pointer;" title="Autonomous Self-Healing in Progress (Attempt ${lutHealing.attempts}/5: ${escapeHtml(lutHealing.last_action || 'Remediating')}) • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#facc15; box-shadow: 0 0 6px #facc15;"></span>Lutron Healing (${lutHealing.attempts}/5)</span>`);
                                         } else if (lutHealing && (lutHealing.status === 'exhausted' || (lutHealing.attempts || 0) >= 5)) {
                                             badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'lutron', event)" style="cursor: pointer;" title="Autonomous Self-Healing Halted (5/5 Attempts Failed) • Notified • Resets on restart • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>Lutron (5/5 Healing Failed)</span>`);
@@ -7168,7 +7857,9 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                     // 5. Matter
                                     if (matter.detected) {
                                         const isMatterOnline = Boolean(matter.state === 'started' || matter.state === 'running' || matter.status === 'online');
-                                        if (isMatterOnline) {
+                                        if (isMuted('matter')) {
+                                            badges.push(`<span class="tech-badge" style="background: rgba(100, 116, 139, 0.15); color: #94a3b8; border: 1px solid rgba(100, 116, 139, 0.3); cursor: pointer;" onclick="openIntegrationDiagnostics('${c.client_id}', 'matter', event)" title="Matter Monitoring Muted • Click to manage"><span class="tech-dot" style="background:#64748b;"></span>Matter (Muted)</span>`);
+                                        } else if (isMatterOnline) {
                                             badges.push(`<span class="tech-badge tech-matter tech-status-online" onclick="openIntegrationDiagnostics('${c.client_id}', 'matter', event)" style="cursor: pointer;" title="Matter Server Online • Click for diagnostics"><span class="tech-dot" style="background:#10b981; box-shadow: 0 0 6px #10b981;"></span>Matter Online</span>`);
                                         } else {
                                             badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'matter', event)" style="cursor: pointer;" title="Matter Server Offline • Reason: ${escapeHtml(matter.state || 'stopped')} • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>Matter Offline (${escapeHtml(matter.state || 'stopped')})</span>`);
@@ -7185,7 +7876,9 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                         const cmTitle = cmEntries.length > 0 ? cmEntries.map(e => e.title || `${e.host || ''}:${e.port || 10102}`).join(', ') : 'CoolMaster Gateway';
                                         const cmHealing = shSubsystems['coolmaster'];
                                         const effectiveReason = coolmaster.offline_reason || (failedCm.length > 0 ? (failedCm[0].reason || `Integration in '${failedCm[0].state}' state`) : 'HVAC Gateway / Line Faulty');
-                                        if (cmHealing && cmHealing.status === 'healing' && (cmHealing.attempts || 0) < 5) {
+                                        if (isMuted('coolmaster')) {
+                                            badges.push(`<span class="tech-badge" style="background: rgba(100, 116, 139, 0.15); color: #94a3b8; border: 1px solid rgba(100, 116, 139, 0.3); cursor: pointer;" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" title="CoolMaster Monitoring Muted • Click to manage"><span class="tech-dot" style="background:#64748b;"></span>CoolMaster (Muted)</span>`);
+                                        } else if (cmHealing && cmHealing.status === 'healing' && (cmHealing.attempts || 0) < 5) {
                                             badges.push(`<span class="tech-badge tech-status-healing" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="Autonomous Self-Healing in Progress (Attempt ${cmHealing.attempts}/5: ${escapeHtml(cmHealing.last_action || 'Remediating')}) • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#facc15; box-shadow: 0 0 6px #facc15;"></span>CoolMaster Healing (${cmHealing.attempts}/5)</span>`);
                                         } else if (cmHealing && (cmHealing.status === 'exhausted' || (cmHealing.attempts || 0) >= 5)) {
                                             badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'coolmaster', event)" style="cursor: pointer;" title="Autonomous Self-Healing Halted (5/5 Attempts Failed) • Notified • Resets on restart • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>CoolMaster (5/5 Healing Failed)</span>`);
@@ -7234,7 +7927,11 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                             const count = fEntries.length;
                                             const badgeLabel = count > 1 ? `${pretty} (${count}x Offline)` : `${pretty} Offline`;
                                             const summary = fEntries.map(e => `${e.title || fDomain}: ${e.reason || e.state || 'Failed'}`).join(' • ');
-                                            badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'core_${fDomain}', event)" style="cursor: pointer;" title="${escapeHtml(pretty)} Offline (${count} endpoint${count > 1 ? 's' : ''}) • ${escapeHtml(summary)} • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>${escapeHtml(badgeLabel)}</span>`);
+                                            if (isMuted(fDomain) || isMuted('core_' + fDomain) || isMuted('failed_core_entries')) {
+                                                badges.push(`<span class="tech-badge" style="background: rgba(100, 116, 139, 0.15); color: #94a3b8; border: 1px solid rgba(100, 116, 139, 0.3); cursor: pointer;" onclick="openIntegrationDiagnostics('${c.client_id}', 'core_${fDomain}', event)" title="${escapeHtml(pretty)} Monitoring Muted • Click to manage"><span class="tech-dot" style="background:#64748b;"></span>${escapeHtml(pretty)} (Muted)</span>`);
+                                            } else {
+                                                badges.push(`<span class="tech-badge tech-status-offline" onclick="openIntegrationDiagnostics('${c.client_id}', 'core_${fDomain}', event)" style="cursor: pointer;" title="${escapeHtml(pretty)} Offline (${count} endpoint${count > 1 ? 's' : ''}) • ${escapeHtml(summary)} • Click for diagnostics"><span class="tech-dot tech-dot-pulsing" style="background:#ef4444; box-shadow: 0 0 6px #ef4444;"></span>${escapeHtml(badgeLabel)}</span>`);
+                                            }
                                         }
                                     }
 
@@ -7245,6 +7942,26 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                 })()}
                             </div>
                         </td>
+
+                        <!-- Column 5: Boot Slot (RAUC) -->
+                        <td>
+                            ${isPending || !sys.boot_slot ? `
+                                <span class="badge-slot" style="background: rgba(148, 163, 184, 0.12); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.2);">SLOT —</span>
+                            ` : `
+                                <span class="badge-slot slot-${slot.toLowerCase()}">SLOT ${slot}</span>
+                                ${isRecovery ? '<span class="badge-slot" style="background: rgba(239, 68, 68, 0.2); color: #ef4444; margin-left: 4px;">RECOVERY</span>' : ''}
+                            `}
+                        </td>
+
+                        <!-- Column 6: Remote Ingress Toggle (Clean, Live Update, No Redundant Dot/Badge) -->
+                        <td style="text-align: center;">
+                            <label class="toggle-switch" title="Toggle Remote Ingress for ${escapeHtml(c.name)}" style="display: inline-block;">
+                                <input type="checkbox" ${remoteEnabled ? 'checked' : ''} onchange="toggleRemoteAccess('${c.client_id}', this.checked)">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </td>
+
+                        <!-- Column 7: Hardware Metrics -->
                         <td style="font-size: 12px;">
                             ${isPending || sys.cpu_percent === undefined || sys.cpu_percent === null ? `
                                 <div style="color: #64748b; font-weight: 500;">CPU: — &bull; RAM: —</div>
@@ -7279,6 +7996,13 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                 ` : ''}
                             `}
                         </td>
+
+                        <!-- Column 8: Onboarded At -->
+                        ${onboardCell}
+                        <!-- Column 9: Dealer Partner -->
+                        ${dealerCell}
+                        <!-- Column 10: Assigned Integrator -->
+                        ${integratorCell}
                         <td class="col-actions-menu">
                             <div class="action-dropdown-wrap" id="action-wrap-${c.client_id}">
                                 <button type="button" class="btn-actions-toggle" id="btn-action-toggle-${c.client_id}" onclick="toggleRowActionMenu('${c.client_id}', event)" title="Actions for ${escapeHtml(c.name)}">
@@ -7356,7 +8080,7 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                         </td>
                     </tr>
                 `;
-            }).join('') || `<tr><td colspan="${currentUser.role === 'manufacturer' ? 9 : (currentUser.role === 'dealer' ? 8 : 7)}" style="text-align: center; color: #64748b; padding: 32px;">No gateways match the selected filter.</td></tr>`;
+            }).join('') || `<tr><td colspan="${currentUser.role === 'manufacturer' ? 11 : (currentUser.role === 'dealer' ? 10 : 9)}" style="text-align: center; color: #64748b; padding: 32px;">No gateways match the selected filter.</td></tr>`;
 
             // Display Manufacturer Fleet Update button if role is manufacturer
             const fleetUpdateBtn = document.getElementById('btn-fleet-update-center');
@@ -7431,6 +8155,30 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                 }
             } catch (err) {
                 showToast(`Update error: ${err.message}`, 'error');
+            }
+        }
+
+        
+        async function toggleClientAutoUpdate(clientId, targetState, event) {
+            if (event) {
+                event.stopPropagation();
+                event.preventDefault();
+            }
+            try {
+                const resp = await fetch('/api/toggle_auto_update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ client_id: clientId, auto_update: targetState })
+                });
+                const res = await resp.json();
+                if (res.ok) {
+                    showToast(`Auto-Update ${targetState ? 'ENABLED' : 'PAUSED'} for client gateway.`, 'success');
+                    if (typeof fetchFleetData === 'function') fetchFleetData();
+                } else {
+                    showToast(res.error || 'Failed to update auto-update setting', 'error');
+                }
+            } catch (err) {
+                showToast(`Auto-Update error: ${err.message}`, 'error');
             }
         }
 
@@ -8428,9 +9176,9 @@ auto_update_external_url: true`;
                     unitEl.value = 'm';
                 }
             };
-            setDurationInputs('edit-hb-delayed-val', 'edit-hb-delayed-unit', client.hb_delayed_interval, 180);
-            setDurationInputs('edit-hb-warning-val', 'edit-hb-warning-unit', client.hb_warning_interval, 300);
-            setDurationInputs('edit-hb-offline-val', 'edit-hb-offline-unit', client.hb_offline_interval, 600);
+            setDurationInputs('edit-hb-delayed-val', 'edit-hb-delayed-unit', client.hb_delayed_interval, 900);
+            setDurationInputs('edit-hb-warning-val', 'edit-hb-warning-unit', client.hb_warning_interval, 1800);
+            setDurationInputs('edit-hb-offline-val', 'edit-hb-offline-unit', client.hb_offline_interval, 3600);
 
             const dGroup = document.getElementById('edit-dealer-group');
             if (currentUser.role === 'manufacturer') {
@@ -8459,6 +9207,18 @@ auto_update_external_url: true`;
             const isKnxRemoteOn = Boolean(client.knx_remote_enabled !== 0 && client.knx_remote_enabled !== false && client.knx_remote_enabled !== '0');
             if (knxRemoteToggle) knxRemoteToggle.checked = isKnxRemoteOn;
             updateEditKnxRemoteStatusText(isKnxRemoteOn);
+
+            const callAlertToggle = document.getElementById('edit-call-alert-toggle');
+            if (callAlertToggle) callAlertToggle.checked = client.call_alert_enabled !== undefined ? Boolean(client.call_alert_enabled) : true;
+
+            const msgAlertToggle = document.getElementById('edit-msg-alert-toggle');
+            if (msgAlertToggle) msgAlertToggle.checked = client.msg_alert_enabled !== undefined ? Boolean(client.msg_alert_enabled) : true;
+
+            const callStartEl = document.getElementById('edit-call-start-time');
+            if (callStartEl) callStartEl.value = client.call_window_start || '10:00';
+
+            const callEndEl = document.getElementById('edit-call-end-time');
+            if (callEndEl) callEndEl.value = client.call_window_end || '18:00';
 
             // Real-time update of snippet on input change
             const secEl = document.getElementById('edit-secret');
@@ -8550,9 +9310,13 @@ auto_update_external_url: true`;
                 auth_secret: (document.getElementById('edit-secret') ? document.getElementById('edit-secret').value.trim() : (client ? client.auth_secret : '')),
                 remote_enabled: remoteToggle ? remoteToggle.checked : true,
                 knx_remote_enabled: (document.getElementById('edit-knx-remote-toggle') ? document.getElementById('edit-knx-remote-toggle').checked : true),
-                hb_delayed_interval: getDurationSec('edit-hb-delayed-val', 'edit-hb-delayed-unit', 180),
-                hb_warning_interval: getDurationSec('edit-hb-warning-val', 'edit-hb-warning-unit', 300),
-                hb_offline_interval: getDurationSec('edit-hb-offline-val', 'edit-hb-offline-unit', 600)
+                hb_delayed_interval: getDurationSec('edit-hb-delayed-val', 'edit-hb-delayed-unit', 900),
+                hb_warning_interval: getDurationSec('edit-hb-warning-val', 'edit-hb-warning-unit', 1800),
+                hb_offline_interval: getDurationSec('edit-hb-offline-val', 'edit-hb-offline-unit', 3600),
+                call_alert_enabled: document.getElementById('edit-call-alert-toggle') ? (document.getElementById('edit-call-alert-toggle').checked ? 1 : 0) : 1,
+                msg_alert_enabled: document.getElementById('edit-msg-alert-toggle') ? (document.getElementById('edit-msg-alert-toggle').checked ? 1 : 0) : 1,
+                call_window_start: document.getElementById('edit-call-start-time') ? (document.getElementById('edit-call-start-time').value || '10:00') : '10:00',
+                call_window_end: document.getElementById('edit-call-end-time') ? (document.getElementById('edit-call-end-time').value || '18:00') : '18:00'
             };
 
             if (currentUser.role === 'manufacturer') {
@@ -8988,6 +9752,8 @@ All active sessions for this integrator will be terminated immediately.` : '';
             const client = currentFleetData.find(c => c.client_id === clientId);
             if (!client) return;
 
+            const isMonitored = !(client.unmonitored_integrations || []).includes(techKey);
+
             const tech = client.technologies || {};
             const knx = tech.knx || client.knx_status || {};
             const zigbee = tech.zigbee || {};
@@ -9148,7 +9914,7 @@ All active sessions for this integrator will be terminated immediately.` : '';
                         ` : ''}
                         <tr>
                             <th>Operational State</th>
-                            <td><strong style="color: ${isOnline ? '#34d399' : '#f87171'};">${isOnline ? 'ONLINE' : 'OFFLINE / FAILED'}</strong></td>
+                            <td><strong style="color: ${!isMonitored ? '#94a3b8' : (isOnline ? '#34d399' : '#f87171')};">${!isMonitored ? 'MUTED / DISABLED 🔕' : (isOnline ? 'ONLINE' : 'OFFLINE / FAILED')}</strong></td>
                         </tr>
                         ${!isOnline && reason ? `
                             <tr>
@@ -9213,6 +9979,28 @@ All active sessions for this integrator will be terminated immediately.` : '';
                 `;
             }
 
+                        // Per-Client, Per-Integration Monitoring Toggle (isMonitored declared at function start)
+            bodyEl.innerHTML += `
+                <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(0, 240, 255, 0.25); border-radius: 10px; padding: 14px 16px; margin-top: 16px; display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div style="font-weight: 700; font-size: 13px; color: #fff; display: flex; align-items: center; gap: 8px;">
+                            <span>${isMonitored ? '🔔' : '🔕'}</span>
+                            <span>Continuous Monitoring &amp; Alert Escalation:</span>
+                            <span style="font-size: 11px; padding: 2px 8px; border-radius: 12px; font-weight: 700; background: ${isMonitored ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)'}; color: ${isMonitored ? '#34d399' : '#f87171'}; border: 1px solid ${isMonitored ? '#10b981' : '#ef4444'};">
+                                ${isMonitored ? 'ACTIVE (MONITORED)' : 'MUTED (SWITCHED OFF)'}
+                            </span>
+                        </div>
+                        <div style="font-size: 11px; color: #94a3b8; margin-top: 4px; line-height: 1.4;">
+                            ${isMonitored ? 'Continuous monitoring active. Outages trigger telemetry alerts and escalation to dealers/integrators.' : 'Monitoring MUTED on this client site. Useful for audio systems (Yamaha, Bluesound, etc.) switched off at the wall. Outages are ignored and no alerts will disturb dealers or integrators.'}
+                        </div>
+                    </div>
+                    <label class="switch" style="position: relative; display: inline-block; width: 44px; height: 24px; margin-left: 14px; flex-shrink: 0;">
+                        <input type="checkbox" id="toggle-diag-monitor" ${isMonitored ? 'checked' : ''} onchange="toggleIntegrationMonitoring('${escapeHtml(clientId)}', '${escapeHtml(techKey)}', this.checked)">
+                        <span class="slider round"></span>
+                    </label>
+                </div>
+            `;
+
             const modal = document.getElementById('integration-diag-modal');
             if (modal) modal.classList.add('active');
         }
@@ -9221,6 +10009,194 @@ All active sessions for this integrator will be terminated immediately.` : '';
             const modal = document.getElementById('integration-diag-modal');
             if (modal) modal.classList.remove('active');
         }
+
+        async function toggleIntegrationMonitoring(clientId, techKey, isChecked) {
+            try {
+                const res = await apiFetch('/api/client/toggle_integration_monitoring', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ client_id: clientId, tech_key: techKey, monitored: isChecked })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`${techKey} monitoring ${isChecked ? 'activated 🔔' : 'muted 🔕'}`, "success");
+                    const cl = currentFleetData.find(c => c.client_id === clientId);
+                    if (cl) {
+                        cl.unmonitored_integrations = data.unmonitored_integrations || [];
+                        if (!isChecked && cl.technologies && cl.technologies.self_healing && cl.technologies.self_healing.subsystems && cl.technologies.self_healing.subsystems[techKey]) {
+                            cl.technologies.self_healing.subsystems[techKey].status = 'disabled';
+                            cl.technologies.self_healing.subsystems[techKey].attempts = 0;
+                            cl.technologies.self_healing.subsystems[techKey].exhausted = false;
+                            cl.technologies.self_healing.subsystems[techKey].last_action = 'Monitoring muted from Dealer Dashboard. Auto-recovery paused.';
+                        }
+                        if (typeof renderTable === 'function') renderTable(currentFleetData);
+                        openIntegrationDiagnostics(clientId, techKey);
+                    }
+                } else {
+                    showToast("Failed to toggle monitoring: " + (data.error || "Unknown error"), "error");
+                }
+            } catch (e) {
+                showToast("Error updating monitoring state: " + e.message, "error");
+            }
+        }
+
+                async function loadSmtpConfig() {
+            try {
+                const res = await apiFetch('/api/settings/smtp');
+                const data = await res.json();
+                if (data.success && data.config) {
+                    const cfg = data.config;
+                    const h = document.getElementById('smtp-cfg-host');
+                    const p = document.getElementById('smtp-cfg-port');
+                    const enc = document.getElementById('smtp-cfg-encryption');
+                    const u = document.getElementById('smtp-cfg-user');
+                    const pass = document.getElementById('smtp-cfg-pass');
+                    const fe = document.getElementById('smtp-cfg-from-email');
+                    const fn = document.getElementById('smtp-cfg-from-name');
+                    if (h && cfg.host) h.value = cfg.host;
+                    if (p && cfg.port) p.value = cfg.port;
+                    if (enc && cfg.encryption) enc.value = cfg.encryption;
+                    if (u && cfg.user) u.value = cfg.user;
+                    if (pass && cfg.pass) pass.value = cfg.pass;
+                    if (fe && cfg.from_email) fe.value = cfg.from_email;
+                    if (fn && cfg.from_name) fn.value = cfg.from_name;
+                    updateSmtpStatusBadge(cfg);
+                }
+            } catch (_) {}
+        }
+
+        function updateSmtpStatusBadge(cfg) {
+            const badge = document.getElementById('smtp-status-badge');
+            if (!badge) return;
+            if (cfg && cfg.host && cfg.from_email) {
+                badge.innerHTML = '● Configured (' + escapeHtml(cfg.host) + ')';
+                badge.style.color = '#34d399';
+                badge.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+                badge.style.background = 'rgba(16, 185, 129, 0.12)';
+            } else {
+                badge.innerHTML = '● Ready for Setup';
+                badge.style.color = '#c084fc';
+                badge.style.borderColor = 'rgba(192, 132, 252, 0.3)';
+                badge.style.background = 'rgba(192, 132, 252, 0.1)';
+            }
+        }
+
+        async function saveSmtpConfig() {
+            const btn = document.getElementById('btn-save-smtp-cfg');
+            const fb = document.getElementById('smtp-cfg-feedback');
+            if (btn) btn.disabled = true;
+
+            const payload = {
+                host: (document.getElementById('smtp-cfg-host')?.value || '').trim(),
+                port: parseInt(document.getElementById('smtp-cfg-port')?.value || '587'),
+                encryption: document.getElementById('smtp-cfg-encryption')?.value || 'tls',
+                user: (document.getElementById('smtp-cfg-user')?.value || '').trim(),
+                pass: document.getElementById('smtp-cfg-pass')?.value || '',
+                from_email: (document.getElementById('smtp-cfg-from-email')?.value || '').trim(),
+                from_name: (document.getElementById('smtp-cfg-from-name')?.value || 'GAVASAH Cloud Alerts').trim()
+            };
+
+            try {
+                const res = await apiFetch('/api/settings/smtp', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast("SMTP settings saved successfully!", "success");
+                    if (fb) {
+                        fb.style.display = 'block';
+                        fb.style.background = 'rgba(16, 185, 129, 0.12)';
+                        fb.style.border = '1px solid #10b981';
+                        fb.style.color = '#34d399';
+                        fb.innerHTML = `✓ <strong>SMTP Configuration Saved:</strong> Outbound emails routed through <code>${escapeHtml(payload.host)}:${payload.port}</code> (${payload.encryption.toUpperCase()})`;
+                    }
+                    updateSmtpStatusBadge(payload);
+                } else {
+                    showToast("Failed to save SMTP: " + (data.error || 'Server error'), "error");
+                }
+            } catch (e) {
+                showToast("Error saving SMTP: " + e.message, "error");
+            } finally {
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        async function testSmtpDirect() {
+            const btn = document.getElementById('btn-test-smtp-cfg');
+            const fb = document.getElementById('smtp-cfg-feedback');
+            const toEmail = (document.getElementById('smtp-test-recipient')?.value || '').trim();
+            if (!toEmail) {
+                showToast("Please enter a Test Recipient Email", "warning");
+                return;
+            }
+
+            const payload = {
+                host: (document.getElementById('smtp-cfg-host')?.value || '').trim(),
+                port: parseInt(document.getElementById('smtp-cfg-port')?.value || '587'),
+                encryption: document.getElementById('smtp-cfg-encryption')?.value || 'tls',
+                user: (document.getElementById('smtp-cfg-user')?.value || '').trim(),
+                pass: document.getElementById('smtp-cfg-pass')?.value || '',
+                from_email: (document.getElementById('smtp-cfg-from-email')?.value || '').trim(),
+                from_name: (document.getElementById('smtp-cfg-from-name')?.value || 'GAVASAH Cloud Alerts').trim(),
+                recipient: toEmail,
+                subject: '[GAVASAH ALERT] SMTP Live Delivery Probe',
+                message: 'This is a live test notification verifying end-to-end SMTP dispatch from GAVASAH Multi-Tenant Cloud Hub.'
+            };
+
+            if (btn) btn.disabled = true;
+            if (fb) {
+                fb.style.display = 'block';
+                fb.style.background = 'rgba(2, 6, 23, 0.7)';
+                fb.style.border = '1px solid rgba(167, 139, 250, 0.4)';
+                fb.style.color = '#c084fc';
+                fb.innerHTML = `⚡ Testing SMTP handshake and dispatching probe to <code>${escapeHtml(toEmail)}</code>...`;
+            }
+
+            try {
+                const res = await apiFetch('/api/settings/smtp/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`Test email dispatched to ${toEmail}!`, "success");
+                    if (fb) {
+                        fb.style.background = 'rgba(16, 185, 129, 0.12)';
+                        fb.style.border = '1px solid #10b981';
+                        fb.style.color = '#34d399';
+                        fb.innerHTML = `✓ <strong>Email Delivered:</strong> Handshake, TLS negotiation &amp; authentication completed in <strong>${data.latency_ms} ms</strong>.<br>Message sent to <code>${escapeHtml(toEmail)}</code> (Tracking: <code>${escapeHtml(data.messageId)}</code>).`;
+                    }
+                } else {
+                    showToast("SMTP test failed: " + (data.error || 'Server error'), "error");
+                    if (fb) {
+                        fb.style.background = 'rgba(239, 68, 68, 0.12)';
+                        fb.style.border = '1px solid #ef4444';
+                        fb.style.color = '#f87171';
+                        fb.innerHTML = `✗ <strong>Delivery Failed:</strong> ${escapeHtml(data.error || 'Could not connect to SMTP server')}`;
+                    }
+                }
+            } catch (e) {
+                showToast("Network error: " + e.message, "error");
+                if (fb) {
+                    fb.style.background = 'rgba(239, 68, 68, 0.12)';
+                    fb.style.border = '1px solid #ef4444';
+                    fb.style.color = '#f87171';
+                    fb.innerHTML = `✗ <strong>Network Error:</strong> ${escapeHtml(e.message)}`;
+                }
+            } finally {
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        function togglePassVisibility(inputId) {
+            const el = document.getElementById(inputId);
+            if (!el) return;
+            el.type = el.type === 'password' ? 'text' : 'password';
+        }
+
 
 </script>
 
@@ -9550,7 +10526,7 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 return
 
-            if domain in ['dealer.gavasah.com', 'gavasah.com', 'www.gavasah.com']:
+            if domain in ['dealer.gavasah.com', 'gavasah.com', 'www.gavasah.com', 'emqx.gavasah.com', 'test-dealer.gavasah.com']:
                 self.send_response(200)
                 self.end_headers()
                 return
@@ -9584,6 +10560,21 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
 
             self.send_response(404)
             self.end_headers()
+            return
+
+        # Dynamic Gateway Script Execution Dispatcher
+        elif parsed.path == '/run.py':
+            try:
+                with open('/srv/gavasah-cloud/run.py', 'rb') as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                self.send_header('Content-Length', str(len(content)))
+                self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
+                self.end_headers()
+                self.wfile.write(content)
+            except Exception as e:
+                self.send_json(404, {'error': f'run.py not found: {e}'})
             return
 
         # 1c. Caddy Dynamic Domain List for Host Ingress Sync
@@ -9660,14 +10651,14 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             owner = auth.get('owner', {})
             owner_clients = [c for c in c_data.values() if c.get('dealer_id') in ['owner_master', '', None]]
             owner_ints = [it for it in integrators_dict.values() if it.get('dealer_id') in ['owner_master', '', None]]
-            mfg_online_c = sum(1 for c in owner_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 600))
+            mfg_online_c = sum(1 for c in owner_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 3600))
             mfg_lost_c = len(owner_clients) - mfg_online_c
 
             mfg_clients_list = [{
                 'client_id': c.get('client_id'),
                 'name': c.get('name', c.get('client_id')),
                 'domain': c.get('domain', ''),
-                'status': 'online' if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 600) else 'offline',
+                'status': 'online' if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 3600) else 'offline',
                 'last_heartbeat': c.get('last_heartbeat', 0)
             } for c in sorted(owner_clients, key=lambda x: str(x.get('name', '')).lower())]
 
@@ -9694,14 +10685,14 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                 dealer_clients = [c for c in c_data.values() if c.get('dealer_id') == did]
                 dealer_ints = [it for it in integrators_dict.values() if it.get('dealer_id') == did]
                 
-                online_c = sum(1 for c in dealer_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 600))
+                online_c = sum(1 for c in dealer_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 3600))
                 lost_c = len(dealer_clients) - online_c
 
                 dlr_clients_list = [{
                     'client_id': c.get('client_id'),
                     'name': c.get('name', c.get('client_id')),
                     'domain': c.get('domain', ''),
-                    'status': 'online' if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 600) else 'offline',
+                    'status': 'online' if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 3600) else 'offline',
                     'last_heartbeat': c.get('last_heartbeat', 0)
                 } for c in sorted(dealer_clients, key=lambda x: str(x.get('name', '')).lower())]
 
@@ -9750,7 +10741,7 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
                     d_name = 'Master Manufacturer (Direct)'
 
                 supervised_clients = [c for c in c_data.values() if c.get('integrator_id') == iid]
-                online_c = sum(1 for c in supervised_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 600))
+                online_c = sum(1 for c in supervised_clients if (now - c.get('last_heartbeat', 0)) <= int(c.get('hb_offline_interval') or 3600))
                 lost_c = len(supervised_clients) - online_c
 
                 res.append({
@@ -10128,8 +11119,51 @@ PersistentKeepalive = 25
                 'ws_port': 8083,
                 'wss_port': 8084,
                 'dashboard_port': 18083,
-                'dashboard_url': 'http://dealer.gavasah.com:18083'
+                'dashboard_url': 'https://emqx.gavasah.com'
             })
+            return
+
+        # 12e-2. WhatsApp Gateway Status & QR
+        # SMTP Configuration endpoint
+        elif parsed.path == '/api/settings/smtp':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+            with DB_LOCK:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT value, updated_at FROM system_settings WHERE key = 'smtp_settings'")
+                row = cur.fetchone()
+                conn.close()
+            if row:
+                try: cfg = json.loads(row['value'])
+                except Exception: cfg = {}
+            else:
+                cfg = {
+                    'host': '',
+                    'port': 587,
+                    'encryption': 'tls',
+                    'user': '',
+                    'pass': '',
+                    'from_email': '',
+                    'from_name': 'GAVASAH Cloud Alerts'
+                }
+            self.send_json(200, {'success': True, 'config': cfg})
+            return
+
+        elif parsed.path == '/api/whatsapp/status':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+            try:
+                req = urllib.request.Request('http://127.0.0.1:3005/status', headers={'User-Agent': 'GavasahHub'})
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    data = json.loads(resp.read().decode('utf-8'))
+                    self.send_json(200, data)
+            except Exception as e:
+                self.send_json(200, {'connected': False, 'status': 'offline', 'error': str(e), 'qr': None, 'phone': None})
             return
 
         # 12f. MQTT Dynamic Topic Tree
@@ -10430,6 +11464,28 @@ PersistentKeepalive = 25
             return
 
         # --- REMOTE COMMAND DISPATCH (UNBAN & FIX, RESTART CORE, UPDATE AGENT) ---
+
+        # --- TOGGLE CLIENT AUTO-UPDATE (MANUFACTURER / DEALER) ---
+        elif parsed.path == '/api/toggle_auto_update':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length > 0 else {}
+            cid = body.get('client_id')
+            auto_up = int(body.get('auto_update', 1))
+            if not cid:
+                self.send_json(400, {'error': 'Missing client_id'})
+                return
+            with DB_LOCK:
+                conn = get_db_connection()
+                conn.execute("UPDATE clients SET auto_update = ? WHERE client_id = ?", (auto_up, cid))
+                conn.commit()
+                conn.close()
+            self.send_json(200, {'ok': True, 'client_id': cid, 'auto_update': auto_up})
+            return
+
         elif parsed.path == '/api/client_command_trigger':
             user = self.get_authenticated_user()
             if not user:
@@ -10506,6 +11562,17 @@ PersistentKeepalive = 25
                 'count': count,
                 'message': f"Batch command '{action}' queued for all {count} fleet gateways."
             })
+            return
+
+        # --- CLIENT DIAGNOSTIC REPORT INGESTION ---
+        elif parsed.path == '/api/diag_report':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            diag_file = '/srv/gavasah-cloud/diag_report_np.json'
+            with open(diag_file, 'w', encoding='utf-8') as df:
+                df.write(body)
+            print(f"[DIAG_REPORT] Ingested diagnostic report ({len(body)} bytes) -> {diag_file}", flush=True)
+            self.send_json(200, {'ok': True})
             return
 
         # --- GATEWAY UPLOAD OF BACKUP ARCHIVE ---
@@ -11553,6 +12620,14 @@ PersistentKeepalive = 25
 
             if 'knx_remote_enabled' in body:
                 client['knx_remote_enabled'] = bool(body['knx_remote_enabled'])
+            if 'call_alert_enabled' in body:
+                client['call_alert_enabled'] = 1 if body['call_alert_enabled'] else 0
+            if 'msg_alert_enabled' in body:
+                client['msg_alert_enabled'] = 1 if body['msg_alert_enabled'] else 0
+            if 'call_window_start' in body:
+                client['call_window_start'] = str(body['call_window_start']).strip() or '10:00'
+            if 'call_window_end' in body:
+                client['call_window_end'] = str(body['call_window_end']).strip() or '18:00'
                 if client['knx_remote_enabled'] and not client.get('ets_port'):
                     raw_kip = (client.get('knx_ip') or '').strip()
                     if raw_kip and raw_kip not in ['192.168.1.100', '—', 'none', 'null', '']:
@@ -11721,31 +12796,21 @@ PersistentKeepalive = 25
             content_length = int(self.headers.get('Content-Length', 0))
             raw_body = ''
             if content_length > 0:
-                chunks = []
-                bytes_read = 0
-                while bytes_read < content_length:
-                    chunk = self.rfile.read(min(content_length - bytes_read, 65536))
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                    bytes_read += len(chunk)
-                raw_body = b''.join(chunks).decode('utf-8', errors='replace')
+                raw_body = self.rfile.read(content_length).decode('utf-8', errors='replace')
             body = {}
             if raw_body and raw_body.strip():
                 try:
                     body = json.loads(raw_body)
                 except Exception:
                     try:
-                        import urllib.parse
-                        parsed_form = urllib.parse.parse_qs(raw_body)
+                        parsed_form = parse_qs(raw_body)
                         body = {k: v[0] for k, v in parsed_form.items()}
                     except Exception:
                         body = {}
 
             # Query parameter fallback (e.g. POST with ?client_id=...)
             if parsed.query:
-                import urllib.parse
-                qs = urllib.parse.parse_qs(parsed.query)
+                qs = parse_qs(parsed.query)
                 for k, v in qs.items():
                     if k not in body:
                         body[k] = v[0]
@@ -11932,10 +12997,43 @@ PersistentKeepalive = 25
 
             pending_bk = client.get('pending_backup')
             pending_cmd = client.get('pending_command')
+            unmon_val = client.get('unmonitored_integrations')
+            try:
+                unmon_list = json.loads(unmon_val) if isinstance(unmon_val, str) else (unmon_val or [])
+            except Exception:
+                unmon_list = []
+
+            # Autonomous Fleet Auto-Update Engine (§3.D.4)
+            auto_up_enabled = int(client.get('auto_update') if client.get('auto_update') is not None else 1)
+            if auto_up_enabled and not pending_cmd:
+                addon_up = bool(sys_dict.get('addon_update_available') or (sys_dict.get('addon_version') and sys_dict.get('addon_latest_version') and sys_dict.get('addon_version') != sys_dict.get('addon_latest_version')))
+                core_up = bool(sys_dict.get('core_update_available'))
+                sup_up = bool(sys_dict.get('supervisor_update_available'))
+                
+                chosen_action = None
+                if addon_up and (core_up or sup_up):
+                    chosen_action = 'update_all'
+                elif addon_up:
+                    chosen_action = 'update_addon'
+                elif core_up:
+                    chosen_action = 'update_core'
+                elif sup_up:
+                    chosen_action = 'update_supervisor'
+                    
+                if chosen_action:
+                    auto_cmd_payload = json.dumps({
+                        'action': chosen_action,
+                        'queued_at': now,
+                        'queued_by': 'autonomous_fleet_auto_update'
+                    })
+                    pending_cmd = auto_cmd_payload
+                    print(f"[AUTO_UPDATE] Autonomously dispatched '{chosen_action}' for client '{client_id}' on heartbeat pulse.", flush=True)
+
             resp_payload = {
                 'ok': True,
                 'server_time': now,
-                'remote_enabled': bool(client.get('remote_enabled', 1))
+                'remote_enabled': bool(client.get('remote_enabled', 1)),
+                'unmonitored_integrations': unmon_list
             }
             if pending_bk:
                 resp_payload['backup_trigger'] = {
@@ -12114,6 +13212,342 @@ PersistentKeepalive = 25
                 self.send_json(500, {'error': 'Failed to dispatch via MQTT broker'})
             return
 
+        # 20. WhatsApp Logout / Reset Session (Manufacturer Only)
+        elif parsed.path == '/api/whatsapp/logout':
+            user = self.get_authenticated_user()
+            if not user or user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer permission required'})
+                return
+            try:
+                req = urllib.request.Request('http://127.0.0.1:3005/logout', data=b'{}', headers={'Content-Type': 'application/json'}, method='POST')
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = json.loads(resp.read().decode('utf-8'))
+                    self.send_json(200, data)
+            except Exception as e:
+                self.send_json(500, {'error': str(e)})
+            return
+
+        # 21. WhatsApp / Autonomous Alert Send
+        # 20.1 Toggle Integration Monitoring per Client
+        elif parsed.path == '/api/client/toggle_integration_monitoring':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+            content_length = int(self.headers.get('Content-Length', 0))
+            body_bytes = self.rfile.read(content_length)
+            try:
+                req_data = json.loads(body_bytes.decode('utf-8'))
+                cid = req_data.get('client_id')
+                tech_key = req_data.get('tech_key')
+                monitored = bool(req_data.get('monitored', True))
+
+                if not cid or not tech_key:
+                    self.send_json(400, {'error': 'Missing client_id or tech_key'})
+                    return
+
+                with DB_LOCK:
+                    conn = get_db_connection()
+                    cur = conn.cursor()
+                    cur.execute("SELECT unmonitored_integrations FROM clients WHERE client_id = ?", (cid,))
+                    row = cur.fetchone()
+                    if not row:
+                        conn.close()
+                        self.send_json(404, {'error': 'Client not found'})
+                        return
+                    try:
+                        unmon = json.loads(row['unmonitored_integrations'] or '[]')
+                    except Exception:
+                        unmon = []
+
+                    if monitored:
+                        unmon = [k for k in unmon if k != tech_key]
+                    else:
+                        if tech_key not in unmon:
+                            unmon.append(tech_key)
+
+                    # Update unmonitored_integrations and halt/disable self healing if muted
+                    cur.execute("SELECT technologies_json FROM clients WHERE client_id = ?", (cid,))
+                    t_row = cur.fetchone()
+                    t_dict = {}
+                    if t_row and t_row['technologies_json']:
+                        try:
+                            t_dict = json.loads(t_row['technologies_json'])
+                        except Exception:
+                            t_dict = {}
+                    
+                    if not monitored and 'self_healing' in t_dict and 'subsystems' in t_dict['self_healing']:
+                        if tech_key in t_dict['self_healing']['subsystems']:
+                            t_dict['self_healing']['subsystems'][tech_key]['status'] = 'disabled'
+                            t_dict['self_healing']['subsystems'][tech_key]['attempts'] = 0
+                            t_dict['self_healing']['subsystems'][tech_key]['exhausted'] = False
+                            t_dict['self_healing']['subsystems'][tech_key]['last_action'] = 'Monitoring muted from Dealer Dashboard. Auto-recovery paused.'
+
+                    # Discard from alert registry if muted
+                    if not monitored and 'NOTIFIED_FAILED_RECOVERY' in globals():
+                        NOTIFIED_FAILED_RECOVERY.discard((cid, tech_key))
+
+                    cur.execute("UPDATE clients SET unmonitored_integrations = ?, technologies_json = ? WHERE client_id = ?", (json.dumps(unmon), json.dumps(t_dict), cid))
+                    conn.commit()
+                    conn.close()
+
+                self.send_json(200, {
+                    'success': True,
+                    'client_id': cid,
+                    'tech_key': tech_key,
+                    'monitored': monitored,
+                    'unmonitored_integrations': unmon,
+                    'message': f"Integration {tech_key} monitoring {'enabled' if monitored else 'muted (alerts suppressed)'}"
+                })
+            except Exception as e:
+                self.send_json(500, {'error': str(e)})
+            return
+
+        # 20.2 Save SMTP Email Gateway Settings
+        elif parsed.path == '/api/settings/smtp':
+            user = self.get_authenticated_user()
+            if not user or user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer permission required to update SMTP settings'})
+                return
+            content_length = int(self.headers.get('Content-Length', 0))
+            body_bytes = self.rfile.read(content_length)
+            try:
+                cfg = json.loads(body_bytes.decode('utf-8'))
+                now = int(time.time())
+                with DB_LOCK:
+                    conn = get_db_connection()
+                    conn.execute("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                                 ('smtp_settings', json.dumps(cfg), now))
+                    conn.commit()
+                    conn.close()
+                self.send_json(200, {'success': True, 'message': 'SMTP configuration saved successfully', 'config': cfg})
+            except Exception as e:
+                self.send_json(500, {'error': str(e)})
+            return
+
+        # 20.3 Test SMTP Email Dispatch
+        elif parsed.path == '/api/settings/smtp/test':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+            content_length = int(self.headers.get('Content-Length', 0))
+            body_bytes = self.rfile.read(content_length)
+            try:
+                req_data = json.loads(body_bytes.decode('utf-8')) if body_bytes else {}
+                host = req_data.get('host', '').strip()
+                port = int(req_data.get('port', 587))
+                encryption = req_data.get('encryption', 'tls').lower()
+                user_email = req_data.get('user', '').strip()
+                password = req_data.get('pass', '').strip()
+                from_email = req_data.get('from_email', user_email).strip()
+                from_name = req_data.get('from_name', 'GAVASAH Cloud Alerts').strip()
+                to_email = req_data.get('recipient', user_email).strip()
+                subject = req_data.get('subject', '[GAVASAH] SMTP Email Testing Station Probe').strip()
+                msg_body = req_data.get('message', 'This is a test notification from GAVASAH Multi-Tenant Cloud Hub email alert station.').strip()
+
+                if not host or not to_email:
+                    self.send_json(400, {'error': 'SMTP Host and Destination Email are required'})
+                    return
+
+                import smtplib, ssl
+                from email.mime.multipart import MIMEMultipart
+                from email.mime.text import MIMEText
+
+                msg = MIMEMultipart('alternative')
+                msg['Subject'] = subject
+                msg['From'] = f"{from_name} <{from_email}>"
+                msg['To'] = to_email
+
+                text_part = MIMEText(f"GAVASAH CLOUD ALERT\n\n{msg_body}\n\nTimestamp: {datetime.datetime.now().isoformat()}", 'plain', 'utf-8')
+                html_body = f"<div style='font-family:sans-serif;max-width:600px;margin:0 auto;background:#0f172a;color:#f8fafc;padding:24px;border-radius:12px;border:1px solid rgba(0,240,255,0.4);'><h2 style='color:#00f0ff;margin-top:0;'>⚡ GAVASAH CLOUD ALERT</h2><p style='color:#cbd5e1;font-size:14px;line-height:1.6;'>{msg_body}</p><div style='background:rgba(2,6,23,0.7);border:1px solid rgba(255,255,255,0.1);padding:12px;border-radius:8px;font-size:12px;color:#94a3b8;margin-top:16px;'><div><strong>SMTP Server:</strong> {host}:{port} ({encryption.upper()})</div><div><strong>Sender:</strong> {from_name} &lt;{from_email}&gt;</div><div><strong>Recipient:</strong> {to_email}</div></div><p style='font-size:11px;color:#64748b;margin-top:16px;margin-bottom:0;'>Dispatched autonomously by GAVASAH Dealer Cloud Hub</p></div>"
+                html_part = MIMEText(html_body, 'html', 'utf-8')
+                msg.attach(text_part)
+                msg.attach(html_part)
+
+                t0 = time.time()
+                if encryption == 'ssl':
+                    ctx = ssl.create_default_context()
+                    with smtplib.SMTP_SSL(host, port, context=ctx, timeout=12) as server:
+                        if user_email and password:
+                            server.login(user_email, password)
+                        server.sendmail(from_email, [to_email], msg.as_string())
+                else:
+                    with smtplib.SMTP(host, port, timeout=12) as server:
+                        if encryption == 'tls':
+                            ctx = ssl.create_default_context()
+                            server.starttls(context=ctx)
+                        if user_email and password:
+                            server.login(user_email, password)
+                        server.sendmail(from_email, [to_email], msg.as_string())
+
+                latency_ms = round((time.time() - t0) * 1000, 1)
+                self.send_json(200, {
+                    'success': True,
+                    'message': f"Email delivered successfully to {to_email} via {host}:{port} in {latency_ms}ms",
+                    'messageId': f"EMAIL-{int(time.time())}",
+                    'recipient': to_email,
+                    'latency_ms': latency_ms,
+                    'status': 'DELIVERED (SMTP Handshake & Auth OK)'
+                })
+            except Exception as e:
+                logging.exception("[SMTP Test Error]")
+                self.send_json(500, {'error': f"SMTP Delivery Failed: {str(e)}"})
+            return
+
+        elif parsed.path == '/api/whatsapp/send':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+            content_length = int(self.headers.get('Content-Length', 0))
+            body_bytes = self.rfile.read(content_length)
+            try:
+                body_json = json.loads(body_bytes.decode('utf-8'))
+                channel = body_json.get('channel', 'whatsapp')
+                raw_phone = str(body_json.get('phone', '')).strip()
+                clean_phone = re.sub(r'[^0-9]', '', raw_phone)
+                if len(clean_phone) == 10 and clean_phone[0] in ['6', '7', '8', '9']:
+                    clean_phone = '91' + clean_phone
+                msg = str(body_json.get('message', '')).strip()
+                client_id = body_json.get('client_id')
+                is_manual_test = body_json.get('manual_test', False) or not client_id
+
+                wa_payload = json.dumps({'phone': clean_phone, 'message': msg}).encode('utf-8')
+
+                if channel == 'whatsapp':
+                    req = urllib.request.Request('http://127.0.0.1:3005/send', data=wa_payload, headers={'Content-Type': 'application/json'}, method='POST')
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        data = json.loads(resp.read().decode('utf-8'))
+                        self.send_json(200, data)
+
+                elif channel == 'voice':
+                    ist_now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+                    curr_hm = ist_now.strftime('%H:%M')
+
+                    # Only evaluate calling window for automated background partner client escalations, NEVER manual testing station
+                    if client_id and not is_manual_test:
+                        c_data = load_clients_state()
+                        cl = c_data.get(client_id)
+                        if cl:
+                            allowed, reason = is_call_allowed_now(cl)
+                            if not allowed:
+                                self.send_json(200, {
+                                    'success': False,
+                                    'error': f"Call suppressed by policy: {reason}",
+                                    'recipient': clean_phone,
+                                    'channel': 'voice',
+                                    'suppressed': True
+                                })
+                                return
+
+                    sip_dialed = False
+                    sip_status_desc = "Audible Voice Memo (WhatsApp PTT Audio)" 
+
+                    # Dispatch audible voice note (PTT memo) directly to recipient's mobile phone
+                    wa_voice_payload = json.dumps({
+                        'phone': clean_phone,
+                        'message': msg,
+                        'is_voice': True,
+                        'channel': 'voice'
+                    }).encode('utf-8')
+                    wa_mid = f'CALL-{int(time.time())}'
+                    try:
+                        req = urllib.request.Request('http://127.0.0.1:3005/send', data=wa_voice_payload, headers={'Content-Type': 'application/json'}, method='POST')
+                        with urllib.request.urlopen(req, timeout=12) as resp:
+                            res_json = json.loads(resp.read().decode('utf-8'))
+                            if res_json.get('messageId'):
+                                wa_mid = res_json['messageId']
+                    except Exception as we:
+                        logging.warning(f"[WhatsApp] Voice memo dispatch error: {we}")
+
+                    self.send_json(200, {
+                        'success': True,
+                        'messageId': wa_mid,
+                        'recipient': clean_phone,
+                        'channel': 'voice',
+                        'status': sip_status_desc,
+                        'sip_dialed': sip_dialed,
+                        'voice_memo': True,
+                        'spoken_text': msg,
+                        'timestamp': ist_now.strftime('%I:%M %p IST')
+                    })
+                elif channel == 'email':
+                    to_email = body_json.get('email', '').strip() or raw_phone
+                    if '@' not in to_email:
+                        self.send_json(400, {'error': f"Invalid destination email address: '{to_email}'"})
+                        return
+
+                    subject = body_json.get('subject', '[GAVASAH ALERT] Automated Notification').strip()
+                    
+                    with DB_LOCK:
+                        conn = get_db_connection()
+                        cur = conn.cursor()
+                        cur.execute("SELECT value FROM system_settings WHERE key = 'smtp_settings'")
+                        row = cur.fetchone()
+                        conn.close()
+                    
+                    if not row:
+                        self.send_json(400, {'error': 'SMTP Gateway not configured. Please save SMTP settings in Alerts & Notifications tab.'})
+                        return
+                    
+                    try: cfg = json.loads(row['value'])
+                    except Exception: cfg = {}
+
+                    host = cfg.get('host', '').strip()
+                    port = int(cfg.get('port', 587))
+                    encryption = cfg.get('encryption', 'tls').lower()
+                    user_email = cfg.get('user', '').strip()
+                    password = cfg.get('pass', '').strip()
+                    from_email = cfg.get('from_email', user_email).strip()
+                    from_name = cfg.get('from_name', 'GAVASAH Cloud Alerts').strip()
+
+                    if not host or not from_email:
+                        self.send_json(400, {'error': 'SMTP Gateway incomplete. Host and From Email are required.'})
+                        return
+
+                    import smtplib, ssl
+                    from email.mime.multipart import MIMEMultipart
+                    from email.mime.text import MIMEText
+
+                    msg_mime = MIMEMultipart('alternative')
+                    msg_mime['Subject'] = subject
+                    msg_mime['From'] = f"{from_name} <{from_email}>"
+                    msg_mime['To'] = to_email
+
+                    text_content = f"GAVASAH ALERT\n\n{msg}\n\nTimestamp: {datetime.datetime.now().strftime('%Y-%m-%d %I:%M %p')}"
+                    html_content = f"<div style='font-family:sans-serif;max-width:600px;margin:0 auto;background:#0f172a;color:#f8fafc;padding:24px;border-radius:12px;border:1px solid rgba(0,240,255,0.4);'><h2 style='color:#00f0ff;margin-top:0;'>⚡ GAVASAH CLOUD ALERT</h2><p style='color:#cbd5e1;font-size:15px;line-height:1.6;'>{msg}</p><div style='background:rgba(2,6,23,0.7);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:12px 16px;margin:20px 0;font-size:12px;color:#94a3b8;'><div><strong>Recipient:</strong> {to_email}</div><div><strong>Dispatched:</strong> {datetime.datetime.now().strftime('%I:%M %p IST')}</div></div></div>"
+                    msg_mime.attach(MIMEText(text_content, 'plain', 'utf-8'))
+                    msg_mime.attach(MIMEText(html_content, 'html', 'utf-8'))
+
+                    if encryption == 'ssl':
+                        ctx = ssl.create_default_context()
+                        with smtplib.SMTP_SSL(host, port, context=ctx, timeout=12) as s:
+                            if user_email and password: s.login(user_email, password)
+                            s.sendmail(from_email, [to_email], msg_mime.as_string())
+                    else:
+                        with smtplib.SMTP(host, port, timeout=12) as s:
+                            if encryption == 'tls':
+                                ctx = ssl.create_default_context()
+                                s.starttls(context=ctx)
+                            if user_email and password: s.login(user_email, password)
+                            s.sendmail(from_email, [to_email], msg_mime.as_string())
+
+                    mid = f"EMAIL-{int(time.time())}"
+                    self.send_json(200, {
+                        'success': True,
+                        'messageId': mid,
+                        'recipient': to_email,
+                        'channel': 'email',
+                        'status': f'Delivered via SMTP ({host})',
+                        'timestamp': datetime.datetime.now().strftime('%I:%M %p IST')
+                    })
+                else:
+                    self.send_json(400, {'error': f'Unsupported notification channel: {channel}'})
+            except Exception as e:
+                self.send_json(500, {'error': str(e)})
+            return
+
         else:
             self.send_response(404)
             self.end_headers()
@@ -12122,7 +13556,351 @@ PersistentKeepalive = 25
 # HTTP Daemon Server Initialization
 # ==============================================================================
 
+# ==============================================================================
+# Autonomous Watchdog & WhatsApp Alert Dispatcher
+# ==============================================================================
+
+PREV_HEARTBEAT_STATUS = {}       # client_id -> 'ONLINE' | 'DELAYED' | 'WARNING' | 'OFFLINE' | 'PENDING'
+NOTIFIED_FAILED_RECOVERY = set() # set of (client_id, tech_key)
+WATCHDOG_INITIALIZED = False
+
+def send_whatsapp_alert_to_contacts(client_id, message):
+    recipients = set(['7396263322'])
+    try:
+        with DB_LOCK:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT dealer_id, integrator_id FROM clients WHERE client_id = ?", (client_id,))
+            cl_row = cur.fetchone()
+            if cl_row:
+                did = cl_row['dealer_id']
+                iid = cl_row['integrator_id']
+                if iid:
+                    cur.execute("SELECT phone FROM integrators WHERE id = ?", (iid,))
+                    i_row = cur.fetchone()
+                    if i_row and i_row['phone']:
+                        recipients.add(i_row['phone'].strip())
+                if did:
+                    cur.execute("SELECT phone FROM dealers WHERE id = ?", (did,))
+                    d_row = cur.fetchone()
+                    if d_row and d_row['phone']:
+                        recipients.add(d_row['phone'].strip())
+            conn.close()
+    except Exception as e:
+        print(f"[!] Error fetching contact recipients for {client_id}: {e}")
+
+    for raw_phone in recipients:
+        clean_phone = re.sub(r'[^0-9]', '', str(raw_phone))
+        if len(clean_phone) == 10 and clean_phone[0] in ['6', '7', '8', '9']:
+            clean_phone = '91' + clean_phone
+        if len(clean_phone) >= 10:
+            try:
+                wa_payload = json.dumps({'phone': clean_phone, 'message': message}).encode('utf-8')
+                req = urllib.request.Request('http://127.0.0.1:3005/send', data=wa_payload, headers={'Content-Type': 'application/json'}, method='POST')
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    pass
+            except Exception as ex:
+                print(f"[!] WhatsApp dispatch to {clean_phone} error: {ex}")
+
+def is_ha_entry_ignored(e):
+    if not isinstance(e, dict): return True
+    if str(e.get('source', '')).strip().lower() == 'ignore': return True
+    if str(e.get('state', '')).strip().lower() == 'ignored': return True
+    if e.get('disabled_by'): return True
+    return False
+
+def format_subsystem_alert_details(sub_key, tech, unmon_set):
+    """
+    Constructs an explicit, human-readable breakdown of the failed subsystem,
+    specifying exact integration titles, domains, IPs, and error reasons.
+    Returns (pretty_subsystem_name, list_of_issue_detail_lines)
+    """
+    issue_lines = []
+    
+    if sub_key == 'failed_core_entries':
+        raw_entries = tech.get('failed_core_entries') or []
+        active_broken = [
+            e for e in raw_entries 
+            if isinstance(e, dict) and not is_ha_entry_ignored(e) and e.get('domain') not in unmon_set
+        ]
+        
+        domains = sorted(list(set(
+            (e.get('domain') or 'integration').capitalize() 
+            for e in active_broken if e.get('domain')
+        )))
+        
+        domain_summary = ", ".join(domains) if domains else "General"
+        pretty_tech = f"Core Integrations ({domain_summary})"
+        
+        if active_broken:
+            for e in active_broken[:8]:
+                d_name = (e.get('domain') or 'Integration').capitalize()
+                title = e.get('title') or d_name
+                state = e.get('state') or 'error'
+                reason = e.get('reason') or f"State: {state}"
+                if len(reason) > 95:
+                    reason = reason[:92] + "..."
+                issue_lines.append(f"  ❌ *{title}* ({d_name})\n     ↳ Error: {reason} [{state}]")
+            if len(active_broken) > 8:
+                issue_lines.append(f"  ... and {len(active_broken) - 8} more failed integration(s)")
+        else:
+            issue_lines.append("  ❌ One or more Home Assistant Core integrations failed setup or recovery.")
+            
+        return pretty_tech, issue_lines
+
+    elif sub_key == 'coolmaster':
+        cm = tech.get('coolmaster') or {}
+        pretty_tech = "CoolMaster HVAC"
+        gw = cm.get('gateway_ip') or cm.get('host') or ''
+        port = cm.get('gateway_port') or cm.get('port') or 10102
+        reason = cm.get('error') or cm.get('offline_reason') or 'HVAC communication timed out'
+        gw_info = f" at {gw}:{port}" if gw else ""
+        issue_lines.append(f"  ❌ CoolMasterNet Interface{gw_info}\n     ↳ Error: {reason}")
+        return pretty_tech, issue_lines
+
+    elif sub_key == 'knx':
+        knx = tech.get('knx') or {}
+        pretty_tech = "KNXnet/IP Bus"
+        gw = knx.get('gateway_ip') or 'Local Bus'
+        port = knx.get('gateway_port') or 3671
+        reason = knx.get('error') or knx.get('offline_reason') or 'Gateway unreachable (UDP ping timeout)'
+        issue_lines.append(f"  ❌ KNX Gateway at {gw}:{port}\n     ↳ Error: {reason}")
+        return pretty_tech, issue_lines
+
+    elif sub_key == 'lutron':
+        lutron = tech.get('lutron') or {}
+        pretty_tech = "Lutron System"
+        entries = lutron.get('entries') or []
+        failed_bridges = [e for e in entries if isinstance(e, dict) and e.get('state') != 'loaded' and not is_ha_entry_ignored(e)]
+        if failed_bridges:
+            for b in failed_bridges[:5]:
+                b_title = b.get('title') or b.get('domain') or 'Lutron Bridge'
+                b_reason = b.get('reason') or b.get('state') or 'Offline'
+                issue_lines.append(f"  ❌ Bridge: *{b_title}*\n     ↳ State: {b_reason}")
+        else:
+            reason = lutron.get('offline_reason') or lutron.get('status') or 'Bridge connection lost'
+            issue_lines.append(f"  ❌ Lutron Processor / Bridge\n     ↳ Error: {reason}")
+        return pretty_tech, issue_lines
+
+    elif sub_key == 'zigbee':
+        zig = tech.get('zigbee') or {}
+        pretty_tech = "Zigbee Mesh"
+        instances = zig.get('instances') or []
+        failed_insts = [i for i in instances if isinstance(i, dict) and not i.get('running') and i.get('state') != 'started']
+        if failed_insts:
+            for inst in failed_insts[:4]:
+                name = inst.get('name') or 'Zigbee2MQTT'
+                st = inst.get('state') or 'stopped'
+                issue_lines.append(f"  ❌ Container: *{name}*\n     ↳ Container state: {st}")
+        else:
+            issue_lines.append("  ❌ Zigbee coordinator USB dongle unreachable or unresponsive.")
+        return pretty_tech, issue_lines
+
+    elif sub_key == 'matter':
+        pretty_tech = "Matter Subsystem"
+        matter = tech.get('matter') or {}
+        reason = matter.get('error') or matter.get('offline_reason') or 'Matter fabric server offline'
+        issue_lines.append(f"  ❌ Matter Server\n     ↳ Error: {reason}")
+        return pretty_tech, issue_lines
+
+    else:
+        pretty_tech = sub_key.upper()
+        issue_lines.append(f"  ❌ Subsystem '{sub_key}' encountered an unrecoverable fault.")
+        return pretty_tech, issue_lines
+
+def start_telemetry_alert_watchdog():
+    global PREV_HEARTBEAT_STATUS, NOTIFIED_FAILED_RECOVERY, WATCHDOG_INITIALIZED
+    print("[*] Telemetry Watchdog & WhatsApp Alert Dispatcher thread started...", flush=True)
+    time.sleep(5)
+
+    while True:
+        try:
+            now = int(time.time())
+            ist_dt = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+            ist_time_str = ist_dt.strftime('%d-%b-%Y %I:%M:%S %p IST')
+
+            clients_list = []
+            with DB_LOCK:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM clients")
+                clients_list = [dict(r) for r in cur.fetchall()]
+                conn.close()
+
+            for c in clients_list:
+                cid = c.get('client_id')
+                cname = c.get('name') or cid
+                last_hb = c.get('last_heartbeat') or 0
+                is_pending = not last_hb or last_hb == 0 or c.get('status') == 'pending'
+                diff = -1 if is_pending else (now - last_hb)
+
+                delayed_limit = int(c.get('hb_delayed_interval') or 900)
+                warn_limit = int(c.get('hb_warning_interval') or 1800)
+                off_limit = int(c.get('hb_offline_interval') or 3600)
+
+                # Determine current status
+                if is_pending or c.get('approval_status') == 'pending':
+                    curr_hb_status = 'PENDING'
+                elif diff <= delayed_limit:
+                    curr_hb_status = 'ONLINE'
+                elif diff <= warn_limit:
+                    curr_hb_status = 'DELAYED'
+                elif diff <= off_limit:
+                    curr_hb_status = 'WARNING'
+                else:
+                    curr_hb_status = 'OFFLINE'
+
+                prev_hb_status = PREV_HEARTBEAT_STATUS.get(cid)
+
+                if not WATCHDOG_INITIALIZED:
+                    PREV_HEARTBEAT_STATUS[cid] = curr_hb_status
+                else:
+                    if prev_hb_status is not None and curr_hb_status != prev_hb_status:
+                        if curr_hb_status == 'DELAYED' and prev_hb_status == 'ONLINE':
+                            mins = int(diff // 60)
+                            secs = int(diff % 60)
+                            time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+                            lines = [
+                                "⚠️ *GAVASAH LUXURY AUTOMATION*",
+                                "🟡 *NOTICE: Gateway Heartbeat Delayed*",
+                                "",
+                                f"• *Site:* {cname} (`{cid}`)",
+                                f"• *Heartbeat Status:* 🟡 DELAYED ({time_str} without pulse)",
+                                f"• *Previous State:* {prev_hb_status}",
+                                f"• *Time:* {ist_time_str}",
+                                "",
+                                "ℹ️ *Notice:* Gateway heartbeat is past its expected interval. Telemetry watchdog is actively monitoring for recovery or escalation.",
+                                "🌐 *Operations Portal:* https://dealer.gavasah.com/"
+                            ]
+                            send_whatsapp_alert_to_contacts(cid, chr(10).join(lines))
+
+                        elif curr_hb_status == 'WARNING' and prev_hb_status in ['ONLINE', 'DELAYED']:
+                            mins = int(diff // 60)
+                            lines = [
+                                "⚠️ *GAVASAH LUXURY AUTOMATION*",
+                                "🟠 *WARNING: Gateway Heartbeat Delayed*",
+                                "",
+                                f"• *Site:* {cname} (`{cid}`)",
+                                f"• *Heartbeat Status:* 🟠 WARNING ({mins}m delayed)",
+                                f"• *Previous State:* {prev_hb_status}",
+                                f"• *Time:* {ist_time_str}",
+                                "",
+                                "⚠️ *Warning:* Heartbeat pulse has not been received within warning threshold. Local network connectivity may be degrading.",
+                                "🌐 *Operations Portal:* https://dealer.gavasah.com/"
+                            ]
+                            send_whatsapp_alert_to_contacts(cid, chr(10).join(lines))
+
+                        elif curr_hb_status == 'OFFLINE':
+                            mins = int(diff // 60)
+                            lines = [
+                                "🚨 *GAVASAH LUXURY AUTOMATION*",
+                                "🔴 *CRITICAL ALERT: Heartbeat Telemetry Lost*",
+                                "",
+                                f"• *Site:* {cname} (`{cid}`)",
+                                "• *Heartbeat Status:* 🔴 OFFLINE",
+                                f"• *Previous State:* {prev_hb_status}",
+                                f"• *Last Contact:* {mins} minutes ago",
+                                f"• *Time:* {ist_time_str}",
+                                "",
+                                "🚨 *Urgent:* Gateway has stopped sending heartbeats. Please verify power, local internet connection, and add-on status on site.",
+                                "🌐 *Operations Portal:* https://dealer.gavasah.com/"
+                            ]
+                            send_whatsapp_alert_to_contacts(cid, chr(10).join(lines))
+
+                        elif curr_hb_status == 'ONLINE' and prev_hb_status in ['OFFLINE', 'WARNING', 'DELAYED']:
+                            lines = [
+                                "✅ *GAVASAH LUXURY AUTOMATION*",
+                                "🟢 *RESTORED: Gateway Heartbeat Re-established*",
+                                "",
+                                f"• *Site:* {cname} (`{cid}`)",
+                                "• *Heartbeat Status:* 🟢 ONLINE",
+                                f"• *Previous State:* {prev_hb_status}",
+                                f"• *Time:* {ist_time_str}",
+                                "",
+                                "✨ *Notice:* Heartbeat telemetry is back to normal operating rhythm.",
+                                "🌐 *Operations Portal:* https://dealer.gavasah.com/"
+                            ]
+                            send_whatsapp_alert_to_contacts(cid, chr(10).join(lines))
+
+                        PREV_HEARTBEAT_STATUS[cid] = curr_hb_status
+
+                # -------------------------------------------------------------
+                # 2. Check Integration Status where auto recovery failed
+                # -------------------------------------------------------------
+                unmon_raw = c.get('unmonitored_integrations')
+                try:
+                    unmon = set(json.loads(unmon_raw) if isinstance(unmon_raw, str) else (unmon_raw or []))
+                except Exception:
+                    unmon = set()
+
+                tech_raw = c.get('technologies_json')
+                try:
+                    tech = json.loads(tech_raw) if isinstance(tech_raw, str) else (tech_raw or {})
+                except Exception:
+                    tech = {}
+
+                sh_subsystems = tech.get('self_healing', {}).get('subsystems', {})
+
+                for sub_key, sub_info in sh_subsystems.items():
+                    if not isinstance(sub_info, dict):
+                        continue
+                    if sub_key in unmon:
+                        NOTIFIED_FAILED_RECOVERY.discard((cid, sub_key))
+                        continue
+
+                    sub_status = sub_info.get('status')
+                    sub_attempts = int(sub_info.get('attempts') or 0)
+                    is_exhausted = sub_status in ['exhausted', 'escalated'] or sub_attempts >= 5
+
+                    if is_exhausted:
+                        if (cid, sub_key) not in NOTIFIED_FAILED_RECOVERY:
+                            pretty_tech, specific_issues = format_subsystem_alert_details(sub_key, tech, unmon)
+                            last_act = sub_info.get('last_action') or 'Remediation attempts exhausted'
+                            lines = [
+                                "🛑 *GAVASAH LUXURY AUTOMATION*",
+                                "⚠️ *FAULT ESCALATION: Auto-Recovery Failed*",
+                                "",
+                                f"• *Site:* {cname} (`{cid}`)",
+                                f"• *Subsystem:* ⚙️ {pretty_tech}",
+                                "• *Status:* 🛑 5/5 REMEDIATION ATTEMPTS FAILED",
+                                "",
+                                f"📋 *Specific Issues Identified ({len(specific_issues)}):*",
+                            ] + specific_issues + [
+                                "",
+                                f"• *Last Action:* {last_act}",
+                                f"• *Time:* {ist_time_str}",
+                                "",
+                                "🚨 *Action Required:* Autonomous self-healing attempted 5 automated recoveries but the integration(s) did not recover. Auto-recovery is paused on the gateway to preserve system stability. Verify device power/network, or mute monitoring from the Dealer Portal if deliberately powered down.",
+                                "🌐 *Operations Portal:* https://dealer.gavasah.com/"
+                            ]
+                            send_whatsapp_alert_to_contacts(cid, chr(10).join(lines))
+                            NOTIFIED_FAILED_RECOVERY.add((cid, sub_key))
+                    else:
+                        if (cid, sub_key) in NOTIFIED_FAILED_RECOVERY and (sub_status in ['idle', 'online'] or sub_attempts == 0):
+                            NOTIFIED_FAILED_RECOVERY.discard((cid, sub_key))
+                            pretty_tech, _ = format_subsystem_alert_details(sub_key, tech, unmon)
+                            lines = [
+                                "✅ *GAVASAH LUXURY AUTOMATION*",
+                                "🟢 *RESOLVED: Integration Recovered*",
+                                "",
+                                f"• *Site:* {cname} (`{cid}`)",
+                                f"• *Subsystem:* {pretty_tech}",
+                                "• *Status:* 🟢 HEALTHY / OPERATIONAL",
+                                f"• *Time:* {ist_time_str}",
+                                "",
+                                "✨ *Notice:* Subsystem fault has cleared and all integrations are functioning normally.",
+                                "🌐 *Operations Portal:* https://dealer.gavasah.com/"
+                            ]
+                            send_whatsapp_alert_to_contacts(cid, chr(10).join(lines))
+
+            WATCHDOG_INITIALIZED = True
+        except Exception as e:
+            print(f"[!] Watchdog thread loop error: {e}", flush=True)
+
+        time.sleep(20)
+
 def run_server(port=PORT):
+    threading.Thread(target=start_telemetry_alert_watchdog, daemon=True, name="TelemetryAlertWatchdog").start()
     server_address = ('', port)
     httpd = http.server.ThreadingHTTPServer(server_address, DealerPortalHandler)
     print(f"[*] GAVASAH Multi-Tenant Cloud Hub listening on port {port}...")

@@ -166,8 +166,8 @@ OFFLINE_HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gateway Offline | GAVASAH Cloud</title>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <title>Target Gateway Offline | GAVASAH Cloud</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{
@@ -179,8 +179,25 @@ OFFLINE_HTML_TEMPLATE = """<!DOCTYPE html>
             align-items: center;
             justify-content: center;
             padding: 24px;
+            overflow-x: hidden;
+            position: relative;
         }}
-        .card {{
+        body::before {{
+            content: '';
+            position: absolute;
+            width: 600px;
+            height: 600px;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(245, 158, 11, 0.12) 0%, rgba(217, 119, 6, 0.03) 45%, transparent 70%);
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 0;
+        }}
+        .offline-card {{
+            position: relative;
+            z-index: 1;
             background: radial-gradient(circle at top right, rgba(245, 158, 11, 0.12), transparent 50%),
                         linear-gradient(180deg, #0e172a 0%, #090e1b 100%);
             border: 1px solid rgba(245, 158, 11, 0.35);
@@ -189,7 +206,9 @@ OFFLINE_HTML_TEMPLATE = """<!DOCTYPE html>
             width: 100%;
             padding: 44px 36px;
             text-align: center;
-            box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.7);
+            box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.7), 0 0 35px rgba(245, 158, 11, 0.15);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
         }}
         .icon-halo {{
             width: 76px;
@@ -201,10 +220,22 @@ OFFLINE_HTML_TEMPLATE = """<!DOCTYPE html>
             display: flex;
             align-items: center;
             justify-content: center;
+            box-shadow: 0 0 30px rgba(245, 158, 11, 0.25);
+            animation: pulse-ring 2.8s infinite ease-in-out;
         }}
-        .icon-halo svg {{ width: 38px; height: 38px; stroke: #f59e0b; }}
+        @keyframes pulse-ring {{
+            0%, 100% {{ transform: scale(1); box-shadow: 0 0 30px rgba(245, 158, 11, 0.25); }}
+            50% {{ transform: scale(1.05); box-shadow: 0 0 45px rgba(245, 158, 11, 0.45); }}
+        }}
+        .icon-halo svg {{
+            width: 38px;
+            height: 38px;
+            stroke: #f59e0b;
+        }}
         .badge-status {{
-            display: inline-block;
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
             background: rgba(245, 158, 11, 0.2);
             color: #fbbf24;
             border: 1px solid rgba(245, 158, 11, 0.4);
@@ -216,26 +247,216 @@ OFFLINE_HTML_TEMPLATE = """<!DOCTYPE html>
             text-transform: uppercase;
             margin-bottom: 16px;
         }}
-        h1 {{ font-size: 23px; font-weight: 800; color: #ffffff; margin-bottom: 12px; }}
-        p {{ font-size: 14px; line-height: 1.6; color: #94a3b8; margin-bottom: 24px; }}
-        .note {{ background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 18px 20px; font-size: 13.5px; color: #e2e8f0; line-height: 1.55; text-align: left; }}
+        .badge-status::before {{
+            content: '';
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #f59e0b;
+            box-shadow: 0 0 8px #f59e0b;
+            animation: blink 1.4s infinite;
+        }}
+        @keyframes blink {{
+            0%, 100% {{ opacity: 1; }}
+            50% {{ opacity: 0.3; }}
+        }}
+        h1 {{
+            font-size: 23px;
+            font-weight: 800;
+            color: #ffffff;
+            margin-bottom: 12px;
+            letter-spacing: -0.5px;
+        }}
+        .gateway-tag {{
+            font-size: 13px;
+            color: #94a3b8;
+            margin-bottom: 20px;
+            font-family: 'JetBrains Mono', monospace;
+            background: rgba(15, 23, 42, 0.6);
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }}
+        p {{
+            font-size: 14px;
+            line-height: 1.6;
+            color: #94a3b8;
+            margin-bottom: 24px;
+        }}
+        .contact-box {{
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 14px;
+            padding: 18px 20px;
+            margin-bottom: 24px;
+            text-align: left;
+        }}
+        .contact-title {{
+            font-size: 11px;
+            font-weight: 700;
+            color: #cbd5e1;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .contact-instruction {{
+            font-size: 13.5px;
+            color: #cbd5e1;
+            line-height: 1.6;
+        }}
+        .steps-list {{
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }}
+        .steps-list li {{
+            position: relative;
+            padding-left: 20px;
+            margin-bottom: 8px;
+            font-size: 13px;
+            color: #cbd5e1;
+            line-height: 1.5;
+        }}
+        .steps-list li:last-child {{
+            margin-bottom: 0;
+        }}
+        .steps-list li::before {{
+            content: '•';
+            position: absolute;
+            left: 6px;
+            color: #f59e0b;
+            font-weight: bold;
+            font-size: 16px;
+            top: -2px;
+        }}
+        .btn-group {{
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 24px;
+        }}
+        .btn-primary-action {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            background: linear-gradient(135deg, #d97706 0%, #f59e0b 100%);
+            color: #ffffff;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 12px;
+            font-size: 13.5px;
+            font-weight: 700;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 14px rgba(217, 119, 6, 0.35);
+        }}
+        .btn-primary-action:hover {{
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(245, 158, 11, 0.5);
+        }}
+        .btn-secondary-action {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            background: rgba(15, 23, 42, 0.7);
+            color: #94a3b8;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 10px 18px;
+            border-radius: 12px;
+            font-size: 12.5px;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s ease;
+        }}
+        .btn-secondary-action:hover {{
+            color: #e2e8f0;
+            background: rgba(30, 41, 59, 0.85);
+            border-color: rgba(245, 158, 11, 0.4);
+        }}
+        .copy-feedback {{
+            font-size: 11.5px;
+            color: #10b981;
+            margin-top: 8px;
+            display: none;
+        }}
+        .footer-note {{
+            font-size: 12px;
+            color: #64748b;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }}
     </style>
 </head>
 <body>
-    <div class="card">
+    <div class="offline-card">
         <div class="icon-halo">
             <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
-                <line x1="12" y1="2" x2="12" y2="12"></line>
+                <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+                <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+                <line x1="6" y1="6" x2="6.01" y2="6"></line>
+                <line x1="6" y1="18" x2="6.01" y2="18"></line>
+                <line x1="18" y1="6" x2="18.01" y2="6"></line>
+                <line x1="18" y1="18" x2="18.01" y2="18"></line>
+                <line x1="1" y1="1" x2="23" y2="23"></line>
             </svg>
         </div>
         <div class="badge-status">Gateway Offline</div>
         <h1>Target Gateway Offline</h1>
+        <div class="gateway-tag">{client_display}</div>
         <p>The Home Assistant instance is currently unreachable or the secure reverse tunnel is reconnecting.</p>
-        <div class="note">
-            Please check that the local gateway hardware is powered on and connected to the internet. If you recently restarted the gateway, please wait 30 seconds and refresh.
+        <div class="contact-box">
+            <div class="contact-title">
+                <span>⚡ Troubleshooting Steps</span>
+            </div>
+            <div class="contact-instruction">
+                <ul class="steps-list">
+                    <li>Ensure your <strong>Gavasah Gateway</strong> hardware is powered on and connected to local internet.</li>
+                    <li>If the gateway recently rebooted, please allow 30–60 seconds for the AutoSSH encrypted tunnel to reconnect.</li>
+                    <li>Contact your <strong>Authorized Dealer ({dealer_name})</strong> or <strong>Manufacturer</strong> if connectivity is not restored.</li>
+                </ul>
+            </div>
+        </div>
+        <div class="btn-group">
+            <button type="button" class="btn-primary-action" onclick="window.location.reload()">
+                <span>🔄 Retry Connection Now</span>
+            </button>
+            <button type="button" class="btn-secondary-action" onclick="copyDiagnostics()">
+                <span>📋 Copy Diagnostics for Support</span>
+            </button>
+        </div>
+        <div id="copy-msg" class="copy-feedback">✓ Diagnostic telemetry copied to clipboard</div>
+        <div class="footer-note">
+            <span>🛡️</span> GAVASAH Cloud Security Platform
         </div>
     </div>
+    <script>
+        function copyDiagnostics() {{
+            var diag = "Gateway: " + "{client_display}" + "\\n" +
+                       "Dealer: " + "{dealer_name}" + "\\n" +
+                       "Host: " + window.location.host + "\\n" +
+                       "Timestamp: " + new Date().toISOString() + "\\n" +
+                       "User-Agent: " + navigator.userAgent;
+            navigator.clipboard.writeText(diag).then(function() {{
+                var el = document.getElementById('copy-msg');
+                if (el) {{
+                    el.style.display = 'block';
+                    setTimeout(function() {{ el.style.display = 'none'; }}, 3000);
+                }}
+            }}).catch(function() {{
+                alert("Diagnostics:\\n" + diag);
+            }});
+        }}
+    </script>
 </body>
 </html>"""
 
@@ -904,11 +1125,11 @@ async def handle_connection(reader, writer):
 
         client_info = get_client_info(slug)
         status = client_info.get('status')
+        client_display = html.escape(client_info.get('name') or slug)
+        dealer_name = html.escape(client_info.get('dealer_name') or 'Authorized Dealer')
 
         # 1. Suspended / Remote Access Disabled -> Return 200 OK with Restricted Card
         if status == 'SUSPENDED':
-            client_display = html.escape(client_info.get('name', slug))
-            dealer_name = html.escape(client_info.get('dealer_name', 'Authorized Dealer'))
             resp_html = SUSPENSION_HTML_TEMPLATE.format(
                 client_display=client_display,
                 dealer_name=dealer_name
@@ -931,7 +1152,10 @@ async def handle_connection(reader, writer):
         # 3. Active - Forward to target reverse tunnel port
         target_port = client_info.get('port')
         if not target_port:
-            resp_html = OFFLINE_HTML_TEMPLATE
+            resp_html = OFFLINE_HTML_TEMPLATE.format(
+                client_display=client_display,
+                dealer_name=dealer_name
+            )
             resp = build_http_response(502, "Bad Gateway", resp_html)
             writer.write(resp)
             await writer.drain()
@@ -943,7 +1167,10 @@ async def handle_connection(reader, writer):
 
         up_reader, up_writer, primed_chunk = await connect_upstream(target_port, clean_initial_data)
         if not up_reader or not up_writer:
-            resp_html = OFFLINE_HTML_TEMPLATE
+            resp_html = OFFLINE_HTML_TEMPLATE.format(
+                client_display=client_display,
+                dealer_name=dealer_name
+            )
             resp = build_http_response(503, "Service Unavailable", resp_html)
             writer.write(resp)
             await writer.drain()
