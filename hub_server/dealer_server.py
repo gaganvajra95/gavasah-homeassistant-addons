@@ -14184,11 +14184,11 @@ PersistentKeepalive = 25
 
                 now = int(time.time())
                 if appr_match:
-                    prop_id = int(appr_match.group(1))
+                    prop_id = appr_match.group(1).strip()
                     with DB_LOCK:
                         conn = get_db_connection()
                         cur = conn.cursor()
-                        cur.execute("UPDATE copilot_proposals SET status = 'approved', reviewed_by = 'admin_whatsapp', reviewed_at = ? WHERE id = ? AND status = 'pending'", (now, prop_id))
+                        cur.execute("UPDATE copilot_proposals SET status = 'approved', resolved_by = 'admin_whatsapp', resolved_at = ? WHERE (id = ? OR id = ?) AND status = 'pending'", (now, prop_id, f"prop_{prop_id}"))
                         rows_affected = cur.rowcount
                         conn.commit()
                         conn.close()
@@ -14198,11 +14198,11 @@ PersistentKeepalive = 25
                         reply = f"⚠️ *[GAVASAH AI COPILOT]* Proposal #{prop_id} was not found or is already resolved."
 
                 elif rej_match:
-                    prop_id = int(rej_match.group(1))
+                    prop_id = rej_match.group(1).strip()
                     with DB_LOCK:
                         conn = get_db_connection()
                         cur = conn.cursor()
-                        cur.execute("UPDATE copilot_proposals SET status = 'rejected', reviewed_by = 'admin_whatsapp', reviewed_at = ? WHERE id = ? AND status = 'pending'", (now, prop_id))
+                        cur.execute("UPDATE copilot_proposals SET status = 'rejected', resolved_by = 'admin_whatsapp', resolved_at = ? WHERE (id = ? OR id = ?) AND status = 'pending'", (now, prop_id, f"prop_{prop_id}"))
                         rows_affected = cur.rowcount
                         conn.commit()
                         conn.close()
@@ -14230,7 +14230,7 @@ PersistentKeepalive = 25
                 elif up_msg in ['PROPOSALS', 'PENDING']:
                     with DB_LOCK:
                         conn = get_db_connection()
-                        props = conn.execute("SELECT id, client_id, title, created_at FROM copilot_proposals WHERE status = 'pending' ORDER BY id ASC LIMIT 5").fetchall()
+                        props = conn.execute("SELECT id, client_id, summary, created_at FROM copilot_proposals WHERE status = 'pending' ORDER BY created_at ASC LIMIT 5").fetchall()
                         conn.close()
                     if not props:
                         reply = "✅ *[GAVASAH AI COPILOT]* No pending proposals awaiting approval."
