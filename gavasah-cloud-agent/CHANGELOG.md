@@ -5,6 +5,13 @@ All notable changes to the **Gavasah Cloud Agent** Home Assistant Add-on will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.5] - 2026-10-22
+
+### Added
+- **10-Second High-Speed MQTT Telemetry with Peak Detection**: Realtime telemetry pulses every 10 seconds to `gavasah/clients/{client_id}/telemetry`. Samples CPU and physical RAM every 1 second across the 1-10s interval, reporting the maximum peak values along with storage metrics (free, total, and used percentage).
+
+---
+
 ## [1.3.4] - 2026-10-22
 
 ### Added

@@ -6871,6 +6871,7 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                 const data = await res.json();
                 if (res.ok && data.ok) {
                     showToast(data.message || 'Client approved successfully!', 'success');
+                    lastApprovalsHash = '';
                     await fetchApprovals();
                     await fetchFleet();
                 } else {
@@ -6893,6 +6894,7 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                 const data = await res.json();
                 if (res.ok && data.ok) {
                     showToast('Client registration rejected', 'info');
+                    lastApprovalsHash = '';
                     await fetchApprovals();
                     await fetchFleet();
                 } else {
@@ -8146,7 +8148,19 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                 const warnHuman = formatIntervalHuman(warnLimit);
                                 const offHuman = formatIntervalHuman(offLimit);
 
-                                if (c.approval_status === 'pending') {
+                                if (c.approval_status === 'rejected') {
+                                    const reason = c.rejection_reason || 'Registration declined by Manufacturer HQ';
+                                    return `
+                                        <div class="heartbeat-status-wrap" title="Registration declined by Manufacturer HQ • Reason: ${escapeHtml(reason)}">
+                                            <span class="heartbeat-pill-badge" style="background: rgba(239, 68, 68, 0.15); color: #f87171; border-color: rgba(239, 68, 68, 0.4);">
+                                                <span class="hb-ball" style="background: #ef4444; box-shadow: 0 0 6px #ef4444;"></span>
+                                                <span>REJECTED</span>
+                                            </span>
+                                            <div class="hb-timing-sub" style="color: #f87171; font-weight: 600; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(reason)}">${escapeHtml(reason)}</div>
+                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 10px;">🔒 Access Revoked</div>
+                                        </div>
+                                    `;
+                                } else if (c.approval_status === 'pending') {
                                     return `
                                         <div class="heartbeat-status-wrap" title="Registration submitted &bull; Awaiting Manufacturer HQ Approval before remote access and monitoring are enabled">
                                             <span class="heartbeat-pill-badge hb-pill-pending" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border-color: rgba(245, 158, 11, 0.4);">
@@ -8278,7 +8292,19 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                 const isHealingActive = activeHealing.length > 0;
                                 const isHealingExhausted = exhaustedHealing.length > 0;
 
-                                if (c.approval_status === 'pending' || isPending) {
+                                if (c.approval_status === 'rejected') {
+                                    const reason = c.rejection_reason || 'Registration declined';
+                                    return `
+                                        <div class="heartbeat-status-wrap" title="Client registration rejected • Subsystems locked • Reason: ${escapeHtml(reason)}">
+                                            <span class="heartbeat-pill-badge" style="background: rgba(239, 68, 68, 0.12); color: #f87171; border-color: rgba(239, 68, 68, 0.35);">
+                                                <span class="hb-ball" style="background: #ef4444;"></span>
+                                                <span>DECLINED</span>
+                                            </span>
+                                            <div class="hb-timing-sub" style="color: #f87171; font-size: 11px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(reason)}">${escapeHtml(reason)}</div>
+                                            <div class="hb-timestamp-sub" style="color: #64748b; font-size: 10px;">Telemetry Disabled</div>
+                                        </div>
+                                    `;
+                                } else if (c.approval_status === 'pending' || isPending) {
                                     return `
                                         <div class="heartbeat-status-wrap" title="Gateway pending activation &bull; Subsystem telemetry standby">
                                             <span class="heartbeat-pill-badge" style="background: rgba(148, 163, 184, 0.12); color: #94a3b8; border-color: rgba(148, 163, 184, 0.25);">
@@ -8584,7 +8610,7 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                 <div style="color: #475569; font-size: 11px; margin-top: 2px;">💾 Storage: —</div>
                                 <div style="color: #475569; font-size: 10px; margin-top: 1px;">${sys.haos_version ? `HAOS ${escapeHtml(sys.haos_version)}` : 'Awaiting pulse'}</div>
                             ` : `
-                                <div style="color: #cbd5e1; font-weight: 500;">CPU: ${sys.cpu_percent}% &bull; RAM: ${sys.memory_percent}%</div>
+                                <div style="color: #cbd5e1; font-weight: 500;">CPU: ${sys.cpu_percent}% &bull; RAM: ${sys.memory_percent}%${sys.peak_interval_sec ? ` <span style="font-size: 10px; color: #38bdf8;" title="Realtime Peak measured over 1-10s interval via MQTT">⚡ Peak ${sys.peak_interval_sec}s</span>` : ''}</div>
                                 <div style="color: #94a3b8; font-size: 11px; margin-top: 2px;">💾 Storage: ${sys.disk_total_gb ? `${(sys.disk_total_gb - (sys.disk_free_gb || 0)).toFixed(1)} / ${Number(sys.disk_total_gb).toFixed(1)} GB (${Math.round(((sys.disk_total_gb - (sys.disk_free_gb || 0)) / sys.disk_total_gb) * 100)}%)` : (sys.disk_free_gb ? `${Number(sys.disk_free_gb).toFixed(1)} GB Free` : '—')}</div>
                                 <div style="color: #64748b; font-size: 10px; margin-top: 2px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap;">
                                     <span>HAOS ${escapeHtml(sys.haos_version || '—')}</span>
@@ -8625,7 +8651,11 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                     ⚙️ Actions <span class="action-caret">▼</span>
                                 </button>
                                 <div class="action-menu-popover" id="action-menu-${c.client_id}" style="display: none;">
-                                    ${c.approval_status === 'pending' && currentUser.role !== 'manufacturer' ? `
+                                    ${c.approval_status === 'rejected' ? `
+                                        <div class="action-menu-item" style="color: #f87171; cursor: not-allowed; opacity: 0.85;" title="Registration declined by Manufacturer: ${escapeHtml(c.rejection_reason || 'Declined')}">
+                                            <span>❌</span> Registration Declined
+                                        </div>
+                                    ` : (c.approval_status === 'pending' && currentUser.role !== 'manufacturer' ? `
                                         <div class="action-menu-item" style="color: #fbbf24; cursor: not-allowed; opacity: 0.8;" title="Remote Access is locked until Manufacturer approves this client site">
                                             <span>🔒</span> Remote Access Locked (Pending HQ)
                                         </div>
@@ -8645,7 +8675,7 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                                 <span>🔒</span> Restricted Notice ↗
                                             </a>
                                         `
-                                    )}
+                                    ))}
                                     ${c.ets_port ? (
                                         (c.knx_remote_enabled !== false && c.knx_remote_enabled !== 0) ? `
                                         <button type="button" class="action-menu-item" style="color: #c084fc;" onclick="copyEtsRemoteUrl('${c.domain}', ${c.ets_port}, event); closeAllActionMenus();" title="Copy Remote ETS URL and UDP Port for KNX device programming">
@@ -8687,6 +8717,9 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                     ` : ''}
                                     <button type="button" class="action-menu-item" onclick="openEditModal('${c.client_id}'); closeAllActionMenus();">
                                         <span>✏️</span> Edit Site Config
+                                    </button>
+                                    <button type="button" class="action-menu-item" style="color: #34d399;" onclick="resetClientAlertCounter('${c.client_id}', '${escapeHtml(c.name)}'); closeAllActionMenus();" title="Reset notification recovery cycles to 0 and re-enable alert dispatches">
+                                        <span>🔔</span> Reset Alert Notifications
                                     </button>
                                     <button type="button" class="action-menu-item" style="color: #f87171;" onclick="promptDelete('${c.client_id}', '${escapeHtml(c.name)}'); closeAllActionMenus();">
                                         <span>🗑️</span> Delete Client Site
@@ -9994,6 +10027,25 @@ auto_update_external_url: true`;
                 }
             } catch (err) {
                 showToast('Network error toggling ingress', 'error');
+            }
+        }
+
+        async function resetClientAlertCounter(clientId, clientName) {
+            if (!confirm(`Reset alert notification counters and re-enable notification dispatches for ${clientName || clientId}?`)) return;
+            try {
+                const res = await apiFetch('/api/clients/reset-alert-counter', {
+                    method: 'POST',
+                    body: JSON.stringify({ client_id: clientId })
+                });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    showToast(`Alert notifications re-enabled for ${clientName || clientId}.`, 'success');
+                    await fetchFleet();
+                } else {
+                    showToast(data.error || 'Failed to reset alert counter', 'error');
+                }
+            } catch (e) {
+                showToast('Network error resetting alert counter', 'error');
             }
         }
 
@@ -14008,6 +14060,30 @@ PersistentKeepalive = 25
                 self.send_json(500, {'error': str(e)})
             return
 
+        # 20.2 Reset Subsystem Alert Counter & Re-Enable Notifications
+        elif parsed.path == '/api/clients/reset-alert-counter':
+            user = self.get_authenticated_user()
+            if not user:
+                self.send_json(401, {'error': 'Authentication required'})
+                return
+            content_length = int(self.headers.get('Content-Length', 0))
+            body_bytes = self.rfile.read(content_length)
+            try:
+                req_data = json.loads(body_bytes.decode('utf-8'))
+                cid = req_data.get('client_id')
+                sub = req_data.get('subsystem')
+                if not cid:
+                    self.send_json(400, {'error': 'Missing client_id'})
+                    return
+                reset_subsystem_alert_cycle(cid, sub)
+                self.send_json(200, {
+                    'ok': True,
+                    'message': f"Alert notification cycle reset and notifications re-enabled for '{cid}'."
+                })
+            except Exception as e:
+                self.send_json(500, {'error': str(e)})
+            return
+
         # 21. WhatsApp / Autonomous Alert Send
         # 20.1 Toggle Integration Monitoring per Client
         elif parsed.path == '/api/client/toggle_integration_monitoring':
@@ -15545,10 +15621,95 @@ def init_alert_ledger_table():
                     PRIMARY KEY (client_id, alert_key, recipient)
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS subsystem_alert_cycles (
+                    client_id TEXT NOT NULL,
+                    subsystem TEXT NOT NULL,
+                    recovery_attempts INTEGER NOT NULL DEFAULT 0,
+                    notifications_suspended INTEGER NOT NULL DEFAULT 0,
+                    last_recovery_at INTEGER NOT NULL DEFAULT 0,
+                    last_fault_at INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (client_id, subsystem)
+                )
+            """)
             conn.commit()
             conn.close()
     except Exception as e:
         print(f"[!] init_alert_ledger_table error: {e}", flush=True)
+
+def get_subsystem_alert_cycle(client_id: str, subsystem: str):
+    init_alert_ledger_table()
+    try:
+        with DB_LOCK:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT recovery_attempts, notifications_suspended, last_recovery_at, last_fault_at FROM subsystem_alert_cycles WHERE client_id = ? AND subsystem = ?",
+                (client_id, subsystem)
+            )
+            row = cur.fetchone()
+            conn.close()
+            if row:
+                return dict(row)
+    except Exception as e:
+        print(f"[!] get_subsystem_alert_cycle error: {e}", flush=True)
+    return {'recovery_attempts': 0, 'notifications_suspended': 0, 'last_recovery_at': 0, 'last_fault_at': 0}
+
+def increment_subsystem_recovery_cycle(client_id: str, subsystem: str):
+    init_alert_ledger_table()
+    now = int(time.time())
+    try:
+        with DB_LOCK:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT recovery_attempts, notifications_suspended, last_recovery_at FROM subsystem_alert_cycles WHERE client_id = ? AND subsystem = ?",
+                (client_id, subsystem)
+            )
+            row = cur.fetchone()
+            if row:
+                attempts = int(row['recovery_attempts'] or 0) + 1
+                suspended = 1 if attempts >= 5 else int(row['notifications_suspended'] or 0)
+                conn.execute(
+                    "UPDATE subsystem_alert_cycles SET recovery_attempts = ?, notifications_suspended = ?, last_recovery_at = ? WHERE client_id = ? AND subsystem = ?",
+                    (attempts, suspended, now, client_id, subsystem)
+                )
+            else:
+                attempts = 1
+                suspended = 0
+                conn.execute(
+                    "INSERT INTO subsystem_alert_cycles (client_id, subsystem, recovery_attempts, notifications_suspended, last_recovery_at, last_fault_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (client_id, subsystem, attempts, suspended, now, 0)
+                )
+            conn.commit()
+            conn.close()
+            return attempts, suspended
+    except Exception as e:
+        print(f"[!] increment_subsystem_recovery_cycle error: {e}", flush=True)
+        return 1, 0
+
+def reset_subsystem_alert_cycle(client_id: str, subsystem: str = None):
+    init_alert_ledger_table()
+    try:
+        with DB_LOCK:
+            conn = get_db_connection()
+            if subsystem:
+                conn.execute(
+                    "UPDATE subsystem_alert_cycles SET recovery_attempts = 0, notifications_suspended = 0 WHERE client_id = ? AND subsystem = ?",
+                    (client_id, subsystem)
+                )
+            else:
+                conn.execute(
+                    "UPDATE subsystem_alert_cycles SET recovery_attempts = 0, notifications_suspended = 0 WHERE client_id = ?",
+                    (client_id,)
+                )
+            conn.commit()
+            conn.close()
+            clear_alert_ledger(client_id)
+            return True
+    except Exception as e:
+        print(f"[!] reset_subsystem_alert_cycle error: {e}", flush=True)
+        return False
 
 def can_send_alert(client_id: str, alert_key: str, recipient: str, interval_sec: int = 86400) -> bool:
     """Checks if an alert of this type has already been sent to this recipient within interval_sec (default 24 hours)."""
@@ -15601,10 +15762,12 @@ def clear_alert_ledger(client_id: str, alert_key: str = None):
     except Exception as e:
         print(f"[!] clear_alert_ledger error: {e}", flush=True)
 
-def send_whatsapp_alert_to_contacts(client_id, message, alert_key='general', suppress_roles=None):
+def send_whatsapp_alert_to_contacts(client_id, message, alert_key='general', suppress_roles=None, target_tier='hierarchy'):
     """
     Sends WhatsApp alert to contacts with 24-hour rate limit ledger.
-    Suppression rules:
+    Hierarchy rules:
+    - If target_tier == 'hierarchy': sends to assigned Integrator first; if no Integrator, sends to Dealer; if neither, sends to Manufacturer HQ.
+    - If target_tier == 'all': broadcasts to Integrator, Dealer, and Manufacturer HQ (used when max 5 recovery attempts exhausted).
     - If Integrator muted/disabled: suppress sending to Dealer and Manufacturer.
     - If Dealer muted/disabled: suppress sending to Manufacturer.
     """
@@ -15612,9 +15775,9 @@ def send_whatsapp_alert_to_contacts(client_id, message, alert_key='general', sup
     suppress_roles = suppress_roles or []
     admin_num = get_admin_whatsapp_number()
     recipients = []
-    
-    if 'manufacturer' not in suppress_roles and admin_num:
-        recipients.append(('manufacturer', admin_num))
+
+    integrator_phone = None
+    dealer_phone = None
 
     try:
         with DB_LOCK:
@@ -15629,15 +15792,31 @@ def send_whatsapp_alert_to_contacts(client_id, message, alert_key='general', sup
                     cur.execute("SELECT phone FROM integrators WHERE id = ?", (iid,))
                     i_row = cur.fetchone()
                     if i_row and i_row['phone']:
-                        recipients.append(('integrator', i_row['phone'].strip()))
+                        integrator_phone = i_row['phone'].strip()
                 if did and 'dealer' not in suppress_roles:
                     cur.execute("SELECT phone FROM dealers WHERE id = ?", (did,))
                     d_row = cur.fetchone()
                     if d_row and d_row['phone']:
-                        recipients.append(('dealer', d_row['phone'].strip()))
+                        dealer_phone = d_row['phone'].strip()
             conn.close()
     except Exception as e:
         print(f"[!] Error fetching contact recipients for {client_id}: {e}", flush=True)
+
+    if target_tier == 'all':
+        if integrator_phone:
+            recipients.append(('integrator', integrator_phone))
+        if dealer_phone:
+            recipients.append(('dealer', dealer_phone))
+        if admin_num and 'manufacturer' not in suppress_roles:
+            recipients.append(('manufacturer', admin_num))
+    else:
+        # Strictly follow the hierarchy: Integrator -> Dealer -> Manufacturer
+        if integrator_phone:
+            recipients.append(('integrator', integrator_phone))
+        elif dealer_phone:
+            recipients.append(('dealer', dealer_phone))
+        elif admin_num and 'manufacturer' not in suppress_roles:
+            recipients.append(('manufacturer', admin_num))
 
     sent_count = 0
     for role, raw_phone in recipients:
@@ -15915,21 +16094,51 @@ def start_telemetry_alert_watchdog():
                     else:
                         if (cid, sub_key) in NOTIFIED_FAILED_RECOVERY and (sub_status in ['idle', 'online'] or sub_attempts == 0):
                             NOTIFIED_FAILED_RECOVERY.discard((cid, sub_key))
-                            clear_alert_ledger(cid, f"fault_{sub_key}")
                             pretty_tech, _ = format_subsystem_alert_details(sub_key, tech, unmon)
-                            lines = [
-                                "✅ *GAVASAH LUXURY AUTOMATION*",
-                                "🟢 *RESOLVED: Integration Recovered*",
-                                "",
-                                f"• *Site:* {cname} (`{cid}`)",
-                                f"• *Subsystem:* {pretty_tech}",
-                                "• *Status:* 🟢 HEALTHY / OPERATIONAL",
-                                f"• *Time:* {ist_time_str}",
-                                "",
-                                "✨ *Notice:* Subsystem fault has cleared and all integrations are functioning normally.",
-                                "🌐 *Operations Portal:* https://dealer.gavasah.com/"
-                            ]
-                            send_whatsapp_alert_to_contacts(cid, chr(10).join(lines), alert_key=f"resolved_{cid}_{sub_key}")
+
+                            # 24-Hour Recovery Notification & Cycle Tracking
+                            cycle_info = get_subsystem_alert_cycle(cid, sub_key)
+                            if cycle_info.get('notifications_suspended'):
+                                print(f"[*] Notifications suspended for {cid}/{sub_key} (5 attempts reached). Skipping notification until manual dashboard reset.", flush=True)
+                            else:
+                                new_attempts, is_suspended = increment_subsystem_recovery_cycle(cid, sub_key)
+                                # Reset the 24-hour rate limit clock for this integration
+                                clear_alert_ledger(cid, f"fault_{sub_key}")
+                                clear_alert_ledger(cid, f"resolved_{cid}_{sub_key}")
+
+                                if new_attempts <= 5:
+                                    lines = [
+                                        "✅ *GAVASAH LUXURY AUTOMATION*",
+                                        "🟢 *RESOLVED: Integration Recovered*",
+                                        "",
+                                        f"• *Site:* {cname} (`{cid}`)",
+                                        f"• *Subsystem:* {pretty_tech}",
+                                        "• *Status:* 🟢 HEALTHY / OPERATIONAL",
+                                        f"• *Recovery Cycle:* {new_attempts}/5 within 24h period (Clock Reset)",
+                                        f"• *Time:* {ist_time_str}",
+                                        "",
+                                        "✨ *Notice:* Subsystem fault has cleared, all integrations are functioning normally, and the 24-hour rate limit clock has been reset.",
+                                        "🌐 *Operations Portal:* https://dealer.gavasah.com/"
+                                    ]
+                                    send_whatsapp_alert_to_contacts(cid, chr(10).join(lines), alert_key=f"resolved_{cid}_{sub_key}", target_tier='hierarchy')
+
+                                if new_attempts >= 5 or is_suspended:
+                                    # 5th attempt limit reached - alert everyone in hierarchy
+                                    err_lines = [
+                                        "🛑 *GAVASAH LUXURY AUTOMATION*",
+                                        "⚠️ *NOTIFICATION LIMIT REACHED: 5 Cycles Exhausted*",
+                                        "",
+                                        f"• *Site:* {cname} (`{cid}`)",
+                                        f"• *Subsystem:* {pretty_tech}",
+                                        "• *Status:* 🛑 5/5 RECOVERY NOTIFICATION CYCLES EXHAUSTED",
+                                        f"• *Time:* {ist_time_str}",
+                                        "",
+                                        "🚨 *Notice to All Tiers (Integrator, Dealer & HQ):* This subsystem has reached the maximum of 5 recovery cycles within the 24-hour period. Automated notifications for this subsystem are now SUSPENDED to prevent alert fatigue.",
+                                        "",
+                                        "🔧 *Action Required:* Inspect physical hardware/wiring on site. Automated notifications will remain suspended until an authorized technician resets the counter from the Gavasah Dealer Dashboard.",
+                                        "🌐 *Operations Portal:* https://dealer.gavasah.com/"
+                                    ]
+                                    send_whatsapp_alert_to_contacts(cid, chr(10).join(err_lines), alert_key=f"exhausted_notif_{cid}_{sub_key}", target_tier='all')
 
                 if exhausted_subs:
                     unnotified = [s for s in exhausted_subs if (cid, s[0]) not in NOTIFIED_FAILED_RECOVERY]
@@ -15967,8 +16176,107 @@ def start_telemetry_alert_watchdog():
 
         time.sleep(20)
 
+def start_mqtt_telemetry_subscriber():
+    """
+    Subscribes to 'gavasah/clients/+/telemetry' over local MQTT broker (127.0.0.1:1883).
+    Receives real-time 10-second telemetry pulses with peak CPU, RAM, and Storage values,
+    updating clients table in fleet.db and broadcasting to connected dashboard sessions.
+    """
+    def on_connect(client, userdata, flags, rc):
+        if rc == 0:
+            print("[✓] [Hub-MQTT] Connected to local broker. Subscribing to 'gavasah/clients/+/telemetry'...", flush=True)
+            client.subscribe([("gavasah/clients/+/telemetry", 0), ("gavasah/clients/+/events", 1)])
+        else:
+            print(f"[!] [Hub-MQTT] Connect failed with code {rc}", flush=True)
+
+    def on_message(client, userdata, msg):
+        try:
+            topic = msg.topic
+            payload = json.loads(msg.payload.decode('utf-8'))
+            cid = payload.get('client_id')
+            if not cid:
+                parts = topic.split('/')
+                if len(parts) >= 3:
+                    cid = parts[2]
+            if not cid:
+                return
+
+            now = int(time.time())
+            with DB_LOCK:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT system_json, technologies_json, last_heartbeat FROM clients WHERE client_id = ?", (cid,))
+                row = cur.fetchone()
+                if row:
+                    prev_sys = {}
+                    try:
+                        prev_sys = json.loads(row['system_json'] or '{}')
+                    except Exception:
+                        pass
+                    # Merge incoming 10-second telemetry with peak metrics
+                    if 'cpu_percent' in payload:
+                        prev_sys['cpu_percent'] = payload['cpu_percent']
+                    if 'memory_percent' in payload:
+                        prev_sys['memory_percent'] = payload['memory_percent']
+                    if 'disk_free_gb' in payload:
+                        prev_sys['disk_free_gb'] = payload['disk_free_gb']
+                    if 'disk_total_gb' in payload:
+                        prev_sys['disk_total_gb'] = payload['disk_total_gb']
+                    if 'disk_used_gb' in payload:
+                        prev_sys['disk_used_gb'] = payload['disk_used_gb']
+                    if 'disk_percent' in payload:
+                        prev_sys['disk_percent'] = payload['disk_percent']
+                    prev_sys['peak_interval_sec'] = payload.get('peak_interval_sec', 10)
+                    if payload.get('boot_slot'):
+                        prev_sys['boot_slot'] = payload.get('boot_slot')
+                    if payload.get('os_version'):
+                        prev_sys['haos_version'] = payload.get('os_version')
+                    if payload.get('core_version'):
+                        prev_sys['core_version'] = payload.get('core_version')
+                    if payload.get('supervisor_version'):
+                        prev_sys['supervisor_version'] = payload.get('supervisor_version')
+
+                    new_sys_json = json.dumps(prev_sys)
+                    
+                    new_tech_json = row['technologies_json']
+                    if payload.get('subsystems'):
+                        try:
+                            new_tech_json = json.dumps(payload['subsystems'])
+                        except Exception:
+                            pass
+
+                    cur.execute(
+                        "UPDATE clients SET system_json = ?, technologies_json = ?, last_heartbeat = ? WHERE client_id = ?",
+                        (new_sys_json, new_tech_json, now, cid)
+                    )
+                    conn.commit()
+                conn.close()
+        except Exception as ex:
+            print(f"[!] [Hub-MQTT] Error processing telemetry: {ex}", flush=True)
+
+    def _loop():
+        try:
+            import paho.mqtt.client as mqtt
+        except ImportError:
+            print("[!] paho-mqtt not installed; telemetry subscriber not started", flush=True)
+            return
+
+        while True:
+            try:
+                sub_client = mqtt.Client(client_id="gavasah-hub-telemetry-subscriber", protocol=mqtt.MQTTv311)
+                sub_client.on_connect = on_connect
+                sub_client.on_message = on_message
+                sub_client.connect("127.0.0.1", 1883, keepalive=60)
+                sub_client.loop_forever()
+            except Exception as e:
+                print(f"[!] [Hub-MQTT] Subscriber error: {e}. Retrying in 5s...", flush=True)
+                time.sleep(5)
+
+    threading.Thread(target=_loop, daemon=True, name="HubMqttTelemetrySubscriber").start()
+
 def run_server(port=PORT):
     threading.Thread(target=start_telemetry_alert_watchdog, daemon=True, name="TelemetryAlertWatchdog").start()
+    start_mqtt_telemetry_subscriber()
     server_address = ('', port)
     httpd = http.server.ThreadingHTTPServer(server_address, DealerPortalHandler)
     httpd.daemon_threads = True

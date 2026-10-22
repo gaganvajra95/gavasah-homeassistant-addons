@@ -13,6 +13,8 @@ import socket
 import datetime
 import urllib.request
 import urllib.error
+import threading
+import shutil
 
 OPTIONS_PATH = "/data/options.json"
 SSH_PUBKEY_PATH = "/data/ssh/id_ed25519.pub"
@@ -40,7 +42,7 @@ def get_public_key():
             log(f"Notice: Could not read {SSH_PUBKEY_PATH}: {e}")
     return ""
 
-ADDON_VERSION = "1.3.4"
+ADDON_VERSION = "1.3.5"
 MAX_HEALING_ATTEMPTS = 5
 HEALING_COOLDOWN_SEC = 60
 STABILIZATION_SEC = 300
@@ -2034,7 +2036,7 @@ class MqttTelemetryEngine:
         self.auth_key = opts.get("auth_key", "")
         self.mqtt_host = opts.get("mqtt_host", "10.42.0.1")
         self.mqtt_port = int(opts.get("mqtt_port", 1883))
-        self.interval = max(30, min(120, int(opts.get("mqtt_interval", 45))))
+        self.interval = max(5, min(60, int(opts.get("mqtt_interval", 10))))
         self.running = False
         self.client = None
         self.connected = False
@@ -2047,7 +2049,7 @@ class MqttTelemetryEngine:
         import threading
         t = threading.Thread(target=self._run_loop, daemon=True, name="GavasahMqttTelemetry")
         t.start()
-        self.log(f"[MQTT] Telemetry engine started | Host: {self.mqtt_host}:{self.mqtt_port} | Interval: {self.interval}s | Client: {self.client_id}")
+        self.log(f"[MQTT] Telemetry engine started | Host: {self.mqtt_host}:{self.mqtt_port} | Interval: {self.interval}s (Peak Sampling: 1s) | Client: {self.client_id}")
 
     def _run_loop(self):
         while self.running:
@@ -2117,13 +2119,67 @@ class MqttTelemetryEngine:
 
         last_pub = 0
         last_alert_events = set()
+        cpu_samples = []
+        ram_samples = []
+        prev_jiffies = None
 
         while self.running:
             time.sleep(1)
             now = time.time()
+
+            # 1-second sample of CPU and physical RAM for peak detection
+            try:
+                # Read RAM
+                s_ram = 0.0
+                with open("/proc/meminfo", "r") as mf:
+                    mem_data = {}
+                    for mline in mf:
+                        if ":" in mline:
+                            mparts = mline.split(":")
+                            mem_data[mparts[0].strip()] = int(mparts[1].split()[0])
+                    mtot = mem_data.get("MemTotal", 0)
+                    mavail = mem_data.get("MemAvailable", 0)
+                    if mtot > 0 and mavail > 0:
+                        s_ram = round(((mtot - mavail) / mtot) * 100.0, 1)
+                ram_samples.append(s_ram)
+
+                # Read CPU
+                s_cpu = 0.0
+                with open("/proc/stat", "r") as sf:
+                    cfields = [float(x) for x in sf.readline().strip().split()[1:]]
+                    cidle = cfields[3] + (cfields[4] if len(cfields) > 4 else 0)
+                    ctotal = sum(cfields)
+                    if prev_jiffies is not None:
+                        p_idle, p_total = prev_jiffies
+                        d_total = ctotal - p_total
+                        d_idle = cidle - p_idle
+                        if d_total > 0:
+                            s_cpu = round(max(0.0, min(100.0, (1.0 - (d_idle / d_total)) * 100.0)), 1)
+                    prev_jiffies = (cidle, ctotal)
+                cpu_samples.append(s_cpu)
+            except Exception:
+                pass
+
             if self.connected and (now - last_pub >= self.interval):
                 last_pub = now
                 try:
+                    # Calculate 1-10s interval PEAK values
+                    peak_cpu = round(max(cpu_samples), 1) if cpu_samples else 0.0
+                    peak_ram = round(max(ram_samples), 1) if ram_samples else 0.0
+                    cpu_samples.clear()
+                    ram_samples.clear()
+
+                    # Instant storage calculation
+                    try:
+                        import shutil
+                        du = shutil.disk_usage("/data") if os.path.exists("/data") else shutil.disk_usage("/")
+                        d_free = round(du.free / (1024**3), 1)
+                        d_total = round(du.total / (1024**3), 1)
+                        d_used = round(du.used / (1024**3), 1)
+                        d_pct = round((du.used / du.total) * 100.0, 1) if du.total > 0 else 0.0
+                    except Exception:
+                        d_free, d_total, d_used, d_pct = 0.0, 0.0, 0.0, 0.0
+
                     payload = self.collect_telemetry(self.opts)
                     sys_p = payload.get("system", {})
                     tech_p = payload.get("technologies", {})
@@ -2137,10 +2193,13 @@ class MqttTelemetryEngine:
                         "os_version": sys_p.get("os_version"),
                         "core_version": sys_p.get("core_version"),
                         "supervisor_version": sys_p.get("supervisor_version"),
-                        "cpu_percent": sys_p.get("cpu_percent"),
-                        "memory_percent": sys_p.get("memory_percent"),
-                        "disk_free_gb": sys_p.get("disk_free_gb"),
-                        "uptime_seconds": sys_p.get("uptime_seconds"),
+                        "cpu_percent": peak_cpu,
+                        "memory_percent": peak_ram,
+                        "disk_free_gb": d_free,
+                        "disk_total_gb": d_total,
+                        "disk_used_gb": d_used,
+                        "disk_percent": d_pct,
+                        "peak_interval_sec": self.interval,
                         "knx_reachable": payload.get("knx_status", {}).get("reachable", False),
                         "subsystems": tech_p,
                         "self_healing": tech_p.get("self_healing", {})
