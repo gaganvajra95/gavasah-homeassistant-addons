@@ -1684,11 +1684,9 @@ def collect_telemetry(opts):
     haos_version = os_info.get("version", "Unknown")
     board = os_info.get("board", "generic")
 
-    # Dual A/B Symmetric Slot Health Detection
-    # In Home Assistant OS and RAUC, both Slot A and Slot B are healthy operational partitions.
-    # An active boot into Slot B occurs normally after system updates.
-    # A slot is only considered in recovery/fallback if RAUC explicitly flags a boot failure.
-    is_recovery = False
+    # GAVASAH Dual A/B Architectural Standard:
+    # Slot A is Primary Operational. Slot B is strictly Recovery Fallback.
+    is_recovery = (str(boot_slot).upper() == "B")
 
     # Primary network interface extraction
     default_ip = "Unknown"
@@ -1755,12 +1753,14 @@ def collect_telemetry(opts):
     pubkey = get_public_key()
 
     slot_upper = str(boot_slot).upper()
+    # GAVASAH Architecture Standard: Slot A is Primary. Slot B is strictly Recovery.
+    is_recovery = (slot_upper == "B")
     if slot_upper == "B":
         slot_a_state = "standby (good)"
-        slot_b_state = "good (active)"
+        slot_b_state = "recovery (active)"
     else:
         slot_a_state = "good (active)"
-        slot_b_state = "standby (good)"
+        slot_b_state = "standby (recovery)"
 
     # Real-time Home Assistant Main CPU & Memory calculation
     main_cpu_pct, main_mem_pct = get_ha_main_cpu_and_memory()

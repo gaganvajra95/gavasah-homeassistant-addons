@@ -8036,8 +8036,8 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                 const sys = c.system || {};
                 const net = c.network || {};
                 const knx = c.knx_status || {};
-                const isRecovery = sys.is_recovery_mode || false;
-                const slot = sys.boot_slot || 'A';
+                const slot = (sys.boot_slot || 'A').toUpperCase();
+                const isRecovery = sys.is_recovery_mode || slot === 'B';
                 const remoteEnabled = Boolean(c.remote_enabled) && c.remote_enabled !== 0 && c.remote_enabled !== '0';
 
                 // Integration monitoring mute/disable check (Row scoped)
@@ -13559,17 +13559,16 @@ PersistentKeepalive = 25
             sys_dict = {}
             if 'system' in body:
                 sys_data = body['system']
-                # Neutralize false-positive recovery alarms: Slot B is a normal A/B update partition in HAOS/RAUC.
-                # Only flag recovery if an actual kernel crash or boot failure occurred.
-                if sys_data.get('is_recovery_mode') and not sys_data.get('boot_failure_detected'):
+                # GAVASAH Standard Directive: Slot A is Primary. Whenever any system enters Slot B, mark it as RECOVERY.
+                slot = str(sys_data.get('boot_slot', 'A')).upper()
+                if slot == 'B':
+                    sys_data['is_recovery_mode'] = True
+                    sys_data['slot_a_status'] = 'standby (good)'
+                    sys_data['slot_b_status'] = 'recovery (active)'
+                else:
                     sys_data['is_recovery_mode'] = False
-                    slot = str(sys_data.get('boot_slot', 'A')).upper()
-                    if slot == 'B':
-                        sys_data['slot_a_status'] = 'standby (good)'
-                        sys_data['slot_b_status'] = 'good (active)'
-                    else:
-                        sys_data['slot_a_status'] = 'good (active)'
-                        sys_data['slot_b_status'] = 'standby (good)'
+                    sys_data['slot_a_status'] = 'good (active)'
+                    sys_data['slot_b_status'] = 'standby (recovery)'
                 sys_dict = sys_data
             else:
                 try: sys_dict = json.loads(client.get('system_json') or '{}')
