@@ -1812,6 +1812,20 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         /* 3-Tier Multi-Tenant Layout Rules */
+        /* WhatsApp & Alerts and AI Copilot tabs are strictly Manufacturer-only */
+        body.is-dealer #nav-alerts,
+        body.is-dealer #nav-copilot,
+        body.is-dealer #tab-alerts,
+        body.is-dealer #tab-copilot,
+        body.is-integrator #nav-alerts,
+        body.is-integrator #nav-copilot,
+        body.is-integrator #tab-alerts,
+        body.is-integrator #tab-copilot {
+            display: none !important;
+            visibility: hidden !important;
+            pointer-events: none !important;
+        }
+
         body.is-dealer #nav-dealers {
             display: none !important;
         }
@@ -5871,6 +5885,10 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (navAlerts) navAlerts.style.display = 'flex';
                 const navCopilot = document.getElementById('nav-copilot');
                 if (navCopilot) navCopilot.style.display = 'flex';
+                const tabAlerts = document.getElementById('tab-alerts');
+                if (tabAlerts) tabAlerts.style.display = '';
+                const tabCopilot = document.getElementById('tab-copilot');
+                if (tabCopilot) tabCopilot.style.display = '';
                 loadWhatsAppStatus();
                 loadAdminWhatsAppNumber();
                 applyDealerBranding(currentUser.branding);
@@ -5904,6 +5922,14 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (navApprD) navApprD.style.display = 'none';
                 const navMqttD = document.getElementById('nav-mqtt');
                 if (navMqttD) navMqttD.style.display = 'none';
+                const navAlertsD = document.getElementById('nav-alerts');
+                if (navAlertsD) navAlertsD.style.display = 'none';
+                const navCopilotD = document.getElementById('nav-copilot');
+                if (navCopilotD) navCopilotD.style.display = 'none';
+                const tabAlertsD = document.getElementById('tab-alerts');
+                if (tabAlertsD) tabAlertsD.style.display = 'none';
+                const tabCopilotD = document.getElementById('tab-copilot');
+                if (tabCopilotD) tabCopilotD.style.display = 'none';
                 applyDealerBranding(currentUser.branding);
                 document.getElementById('th-dealer-col').style.display = 'none';
                 const thIntDlr = document.getElementById('th-integrator-col'); if (thIntDlr) thIntDlr.style.display = '';
@@ -5947,6 +5973,14 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('nav-account').style.display = 'none';
                 const navBrandInt = document.getElementById('nav-branding');
                 if (navBrandInt) navBrandInt.style.display = 'none';
+                const navAlertsInt = document.getElementById('nav-alerts');
+                if (navAlertsInt) navAlertsInt.style.display = 'none';
+                const navCopilotInt = document.getElementById('nav-copilot');
+                if (navCopilotInt) navCopilotInt.style.display = 'none';
+                const tabAlertsInt = document.getElementById('tab-alerts');
+                if (tabAlertsInt) tabAlertsInt.style.display = 'none';
+                const tabCopilotInt = document.getElementById('tab-copilot');
+                if (tabCopilotInt) tabCopilotInt.style.display = 'none';
                 document.getElementById('th-dealer-col').style.display = 'none';
                 document.getElementById('th-integrator-col').style.display = 'none';
 
@@ -6073,6 +6107,12 @@ HTML_PAGE = """<!DOCTYPE html>
         window.addEventListener('hashchange', () => {
             if (!currentUser) return;
             const h = (window.location.hash || '').replace('#', '').trim();
+            const mfgOnlyTabs = ['alerts', 'tab-alerts', 'copilot', 'tab-copilot'];
+            if (mfgOnlyTabs.includes(h) && currentUser.role !== 'manufacturer') {
+                const fallback = (currentUser.role === 'dealer') ? 'overview' : 'fleet';
+                switchTab(fallback);
+                return;
+            }
             if (h && document.getElementById('tab-' + h)) {
                 switchTab(h);
             }
@@ -6082,6 +6122,18 @@ HTML_PAGE = """<!DOCTYPE html>
         // TABS NAVIGATION
         // ======================================================================
         function switchTab(tabId) {
+            if (!currentUser) return;
+
+            // Strict Role-Based Access: WhatsApp and AI Copilot tabs are strictly Manufacturer-only
+            const mfgOnlyTabs = ['alerts', 'tab-alerts', 'copilot', 'tab-copilot'];
+            if (mfgOnlyTabs.includes(tabId) && currentUser.role !== 'manufacturer') {
+                const fallback = (currentUser.role === 'dealer') ? 'overview' : 'fleet';
+                activeTab = fallback;
+                showToast('Access restricted: Only manufacturer administrators can view or manage this section.', 'error');
+                switchTab(fallback);
+                return;
+            }
+
             if (tabId === 'tab-alerts' || tabId === 'alerts') loadSmtpConfig();
             if (window.innerWidth <= 900) closeSidebarMobile();
             activeTab = tabId;
@@ -11862,6 +11914,9 @@ PersistentKeepalive = 25
             if not user:
                 self.send_json(401, {'error': 'Authentication required'})
                 return
+            if user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer permission required'})
+                return
             with DB_LOCK:
                 conn = get_db_connection()
                 cur = conn.cursor()
@@ -11888,6 +11943,9 @@ PersistentKeepalive = 25
             user = self.get_authenticated_user()
             if not user:
                 self.send_json(401, {'error': 'Authentication required'})
+                return
+            if user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer permission required'})
                 return
             try:
                 req = urllib.request.Request('http://127.0.0.1:3005/status', headers={'User-Agent': 'GavasahHub'})
@@ -11942,6 +12000,9 @@ PersistentKeepalive = 25
             user = self.get_authenticated_user()
             if not user:
                 self.send_json(401, {'error': 'Authentication required'})
+                return
+            if user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer permission required'})
                 return
             admin_num = get_admin_whatsapp_number()
             self.send_json(200, {'success': True, 'admin_whatsapp_number': admin_num})
@@ -14236,6 +14297,9 @@ PersistentKeepalive = 25
             if not user:
                 self.send_json(401, {'error': 'Authentication required'})
                 return
+            if user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer permission required'})
+                return
             content_length = int(self.headers.get('Content-Length', 0))
             body_bytes = self.rfile.read(content_length)
             try:
@@ -14304,6 +14368,9 @@ PersistentKeepalive = 25
             user = self.get_authenticated_user()
             if not user:
                 self.send_json(401, {'error': 'Authentication required'})
+                return
+            if user.get('role') != 'manufacturer':
+                self.send_json(403, {'error': 'Manufacturer permission required'})
                 return
             content_length = int(self.headers.get('Content-Length', 0))
             body_bytes = self.rfile.read(content_length)
