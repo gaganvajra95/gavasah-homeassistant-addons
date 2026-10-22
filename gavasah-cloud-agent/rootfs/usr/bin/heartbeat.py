@@ -40,11 +40,15 @@ def get_public_key():
             log(f"Notice: Could not read {SSH_PUBKEY_PATH}: {e}")
     return ""
 
-ADDON_VERSION = "1.3.0"
+ADDON_VERSION = "1.3.1"
 MAX_HEALING_ATTEMPTS = 5
 HEALING_COOLDOWN_SEC = 60
+STABILIZATION_SEC = 300
 
 UNMONITORED_CACHE_FILE = "/data/unmonitored_integrations.json"
+SELF_HEALING_CACHE_FILE = "/data/self_healing_registry.json"
+
+_healing_lock = threading.Lock()
 
 def get_unmonitored_integrations():
     try:
@@ -55,6 +59,28 @@ def get_unmonitored_integrations():
     except Exception:
         pass
     return []
+
+def load_healing_registry():
+    global _healing_registry
+    try:
+        if os.path.exists(SELF_HEALING_CACHE_FILE):
+            with open(SELF_HEALING_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    _healing_registry = data
+                    log(f"[Self-Healing Engine] Loaded persistent healing registry from {SELF_HEALING_CACHE_FILE}")
+    except Exception as e:
+        log(f"Notice: Could not load {SELF_HEALING_CACHE_FILE}: {e}")
+
+def save_healing_registry():
+    try:
+        os.makedirs(os.path.dirname(SELF_HEALING_CACHE_FILE), exist_ok=True)
+        tmp = f"{SELF_HEALING_CACHE_FILE}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_healing_registry, f, indent=2)
+        os.replace(tmp, SELF_HEALING_CACHE_FILE)
+    except Exception as e:
+        log(f"[!] Notice: Could not save {SELF_HEALING_CACHE_FILE}: {e}")
 
 def update_unmonitored_integrations(unmon_list):
     global _healing_registry
@@ -69,12 +95,14 @@ def update_unmonitored_integrations(unmon_list):
             log(f"[Self-Healing Engine] Updated unmonitored integrations from Dealer Hub: {unmon_list}")
         
         # Halt and disable self-healing for any disabled integrations immediately
-        for sub in unmon_list:
-            if sub in _healing_registry:
-                _healing_registry[sub]["status"] = "disabled"
-                _healing_registry[sub]["attempts"] = 0
-                _healing_registry[sub]["exhausted"] = False
-                _healing_registry[sub]["last_action"] = "Monitoring muted from Dealer Dashboard. Auto-recovery paused."
+        with _healing_lock:
+            for sub in unmon_list:
+                if sub in _healing_registry:
+                    _healing_registry[sub]["status"] = "disabled"
+                    _healing_registry[sub]["attempts"] = 0
+                    _healing_registry[sub]["exhausted"] = False
+                    _healing_registry[sub]["last_action"] = "Monitoring muted from Dealer Dashboard. Auto-recovery paused."
+            save_healing_registry()
     except Exception as e:
         log(f"[!] Error updating unmonitored integrations: {e}")
 
@@ -174,6 +202,59 @@ def reload_ha_config_entry(entry_id):
     ok, _ = supervisor_post(f"core/api/config/config_entries/entry/{entry_id}/reload")
     return ok
 
+def unload_ha_config_entry(entry_id):
+    """Unloads a failed integration config entry to halt HA Core's infinite background setup_retry loop."""
+    if not SUPERVISOR_TOKEN or not entry_id:
+        return False
+    ok, _ = supervisor_post(f"core/api/config/config_entries/entry/{entry_id}/unload")
+    return ok
+
+def halt_ha_core_retries_for_exhausted_subsystem(subsystem, tech_data):
+    """
+    Halts Home Assistant Core's native background retry loop when a subsystem
+    exhausts its 5 self-healing attempts. By unloading the failed config entries,
+    Home Assistant Core stops hammering offline devices and ceases background log spam.
+    """
+    try:
+        if subsystem == "failed_core_entries":
+            failed_list = tech_data.get("failed_core_entries", [])
+            for f in failed_list:
+                eid = f.get("entry_id")
+                if eid:
+                    if unload_ha_config_entry(eid):
+                        log(f"[✓] [Self-Healing Engine] Unloaded exhausted core entry '{f.get('title', eid)}' ({eid[:8]}) to halt HA Core background retry loop")
+        elif subsystem == "coolmaster":
+            cm_info = tech_data.get("coolmaster", {})
+            for ent in cm_info.get("entries", []):
+                eid = ent.get("entry_id")
+                if eid and ent.get("state") in ["setup_error", "setup_retry", "failed_unload"]:
+                    if unload_ha_config_entry(eid):
+                        log(f"[✓] [Self-Healing Engine] Unloaded exhausted CoolMaster entry ({eid[:8]}) to halt HA Core retry loop")
+        elif subsystem == "lutron":
+            lut_info = tech_data.get("lutron", {})
+            for ent in lut_info.get("entries", []):
+                eid = ent.get("entry_id")
+                if eid and ent.get("state") in ["setup_error", "setup_retry", "failed_unload"]:
+                    if unload_ha_config_entry(eid):
+                        log(f"[✓] [Self-Healing Engine] Unloaded exhausted Lutron entry ({eid[:8]}) to halt HA Core retry loop")
+        elif subsystem == "knx":
+            entries = get_ha_config_entries()
+            knx_entry = next((e for e in entries if e.get("domain") == "knx"), None)
+            if knx_entry and knx_entry.get("entry_id") and knx_entry.get("state") in ["setup_error", "setup_retry"]:
+                unload_ha_config_entry(knx_entry["entry_id"])
+        elif subsystem == "matter":
+            entries = get_ha_config_entries()
+            m_entry = next((e for e in entries if e.get("domain") == "matter"), None)
+            if m_entry and m_entry.get("entry_id") and m_entry.get("state") in ["setup_error", "setup_retry"]:
+                unload_ha_config_entry(m_entry["entry_id"])
+        elif subsystem == "zigbee":
+            entries = get_ha_config_entries()
+            z_entry = next((e for e in entries if e.get("domain") == "zha"), None)
+            if z_entry and z_entry.get("entry_id") and z_entry.get("state") in ["setup_error", "setup_retry"]:
+                unload_ha_config_entry(z_entry["entry_id"])
+    except Exception as e:
+        log(f"[!] Notice: Could not unload exhausted subsystem '{subsystem}' entries: {e}")
+
 def restart_addon_container(addon_slug):
     """Restarts a specific Home Assistant Add-on container via Supervisor API."""
     if not SUPERVISOR_TOKEN or not addon_slug:
@@ -187,8 +268,8 @@ def notify_ha_self_healing_exhausted(subsystem, attempts):
     title = f"Gavasah Subsystem Alert: {pretty}"
     message = (
         f"Autonomous self-healing for '{pretty}' has stopped after {attempts} failed attempts. "
-        f"Automatic remediation is suspended to prevent system disruption. Manual inspection required. "
-        f"Self-healing counter will only reset after the Gavasah Gateway or add-on is restarted."
+        f"Background connection retries have been halted in Home Assistant Core to prevent network storming. "
+        f"Manual inspection required. Counter locked until gateway/add-on restart."
     )
     try:
         supervisor_post("core/api/services/persistent_notification/create", {
@@ -310,151 +391,174 @@ def run_autonomous_self_healing_engine(tech_data, opts):
     Autonomous Self-Healing Engine:
     Monitors all subsystems and executes up to 5 self-remediation attempts with a 60-second
     cooldown before escalating alarms to Integrator, Dealer, or Manufacturer HQ.
+    When 5 attempts are exhausted, cleanly unloads failing config entries in Home Assistant Core
+    to halt Core's infinite background retry loop, and locks state persistently in /data.
     """
     global _healing_registry, _recent_recoveries
-    now_ts = time.time()
-    now_iso = datetime.datetime.utcnow().isoformat() + "Z"
+    with _healing_lock:
+        now_ts = time.time()
+        now_iso = datetime.datetime.utcnow().isoformat() + "Z"
 
-    subsystem_checks = {}
+        subsystem_checks = {}
 
-    # 1. KNX
-    knx = tech_data.get("knx", {})
-    if knx.get("configured") and knx.get("reason") != "no_knx_integration":
-        subsystem_checks["knx"] = not bool(knx.get("reachable"))
+        # 1. KNX
+        knx = tech_data.get("knx", {})
+        if knx.get("configured") and knx.get("reason") != "no_knx_integration":
+            subsystem_checks["knx"] = not bool(knx.get("reachable"))
 
-    # 2. CoolMaster
-    cm = tech_data.get("coolmaster", {})
-    if cm.get("detected"):
-        subsystem_checks["coolmaster"] = bool(cm.get("status") in ["offline", "degraded"] or cm.get("offline_reason"))
+        # 2. CoolMaster
+        cm = tech_data.get("coolmaster", {})
+        if cm.get("detected"):
+            subsystem_checks["coolmaster"] = bool(cm.get("status") in ["offline", "degraded"] or cm.get("offline_reason"))
 
-    # 3. Zigbee
-    zig = tech_data.get("zigbee", {})
-    if zig.get("detected"):
-        subsystem_checks["zigbee"] = bool(zig.get("status") in ["offline", "degraded"] or zig.get("offline_reason"))
+        # 3. Zigbee
+        zig = tech_data.get("zigbee", {})
+        if zig.get("detected"):
+            subsystem_checks["zigbee"] = bool(zig.get("status") in ["offline", "degraded"] or zig.get("offline_reason"))
 
-    # 4. Lutron
-    lut = tech_data.get("lutron", {})
-    if lut.get("detected"):
-        subsystem_checks["lutron"] = bool(lut.get("status") in ["offline", "degraded"] or lut.get("offline_reason"))
+        # 4. Lutron
+        lut = tech_data.get("lutron", {})
+        if lut.get("detected"):
+            subsystem_checks["lutron"] = bool(lut.get("status") in ["offline", "degraded"] or lut.get("offline_reason"))
 
-    # 5. Matter
-    mat = tech_data.get("matter", {})
-    if mat.get("detected"):
-        subsystem_checks["matter"] = bool(mat.get("status") == "offline" or mat.get("state") in ["stopped", "error", "failed"])
+        # 5. Matter
+        mat = tech_data.get("matter", {})
+        if mat.get("detected"):
+            subsystem_checks["matter"] = bool(mat.get("status") == "offline" or mat.get("state") in ["stopped", "error", "failed"])
 
-    # 6. Core Integrations
-    failed_core = tech_data.get("failed_core_entries", [])
-    if failed_core:
-        subsystem_checks["failed_core_entries"] = True
+        # 6. Core Integrations
+        failed_core = tech_data.get("failed_core_entries", [])
+        if failed_core:
+            subsystem_checks["failed_core_entries"] = True
 
-    # Process all tracked subsystems
-    all_tracked = set(subsystem_checks.keys()).union(_healing_registry.keys())
-    unmonitored = set(get_unmonitored_integrations())
+        # Process all tracked subsystems
+        all_tracked = set(subsystem_checks.keys()).union(_healing_registry.keys())
+        unmonitored = set(get_unmonitored_integrations())
 
-    for sub in all_tracked:
-        if sub in unmonitored:
+        registry_dirty = False
+
+        for sub in all_tracked:
+            if sub in unmonitored:
+                st = _healing_registry.setdefault(sub, {
+                    "attempts": 0,
+                    "max_attempts": MAX_HEALING_ATTEMPTS,
+                    "cooldown_sec": HEALING_COOLDOWN_SEC,
+                    "first_failed": None,
+                    "last_attempt_time": 0,
+                    "last_action": "Monitoring muted from Dealer Dashboard. Auto-recovery paused.",
+                    "status": "disabled"
+                })
+                st["status"] = "disabled"
+                st["attempts"] = 0
+                st["exhausted"] = False
+                st["last_action"] = "Monitoring muted from Dealer Dashboard. Auto-recovery paused."
+                continue
+
+            is_failing = subsystem_checks.get(sub, False)
             st = _healing_registry.setdefault(sub, {
                 "attempts": 0,
                 "max_attempts": MAX_HEALING_ATTEMPTS,
                 "cooldown_sec": HEALING_COOLDOWN_SEC,
                 "first_failed": None,
                 "last_attempt_time": 0,
-                "last_action": "Monitoring muted from Dealer Dashboard. Auto-recovery paused.",
-                "status": "disabled"
+                "last_action": "",
+                "status": "idle"
             })
-            st["status"] = "disabled"
-            st["attempts"] = 0
-            st["exhausted"] = False
-            st["last_action"] = "Monitoring muted from Dealer Dashboard. Auto-recovery paused."
-            continue
 
-        is_failing = subsystem_checks.get(sub, False)
-        st = _healing_registry.setdefault(sub, {
-            "attempts": 0,
-            "max_attempts": MAX_HEALING_ATTEMPTS,
-            "cooldown_sec": HEALING_COOLDOWN_SEC,
-            "first_failed": None,
-            "last_attempt_time": 0,
-            "last_action": "",
-            "status": "idle"
-        })
-
-        if is_failing:
-            if not st.get("first_failed"):
-                st["first_failed"] = now_iso
-            
-            curr_attempts = st.get("attempts", 0)
-            if st.get("exhausted") or curr_attempts >= MAX_HEALING_ATTEMPTS:
-                # Per user directive: stop and notify, do not retry to self heal again or restart the counter.
-                st["exhausted"] = True
-                st["status"] = "exhausted"
-                if not st.get("notified"):
-                    notify_ha_self_healing_exhausted(sub, curr_attempts or MAX_HEALING_ATTEMPTS)
-                    st["notified"] = True
-                    st["last_action"] = f"Self-healing halted after {curr_attempts or MAX_HEALING_ATTEMPTS} failed attempts (Notified). Counter locked until gateway/add-on restart."
-                    log(f"[!] [Self-Healing Engine] {sub} recovery attempts exhausted ({curr_attempts or MAX_HEALING_ATTEMPTS}/{MAX_HEALING_ATTEMPTS} failed). Self-healing halted and notified. Will not retry until gateway or add-on restart.")
-            else:
-                time_since_last = now_ts - st.get("last_attempt_time", 0)
-                if time_since_last >= HEALING_COOLDOWN_SEC or curr_attempts == 0:
-                    st["attempts"] = curr_attempts + 1
-                    st["last_attempt_time"] = now_ts
-                    action_result = execute_subsystem_remediation(sub, tech_data, opts, st["attempts"])
-                    st["last_action"] = action_result
-                    log(f"[✓] [Self-Healing Engine] Remediating {sub} (Attempt {st['attempts']}/{MAX_HEALING_ATTEMPTS}): {action_result}")
-                    if st["attempts"] >= MAX_HEALING_ATTEMPTS:
-                        # Reached 5 attempts: immediately stop and notify
-                        st["status"] = "exhausted"
-                        st["exhausted"] = True
-                        notify_ha_self_healing_exhausted(sub, st["attempts"])
+            if is_failing:
+                if not st.get("first_failed"):
+                    st["first_failed"] = now_iso
+                    registry_dirty = True
+                
+                curr_attempts = st.get("attempts", 0)
+                if st.get("exhausted") or curr_attempts >= MAX_HEALING_ATTEMPTS:
+                    # Per user directive: stop and notify, halt HA Core background retries, lock counter
+                    st["exhausted"] = True
+                    st["status"] = "exhausted"
+                    if not st.get("notified"):
+                        notify_ha_self_healing_exhausted(sub, curr_attempts or MAX_HEALING_ATTEMPTS)
+                        halt_ha_core_retries_for_exhausted_subsystem(sub, tech_data)
                         st["notified"] = True
-                        st["last_action"] = f"Self-healing halted after {st['attempts']} failed attempts (Notified). Counter locked until gateway/add-on restart."
-                        log(f"[!] [Self-Healing Engine] {sub} reached {MAX_HEALING_ATTEMPTS}/{MAX_HEALING_ATTEMPTS} attempts and failed. Self-healing permanently stopped and notified.")
+                        st["last_action"] = f"Self-healing halted after {curr_attempts or MAX_HEALING_ATTEMPTS} failed attempts. Core background retries halted. Counter locked."
+                        log(f"[!] [Self-Healing Engine] {sub} recovery attempts exhausted ({curr_attempts or MAX_HEALING_ATTEMPTS}/{MAX_HEALING_ATTEMPTS} failed). Core background retries halted.")
+                        registry_dirty = True
+                else:
+                    time_since_last = now_ts - st.get("last_attempt_time", 0)
+                    if time_since_last >= HEALING_COOLDOWN_SEC or curr_attempts == 0:
+                        st["attempts"] = curr_attempts + 1
+                        st["last_attempt_time"] = now_ts
+                        action_result = execute_subsystem_remediation(sub, tech_data, opts, st["attempts"])
+                        st["last_action"] = action_result
+                        log(f"[✓] [Self-Healing Engine] Remediating {sub} (Attempt {st['attempts']}/{MAX_HEALING_ATTEMPTS}): {action_result}")
+                        registry_dirty = True
+                        if st["attempts"] >= MAX_HEALING_ATTEMPTS:
+                            # Reached 5 attempts: immediately stop, unload core retries, and notify
+                            st["status"] = "exhausted"
+                            st["exhausted"] = True
+                            notify_ha_self_healing_exhausted(sub, st["attempts"])
+                            halt_ha_core_retries_for_exhausted_subsystem(sub, tech_data)
+                            st["notified"] = True
+                            st["last_action"] = f"Self-healing halted after {st['attempts']} failed attempts. Core background retries halted. Counter locked."
+                            log(f"[!] [Self-Healing Engine] {sub} reached {MAX_HEALING_ATTEMPTS}/{MAX_HEALING_ATTEMPTS} attempts and failed. Self-healing permanently stopped and HA Core retries unloaded.")
+                        else:
+                            st["status"] = "healing"
                     else:
                         st["status"] = "healing"
-                else:
-                    st["status"] = "healing"
-                    remaining = int(HEALING_COOLDOWN_SEC - time_since_last)
-                    log(f"[Self-Healing Engine] {sub} in cooldown ({remaining}s remaining) before attempt {curr_attempts + 1}/{MAX_HEALING_ATTEMPTS}")
-        else:
-            # Subsystem is healthy
-            if st.get("exhausted") or st.get("attempts", 0) >= MAX_HEALING_ATTEMPTS:
-                # Per user directive: do not retry to self heal again or restart the counter. Only restart after gateway or addon restarts.
-                st["status"] = "exhausted"
+                        remaining = int(HEALING_COOLDOWN_SEC - time_since_last)
+                        log(f"[Self-Healing Engine] {sub} in cooldown ({remaining}s remaining) before attempt {curr_attempts + 1}/{MAX_HEALING_ATTEMPTS}")
             else:
-                # Recovered autonomously BEFORE exhausting 5 attempts (e.g. at attempt 1 or 2)
-                prev_attempts = st.get("attempts", 0)
-                if prev_attempts > 0 or st.get("status") == "healing":
-                    recovery_event = {
-                        "subsystem": sub,
-                        "recovered_at": now_iso,
-                        "attempts_taken": prev_attempts,
-                        "final_action": st.get("last_action", "Auto-remediation successful")
-                    }
-                    _recent_recoveries.insert(0, recovery_event)
-                    del _recent_recoveries[15:]
-                    log(f"[✓] [Self-Healing Engine] Subsystem '{sub}' recovered autonomously after {prev_attempts} attempt(s)! Final action: {st.get('last_action')}")
-                    st["attempts"] = 0
-                    st["status"] = "idle"
-                    st["first_failed"] = None
-                    st["last_attempt_time"] = 0
-                    st["last_action"] = f"Recovered autonomously after {prev_attempts} attempts"
+                # Subsystem is currently reporting healthy
+                if st.get("exhausted") or st.get("attempts", 0) >= MAX_HEALING_ATTEMPTS:
+                    # Strictly locked: do not reset exhausted status on flapping
+                    st["status"] = "exhausted"
+                    st["exhausted"] = True
+                else:
+                    # Subsystem had previous attempts and is currently healthy
+                    prev_attempts = st.get("attempts", 0)
+                    if prev_attempts > 0 or st.get("status") in ["healing", "stabilizing"]:
+                        last_attempt = st.get("last_attempt_time", 0)
+                        healthy_duration = now_ts - last_attempt
+                        # Flapping suppression: Require sustained healthy state across STABILIZATION_SEC (300s)
+                        if healthy_duration >= STABILIZATION_SEC:
+                            recovery_event = {
+                                "subsystem": sub,
+                                "recovered_at": now_iso,
+                                "attempts_taken": prev_attempts,
+                                "final_action": st.get("last_action", "Auto-remediation successful")
+                            }
+                            _recent_recoveries.insert(0, recovery_event)
+                            del _recent_recoveries[15:]
+                            log(f"[✓] [Self-Healing Engine] Subsystem '{sub}' stabilized and recovered after {prev_attempts} attempt(s) ({int(healthy_duration)}s sustained healthy)!")
+                            st["attempts"] = 0
+                            st["status"] = "idle"
+                            st["first_failed"] = None
+                            st["last_attempt_time"] = 0
+                            st["last_action"] = f"Recovered autonomously after {prev_attempts} attempts"
+                            registry_dirty = True
+                        else:
+                            remaining_stab = int(STABILIZATION_SEC - healthy_duration)
+                            st["status"] = "stabilizing"
+                            st["last_action"] = f"Stabilizing ({remaining_stab}s remaining) before clearing attempt counter"
 
-    # Embed self_healing metadata directly into tech_data
-    is_healing_active = any(s.get("status") == "healing" for s in _healing_registry.values())
-    tech_data["self_healing"] = {
-        "active": is_healing_active,
-        "max_attempts": MAX_HEALING_ATTEMPTS,
-        "cooldown_sec": HEALING_COOLDOWN_SEC,
-        "subsystems": _healing_registry,
-        "recent_recoveries": _recent_recoveries
-    }
+        if registry_dirty:
+            save_healing_registry()
 
-    # Annotate individual subsystem dicts
-    for sub, info in tech_data.items():
-        if isinstance(info, dict) and sub in _healing_registry:
-            info["self_healing"] = _healing_registry[sub]
+        # Embed self_healing metadata directly into tech_data
+        is_healing_active = any(s.get("status") == "healing" for s in _healing_registry.values())
+        tech_data["self_healing"] = {
+            "active": is_healing_active,
+            "max_attempts": MAX_HEALING_ATTEMPTS,
+            "cooldown_sec": HEALING_COOLDOWN_SEC,
+            "subsystems": _healing_registry,
+            "recent_recoveries": _recent_recoveries
+        }
 
-    return tech_data
+        # Annotate individual subsystem dicts
+        for sub, info in tech_data.items():
+            if isinstance(info, dict) and sub in _healing_registry:
+                info["self_healing"] = _healing_registry[sub]
+
+        return tech_data
 
 def update_ha_state(entity_id, state, attributes):
     """Publish sensor states directly to Home Assistant Core via Supervisor API."""
@@ -2050,6 +2154,7 @@ def main():
     ensure_external_url(opts)
     ensure_supervisor_toggles()
     auto_heal_ip_bans_and_proxy()
+    load_healing_registry()
 
     # Start High-Speed MQTT Telemetry Engine (publishes every 30-60s)
     try:

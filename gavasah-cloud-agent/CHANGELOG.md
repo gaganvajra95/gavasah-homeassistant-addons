@@ -5,6 +5,16 @@ All notable changes to the **Gavasah Cloud Agent** Home Assistant Add-on will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-10-22
+
+### Fixed
+- **Exhausted Self-Healing HA Core Retry Unload**: When a subsystem reaches its strict 5-attempt limit, automatically unloads the failing config entries via HA Core REST API (`POST /core/api/config/config_entries/entry/{id}/unload`). This terminates Home Assistant Core's native background retry loop (`setup_retry`), completely halting infinite background socket connection attempts and eliminating error log storms.
+- **Flapping Recovery Suppression & 300s Stabilization Window**: Introduced a 300-second probation period for recovering subsystems. Subsystems temporarily transitioning through setup or brief socket handshakes will no longer prematurely wipe their attempt counters to 0, preventing infinite self-healing retry restart loops.
+- **Persistent Self-Healing State Cache**: Persisted `_healing_registry` to `/data/self_healing_registry.json`. Exhausted subsystems remain permanently locked across add-on reboots, supervisor container recycles, and gateway power cycles.
+- **Thread-Safe Telemetry Concurrency**: Added a dedicated mutex lock (`_healing_lock`) across `run_autonomous_self_healing_engine`, preventing race conditions between the high-speed MQTT telemetry worker and the main heartbeat loop.
+
+---
+
 ## [1.3.0] - 2026-10-20
 
 ### Added
