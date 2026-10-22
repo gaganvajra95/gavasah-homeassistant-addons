@@ -5,6 +5,13 @@ All notable changes to the **Gavasah Cloud Agent** Home Assistant Add-on will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.4] - 2026-10-22
+
+### Added
+- **300-Second Stabilization Soak Delay for Auto-Reset**: When a previously failed or exhausted subsystem recovers to a healthy state, the edge self-healing engine enforces a continuous 300-second stabilization window (`STABILIZATION_SEC = 300`) before clearing the `exhausted` flag and resetting the attempt counter to 0, preventing rapid counter resets during transient or flapping network conditions.
+
+---
+
 ## [1.3.3] - 2026-10-22
 
 ### Fixed

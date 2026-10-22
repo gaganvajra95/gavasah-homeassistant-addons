@@ -40,7 +40,7 @@ def get_public_key():
             log(f"Notice: Could not read {SSH_PUBKEY_PATH}: {e}")
     return ""
 
-ADDON_VERSION = "1.3.3"
+ADDON_VERSION = "1.3.4"
 MAX_HEALING_ATTEMPTS = 5
 HEALING_COOLDOWN_SEC = 60
 STABILIZATION_SEC = 300
@@ -530,23 +530,38 @@ def run_autonomous_self_healing_engine(tech_data, opts):
                 prev_attempts = st.get("attempts", 0)
                 was_exhausted = st.get("exhausted", False)
                 if prev_attempts > 0 or was_exhausted or st.get("status") in ["healing", "stabilizing", "exhausted"]:
-                    recovery_event = {
-                        "subsystem": sub,
-                        "recovered_at": now_iso,
-                        "attempts_taken": prev_attempts,
-                        "final_action": st.get("last_action", "Subsystem healthy & operational")
-                    }
-                    _recent_recoveries.insert(0, recovery_event)
-                    del _recent_recoveries[15:]
-                    log(f"[✓] [Self-Healing Engine] Subsystem '{sub}' is healthy and operational! Auto-resetting attempt counter and exhausted status.")
-                    st["attempts"] = 0
-                    st["exhausted"] = False
-                    st["status"] = "idle"
-                    st["first_failed"] = None
-                    st["last_attempt_time"] = 0
-                    st["notified"] = False
-                    st["last_action"] = f"Recovered and operational"
-                    registry_dirty = True
+                    # Auto-Reset on Healthy State: 300-second stabilization delay before clearing attempts/exhausted
+                    if st.get("status") != "stabilizing":
+                        st["status"] = "stabilizing"
+                        st["stabilization_start"] = now_ts
+                        st["last_action"] = f"Healthy. Verifying stability for {STABILIZATION_SEC}s before counter auto-reset."
+                        log(f"[Self-Healing Engine] Subsystem '{sub}' is healthy! Soak timer active ({STABILIZATION_SEC}s) before resetting counter.")
+                        registry_dirty = True
+                    else:
+                        stab_start = st.get("stabilization_start") or now_ts
+                        elapsed = now_ts - stab_start
+                        if elapsed >= STABILIZATION_SEC:
+                            recovery_event = {
+                                "subsystem": sub,
+                                "recovered_at": now_iso,
+                                "attempts_taken": prev_attempts,
+                                "final_action": st.get("last_action", "Subsystem healthy & operational")
+                            }
+                            _recent_recoveries.insert(0, recovery_event)
+                            del _recent_recoveries[15:]
+                            log(f"[✓] [Self-Healing Engine] Subsystem '{sub}' has remained continuously healthy for {int(elapsed)}s (>= {STABILIZATION_SEC}s)! Auto-resetting attempt counter and exhausted status.")
+                            st["attempts"] = 0
+                            st["exhausted"] = False
+                            st["status"] = "idle"
+                            st["first_failed"] = None
+                            st["last_attempt_time"] = 0
+                            st["stabilization_start"] = None
+                            st["notified"] = False
+                            st["last_action"] = f"Recovered and operational (verified {int(elapsed)}s continuous health)"
+                            registry_dirty = True
+                        else:
+                            remaining = int(STABILIZATION_SEC - elapsed)
+                            st["last_action"] = f"Healthy. Stabilizing ({remaining}s remaining before counter auto-reset)."
 
         if registry_dirty:
             save_healing_registry()
