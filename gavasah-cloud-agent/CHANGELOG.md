@@ -5,6 +5,16 @@ All notable changes to the **Gavasah Cloud Agent** Home Assistant Add-on will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.3] - 2026-10-22
+
+### Fixed
+- **Add-on Self-Update API 404 Resolution**: Dynamically discovers the add-on slug from `GET /addons/self/info` and calls `POST /addons/{slug}/update` (with core `update.install` service fallback) instead of nonexistent `/addons/self/update`. Completely eliminates the `update_addon: HTTP Error 404: Not Found` error.
+- **Edge Self-Healing Decoupling & Reboot Reset**: Decoupled edge self-healing from cloud AI Copilot autonomy level. On add-on startup or reboot, automatically resets `attempts = 0` and `exhausted = False` for all unmuted integrations to allow a clean retry cycle.
+- **Automatic Recovery Reset Without Manual Intervention**: When an integration recovers and is verified healthy, automatically clears `exhausted` and resets `attempts = 0` without requiring an integrator to manually reset the state.
+- **Autonomous Boot Slot Recovery**: Gateways running in Slot B attempt autonomous recovery back to Slot A up to 5 attempts; if all 5 attempts fail, recovery halts and runs in Slot B as designated recovery mode.
+
+---
+
 ## [1.3.2] - 2026-10-22
 
 ### Changed

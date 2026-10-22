@@ -40,7 +40,7 @@ def get_public_key():
             log(f"Notice: Could not read {SSH_PUBKEY_PATH}: {e}")
     return ""
 
-ADDON_VERSION = "1.3.1"
+ADDON_VERSION = "1.3.3"
 MAX_HEALING_ATTEMPTS = 5
 HEALING_COOLDOWN_SEC = 60
 STABILIZATION_SEC = 300
@@ -71,6 +71,25 @@ def load_healing_registry():
                     log(f"[Self-Healing Engine] Loaded persistent healing registry from {SELF_HEALING_CACHE_FILE}")
     except Exception as e:
         log(f"Notice: Could not load {SELF_HEALING_CACHE_FILE}: {e}")
+
+    # On add-on start/reboot: reset attempts to 0 and exhausted to False for all unmuted integrations
+    unmon = set(get_unmonitored_integrations())
+    with _healing_lock:
+        for sub, st in _healing_registry.items():
+            if not isinstance(st, dict):
+                continue
+            if sub in unmon:
+                st["status"] = "disabled"
+                st["attempts"] = 0
+                st["exhausted"] = False
+                st["last_action"] = "Monitoring muted from Dealer Dashboard. Auto-recovery paused."
+            else:
+                st["attempts"] = 0
+                st["exhausted"] = False
+                if st.get("status") in ["exhausted", "escalated"]:
+                    st["status"] = "idle"
+                st["notified"] = False
+        save_healing_registry()
 
 def save_healing_registry():
     try:
@@ -508,37 +527,26 @@ def run_autonomous_self_healing_engine(tech_data, opts):
                         log(f"[Self-Healing Engine] {sub} in cooldown ({remaining}s remaining) before attempt {curr_attempts + 1}/{MAX_HEALING_ATTEMPTS}")
             else:
                 # Subsystem is currently reporting healthy
-                if st.get("exhausted") or st.get("attempts", 0) >= MAX_HEALING_ATTEMPTS:
-                    # Strictly locked: do not reset exhausted status on flapping
-                    st["status"] = "exhausted"
-                    st["exhausted"] = True
-                else:
-                    # Subsystem had previous attempts and is currently healthy
-                    prev_attempts = st.get("attempts", 0)
-                    if prev_attempts > 0 or st.get("status") in ["healing", "stabilizing"]:
-                        last_attempt = st.get("last_attempt_time", 0)
-                        healthy_duration = now_ts - last_attempt
-                        # Flapping suppression: Require sustained healthy state across STABILIZATION_SEC (300s)
-                        if healthy_duration >= STABILIZATION_SEC:
-                            recovery_event = {
-                                "subsystem": sub,
-                                "recovered_at": now_iso,
-                                "attempts_taken": prev_attempts,
-                                "final_action": st.get("last_action", "Auto-remediation successful")
-                            }
-                            _recent_recoveries.insert(0, recovery_event)
-                            del _recent_recoveries[15:]
-                            log(f"[✓] [Self-Healing Engine] Subsystem '{sub}' stabilized and recovered after {prev_attempts} attempt(s) ({int(healthy_duration)}s sustained healthy)!")
-                            st["attempts"] = 0
-                            st["status"] = "idle"
-                            st["first_failed"] = None
-                            st["last_attempt_time"] = 0
-                            st["last_action"] = f"Recovered autonomously after {prev_attempts} attempts"
-                            registry_dirty = True
-                        else:
-                            remaining_stab = int(STABILIZATION_SEC - healthy_duration)
-                            st["status"] = "stabilizing"
-                            st["last_action"] = f"Stabilizing ({remaining_stab}s remaining) before clearing attempt counter"
+                prev_attempts = st.get("attempts", 0)
+                was_exhausted = st.get("exhausted", False)
+                if prev_attempts > 0 or was_exhausted or st.get("status") in ["healing", "stabilizing", "exhausted"]:
+                    recovery_event = {
+                        "subsystem": sub,
+                        "recovered_at": now_iso,
+                        "attempts_taken": prev_attempts,
+                        "final_action": st.get("last_action", "Subsystem healthy & operational")
+                    }
+                    _recent_recoveries.insert(0, recovery_event)
+                    del _recent_recoveries[15:]
+                    log(f"[✓] [Self-Healing Engine] Subsystem '{sub}' is healthy and operational! Auto-resetting attempt counter and exhausted status.")
+                    st["attempts"] = 0
+                    st["exhausted"] = False
+                    st["status"] = "idle"
+                    st["first_failed"] = None
+                    st["last_attempt_time"] = 0
+                    st["notified"] = False
+                    st["last_action"] = f"Recovered and operational"
+                    registry_dirty = True
 
         if registry_dirty:
             save_healing_registry()
@@ -955,13 +963,25 @@ def handle_remote_command(hub_host, opts, command):
                 log("[REMOTE_COMMAND] Reloading Supervisor Add-on Store to fetch newest release index...")
                 supervisor_post("store/reload", {}, timeout=20)
                 time.sleep(3)
-                log(f"[REMOTE_COMMAND] Initiating add-on self-update to latest release...")
-                ok, res = supervisor_post("addons/self/update", {}, timeout=90)
+                log("[REMOTE_COMMAND] Discovering add-on slug for self-update...")
+                self_info = supervisor_get("addons/self/info")
+                slug = None
+                if isinstance(self_info, dict):
+                    slug = self_info.get("slug")
+                if not slug:
+                    slug = "c03260a9_gavasah-cloud-agent"
+                log(f"[REMOTE_COMMAND] Initiating add-on update for slug '{slug}'...")
+                ok, res = supervisor_post(f"addons/{slug}/update", {}, timeout=120)
+                if not ok:
+                    # Fallback to Home Assistant Core update entity
+                    log(f"[REMOTE_COMMAND] /addons/{slug}/update returned: {res}. Falling back to core update service...")
+                    ok, res = supervisor_post("core/api/services/update/install", {"entity_id": "update.gavasah_cloud_agent"}, timeout=120)
+
                 if ok:
                     clear_last_command_error()
-                    log("[REMOTE_COMMAND] Add-on self-update successfully initiated.")
+                    log("[REMOTE_COMMAND] Add-on update successfully initiated.")
                 else:
-                    err_msg = res.get("message") or res.get("error") or "Add-on update command failed"
+                    err_msg = (res.get("message") if isinstance(res, dict) else str(res)) or "Add-on update command failed"
                     record_last_command_error(action, err_msg)
                     log(f"[REMOTE_COMMAND] Add-on update error: {err_msg}")
             except Exception as e:
@@ -975,7 +995,10 @@ def handle_remote_command(hub_host, opts, command):
                 supervisor_post("store/reload", {}, timeout=20)
                 time.sleep(2)
                 log("[REMOTE_COMMAND] Updating Gavasah Cloud Agent add-on...")
-                supervisor_post("addons/self/update", {}, timeout=90)
+                self_info = supervisor_get("addons/self/info")
+                slug = self_info.get("slug") if isinstance(self_info, dict) else None
+                slug = slug or "c03260a9_gavasah-cloud-agent"
+                supervisor_post(f"addons/{slug}/update", {}, timeout=120)
                 time.sleep(2)
                 log("[REMOTE_COMMAND] Updating Home Assistant Core...")
                 supervisor_post("core/update", {}, timeout=180)

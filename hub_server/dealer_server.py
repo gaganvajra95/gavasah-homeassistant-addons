@@ -50,6 +50,10 @@ DB_LOCK = threading.RLock()
 # In-memory synchronization caches
 REGISTERED_SSH_KEYS = set()
 SYNCED_CADDY_ROUTES = {}
+SLOT_RECOVERY_TRACKER = {}
+PREV_HEARTBEAT_STATUS = {}
+NOTIFIED_FAILED_RECOVERY = set()
+WATCHDOG_INITIALIZED = False
 
 # ==============================================================================
 # Cryptographic Password & Session Helpers
@@ -3992,7 +3996,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <span class="nav-item-icon">📋</span>
                         <span>Client Approvals</span>
                     </div>
-                    <span class="nav-item-badge" id="badge-approvals-count" style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); display: none;">0</span>
+                    <span class="nav-item-badge" id="badge-approvals-count" style="background: rgba(100, 116, 139, 0.2); color: #94a3b8; border: 1px solid rgba(100, 116, 139, 0.3);">0</span>
                 </div>
 
                 <div class="nav-item" id="nav-mqtt" onclick="switchTab('mqtt')" style="display: none;">
@@ -4132,7 +4136,6 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <tr>
                                     <th>Organization / Network Partner</th>
                                     <th>Portal Username</th>
-                                    <th style="min-width: 270px;">Assigned Gavasah Gateways & Clients</th>
                                     <th>Online / Lost Status</th>
                                     <th>Contact Details</th>
                                     <th>Account Status</th>
@@ -5871,7 +5874,8 @@ HTML_PAGE = """<!DOCTYPE html>
                 loadWhatsAppStatus();
                 loadAdminWhatsAppNumber();
                 applyDealerBranding(currentUser.branding);
-                switchTab('overview');
+                const allowedTabsMfg = ['overview', 'dealers', 'integrators', 'fleet', 'approvals', 'mqtt', 'branding', 'alerts', 'copilot', 'account'];
+                switchTab(getInitialTab(allowedTabsMfg, 'overview'));
                 fetchDealers();
                 fetchIntegrators();
                 fetchFleet();
@@ -5919,7 +5923,8 @@ HTML_PAGE = """<!DOCTYPE html>
                     ovAddBtn.onclick = openCreateIntegratorModal;
                 }
 
-                switchTab('overview');
+                const allowedTabsDlr = ['overview', 'integrators', 'fleet', 'branding'];
+                switchTab(getInitialTab(allowedTabsDlr, 'overview'));
                 fetchIntegrators();
                 fetchFleet();
                 populatePartnerFilter();
@@ -6055,13 +6060,39 @@ HTML_PAGE = """<!DOCTYPE html>
             }
         }
 
+        function getInitialTab(allowedTabs, defaultTab = 'overview') {
+            try {
+                const hashTab = (window.location.hash || '').replace('#', '').trim();
+                if (hashTab && allowedTabs.includes(hashTab)) return hashTab;
+                const savedTab = (localStorage.getItem('gavasah_active_tab') || '').trim();
+                if (savedTab && allowedTabs.includes(savedTab)) return savedTab;
+            } catch (e) {}
+            return defaultTab;
+        }
+
+        window.addEventListener('hashchange', () => {
+            if (!currentUser) return;
+            const h = (window.location.hash || '').replace('#', '').trim();
+            if (h && document.getElementById('tab-' + h)) {
+                switchTab(h);
+            }
+        });
+
         // ======================================================================
         // TABS NAVIGATION
         // ======================================================================
         function switchTab(tabId) {
-        if (tabId === 'tab-alerts') loadSmtpConfig();
+            if (tabId === 'tab-alerts' || tabId === 'alerts') loadSmtpConfig();
             if (window.innerWidth <= 900) closeSidebarMobile();
             activeTab = tabId;
+
+            // Persist tab selection to localStorage and URL hash across refreshes
+            try {
+                localStorage.setItem('gavasah_active_tab', tabId);
+                if (window.history && window.history.replaceState) {
+                    window.history.replaceState(null, '', '#' + tabId);
+                }
+            } catch (e) {}
 
             // Update nav styling
             document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
@@ -6744,11 +6775,16 @@ Automated remediation successful. Normal operations restored.`;
 
             const currentCount = list.length;
             if (badgeCount) {
+                badgeCount.innerText = currentCount;
+                badgeCount.style.display = 'inline-block';
                 if (currentCount > 0) {
-                    badgeCount.innerText = currentCount;
-                    badgeCount.style.display = 'inline-block';
+                    badgeCount.style.background = 'rgba(245, 158, 11, 0.2)';
+                    badgeCount.style.color = '#fbbf24';
+                    badgeCount.style.border = '1px solid rgba(245, 158, 11, 0.4)';
                 } else {
-                    badgeCount.style.display = 'none';
+                    badgeCount.style.background = 'rgba(100, 116, 139, 0.2)';
+                    badgeCount.style.color = '#94a3b8';
+                    badgeCount.style.border = '1px solid rgba(100, 116, 139, 0.3)';
                 }
             }
             if (ovApprovals) {
@@ -7055,16 +7091,6 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                 ${d.is_manufacturer ? `<span class="badge-role" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); font-size: 9.5px; padding: 1px 5px; margin-top: 3px; display: inline-block;">HQ MASTER ADMIN</span>` : ''}
                             </td>
                             <td>
-                                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-                                    <span class="badge-role" style="${d.is_manufacturer ? 'background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);' : 'background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3);'}">
-                                        ${totalC} Gateway${totalC !== 1 ? 's' : ''} / ${d.integrator_count || 0} Integrator${(d.integrator_count || 0) !== 1 ? 's' : ''}
-                                    </span>
-                                </div>
-                                <div class="ov-clients-container">
-                                    ${clientChipsHtml}
-                                </div>
-                            </td>
-                            <td>
                                 <div style="font-weight: 600; font-size: 13px;">
                                     <span style="color: #10b981;">${onlineC} Online</span> / 
                                     <span style="color: ${lostC > 0 ? '#ef4444' : '#64748b'};">${lostC} Lost</span>
@@ -7087,7 +7113,7 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                             </td>
                         </tr>
                     `;
-                }).join('') || `<tr><td colspan="7" style="text-align: center; color: #64748b; padding: 24px;">No authorized organizations or dealers registered yet.</td></tr>`;
+                }).join('') || `<tr><td colspan="6" style="text-align: center; color: #64748b; padding: 24px;">No authorized organizations or dealers registered yet.</td></tr>`;
             }
 
             // Dedicated Dealers Directory Table (With Password Reveal & Edit for Manufacturer)
@@ -8575,7 +8601,7 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                     </span>
                                     <span class="v-pill" style="background: rgba(34, 211, 238, 0.12); border: 1px solid rgba(34, 211, 238, 0.3); border-radius: 3px; padding: 1px 4px; color: #22d3ee;" title="Gavasah Cloud Agent: v${escapeHtml(sys.addon_version || '1.1.x')} ${sys.addon_latest_version ? `(Latest: v${escapeHtml(sys.addon_latest_version)})` : ''}">
                                         Agent: v${escapeHtml(sys.addon_version || '1.1.x')}
-                                        ${currentUser.role === 'manufacturer' && (sys.addon_version !== '1.2.0' || sys.addon_update_available) ? `<span style="color: #22d3ee; cursor: pointer; font-weight: bold; margin-left: 2px;" onclick="triggerClientUpdate('${c.client_id}', 'update_addon', '${escapeHtml(c.name)}')" title="Update Agent to v1.2.0">⬆️</span>` : ''}
+                                        ${currentUser.role === 'manufacturer' && (sys.addon_version !== '1.3.3' || sys.addon_update_available) ? `<span style="color: #22d3ee; cursor: pointer; font-weight: bold; margin-left: 2px;" onclick="triggerClientUpdate('${c.client_id}', 'update_addon', '${escapeHtml(c.name)}')" title="Update Agent to v1.3.3">⬆️</span>` : ''}
                                     </span>
                                 </div>
                                 ${sys.last_error ? `
@@ -8724,7 +8750,7 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
             const titles = {
                 'update_core': 'Home Assistant Core',
                 'update_supervisor': 'Home Assistant Supervisor',
-                'update_addon': 'Gavasah Cloud Agent Add-on (v1.2.0)',
+                'update_addon': 'Gavasah Cloud Agent Add-on (v1.3.3)',
                 'update_all': 'Full System (Core + Supervisor + Add-on)'
             };
             const desc = titles[updateType] || updateType;
@@ -8784,7 +8810,7 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
 
         async function triggerFleetBatchUpdate(updateType) {
             const titles = {
-                'update_addon': 'Gavasah Cloud Agent Add-on (v1.2.0)',
+                'update_addon': 'Gavasah Cloud Agent Add-on (v1.3.3)',
                 'update_core': 'Home Assistant Core',
                 'update_supervisor': 'Home Assistant Supervisor',
                 'update_all': 'Master Full Fleet Update (All Subsystems)'
@@ -10983,8 +11009,10 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
         if content_length > 10 * 1024 * 1024:
             return ''
         try:
-            return self.rfile.read(content_length).decode('utf-8', errors='replace')
-        except (socket.timeout, ConnectionResetError, BrokenPipeError, OSError):
+            data = self.rfile.read(content_length)
+            return data.decode('utf-8', errors='replace')
+        except Exception as e:
+            print(f"[READ_BODY_ERROR] content_length={content_length} error={type(e).__name__}: {e}", flush=True)
             return ''
 
     def get_authenticated_user(self):
@@ -13166,10 +13194,9 @@ PersistentKeepalive = 25
             while ssh_port in existing_ssh_ports:
                 ssh_port += 1
 
-            is_mfg = (user['role'] == 'manufacturer')
-            approval_status = 'approved' if is_mfg else 'pending'
-            remote_requested = bool(body.get('remote_enabled', True))
-            effective_remote = remote_requested if is_mfg else False
+            # All newly created clients require explicit approval by Manufacturer in Client Approvals tab
+            approval_status = 'pending'
+            effective_remote = False
 
             new_client = {
                 'client_id': clean_id,
@@ -13704,6 +13731,42 @@ PersistentKeepalive = 25
                 unmon_list = json.loads(unmon_val) if isinstance(unmon_val, str) else (unmon_val or [])
             except Exception:
                 unmon_list = []
+
+            # Autonomous Boot Slot Recovery & Slot B Identification (§3.D.5)
+            boot_slot = str(sys_dict.get('boot_slot') or '').upper()
+            if boot_slot == 'B':
+                sys_dict['is_recovery_mode'] = True
+                sys_dict['slot_b_status'] = 'recovery (active)'
+                slot_attempts = SLOT_RECOVERY_TRACKER.get(client_id, 0)
+                if slot_attempts < 5:
+                    slot_attempts += 1
+                    SLOT_RECOVERY_TRACKER[client_id] = slot_attempts
+                    if not pending_cmd:
+                        pending_cmd = json.dumps({
+                            'action': 'switch_boot_slot',
+                            'boot_slot': 'A',
+                            'attempt': slot_attempts,
+                            'queued_at': now,
+                            'queued_by': 'autonomous_slot_recovery'
+                        })
+                        print(f"[SLOT RECOVERY] Client '{client_id}' is running in Slot B! Queuing switch_boot_slot to Slot A (Attempt {slot_attempts}/5)...", flush=True)
+                else:
+                    sys_dict['slot_recovery_exhausted'] = True
+                    sys_dict['system_health'] = 'recovery_halted'
+                    alert_key = f"slot_b_exhausted_{client_id}"
+                    slot_msg = (
+                        "🚨 *GAVASAH LUXURY AUTOMATION*\n"
+                        "🔴 *CRITICAL ALERT: Boot Slot Recovery Halted*\n\n"
+                        f"• *Site:* {client.get('name', client_id)} (`{client_id}`)\n"
+                        "• *Status:* 🛑 5/5 SLOT RECOVERY ATTEMPTS FAILED\n"
+                        "• *Active Slot:* Slot B (Recovery Mode)\n\n"
+                        "⚠️ *Notice:* System failed to boot from Slot A after 5 attempts. Autonomous slot recovery is halted; running in Slot B recovery mode."
+                    )
+                    send_whatsapp_alert_to_contacts(client_id, slot_msg, alert_key=alert_key)
+            elif boot_slot == 'A':
+                if client_id in SLOT_RECOVERY_TRACKER:
+                    SLOT_RECOVERY_TRACKER[client_id] = 0
+                sys_dict['is_recovery_mode'] = False
 
             # Autonomous Fleet Auto-Update Engine (§3.D.4)
             auto_up_enabled = int(client.get('auto_update') if client.get('auto_update') is not None else 1)
@@ -15453,9 +15516,90 @@ def get_admin_whatsapp_number():
         pass
     return admin_phone
 
-def send_whatsapp_alert_to_contacts(client_id, message):
+def init_alert_ledger_table():
+    try:
+        with DB_LOCK:
+            conn = get_db_connection()
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS alert_ledger (
+                    client_id TEXT NOT NULL,
+                    alert_key TEXT NOT NULL,
+                    recipient TEXT NOT NULL,
+                    sent_at INTEGER NOT NULL,
+                    PRIMARY KEY (client_id, alert_key, recipient)
+                )
+            """)
+            conn.commit()
+            conn.close()
+    except Exception as e:
+        print(f"[!] init_alert_ledger_table error: {e}", flush=True)
+
+def can_send_alert(client_id: str, alert_key: str, recipient: str, interval_sec: int = 86400) -> bool:
+    """Checks if an alert of this type has already been sent to this recipient within interval_sec (default 24 hours)."""
+    if not alert_key:
+        return True
+    now = int(time.time())
+    try:
+        with DB_LOCK:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT sent_at FROM alert_ledger WHERE client_id = ? AND alert_key = ? AND recipient = ?",
+                (client_id, alert_key, recipient)
+            )
+            row = cur.fetchone()
+            conn.close()
+        if row and row['sent_at']:
+            if (now - int(row['sent_at'])) < interval_sec:
+                return False
+    except Exception as e:
+        print(f"[!] can_send_alert error: {e}", flush=True)
+    return True
+
+def record_alert_sent(client_id: str, alert_key: str, recipient: str):
+    if not alert_key:
+        return
+    now = int(time.time())
+    try:
+        with DB_LOCK:
+            conn = get_db_connection()
+            conn.execute(
+                "INSERT OR REPLACE INTO alert_ledger (client_id, alert_key, recipient, sent_at) VALUES (?, ?, ?, ?)",
+                (client_id, alert_key, recipient, now)
+            )
+            conn.commit()
+            conn.close()
+    except Exception as e:
+        print(f"[!] record_alert_sent error: {e}", flush=True)
+
+def clear_alert_ledger(client_id: str, alert_key: str = None):
+    try:
+        with DB_LOCK:
+            conn = get_db_connection()
+            if alert_key:
+                conn.execute("DELETE FROM alert_ledger WHERE client_id = ? AND alert_key = ?", (client_id, alert_key))
+            else:
+                conn.execute("DELETE FROM alert_ledger WHERE client_id = ?", (client_id,))
+            conn.commit()
+            conn.close()
+    except Exception as e:
+        print(f"[!] clear_alert_ledger error: {e}", flush=True)
+
+def send_whatsapp_alert_to_contacts(client_id, message, alert_key='general', suppress_roles=None):
+    """
+    Sends WhatsApp alert to contacts with 24-hour rate limit ledger.
+    Suppression rules:
+    - If Integrator muted/disabled: suppress sending to Dealer and Manufacturer.
+    - If Dealer muted/disabled: suppress sending to Manufacturer.
+    """
+    init_alert_ledger_table()
+    suppress_roles = suppress_roles or []
     admin_num = get_admin_whatsapp_number()
-    recipients = set([admin_num])
+    recipients = []
+    
+    if 'manufacturer' not in suppress_roles and admin_num:
+        recipients.append(('manufacturer', admin_num))
+
     try:
         with DB_LOCK:
             conn = get_db_connection()
@@ -15465,32 +15609,38 @@ def send_whatsapp_alert_to_contacts(client_id, message):
             if cl_row:
                 did = cl_row['dealer_id']
                 iid = cl_row['integrator_id']
-                if iid:
+                if iid and 'integrator' not in suppress_roles:
                     cur.execute("SELECT phone FROM integrators WHERE id = ?", (iid,))
                     i_row = cur.fetchone()
                     if i_row and i_row['phone']:
-                        recipients.add(i_row['phone'].strip())
-                if did:
+                        recipients.append(('integrator', i_row['phone'].strip()))
+                if did and 'dealer' not in suppress_roles:
                     cur.execute("SELECT phone FROM dealers WHERE id = ?", (did,))
                     d_row = cur.fetchone()
                     if d_row and d_row['phone']:
-                        recipients.add(d_row['phone'].strip())
+                        recipients.append(('dealer', d_row['phone'].strip()))
             conn.close()
     except Exception as e:
-        print(f"[!] Error fetching contact recipients for {client_id}: {e}")
+        print(f"[!] Error fetching contact recipients for {client_id}: {e}", flush=True)
 
-    for raw_phone in recipients:
+    sent_count = 0
+    for role, raw_phone in recipients:
         clean_phone = re.sub(r'[^0-9]', '', str(raw_phone))
         if len(clean_phone) == 10 and clean_phone[0] in ['6', '7', '8', '9']:
             clean_phone = '91' + clean_phone
         if len(clean_phone) >= 10:
+            if not can_send_alert(client_id, alert_key, clean_phone, interval_sec=86400):
+                continue
             try:
                 wa_payload = json.dumps({'phone': clean_phone, 'message': message}).encode('utf-8')
                 req = urllib.request.Request('http://127.0.0.1:3005/send', data=wa_payload, headers={'Content-Type': 'application/json'}, method='POST')
                 with urllib.request.urlopen(req, timeout=8) as resp:
                     pass
+                record_alert_sent(client_id, alert_key, clean_phone)
+                sent_count += 1
             except Exception as ex:
-                print(f"[!] WhatsApp dispatch to {clean_phone} error: {ex}")
+                print(f"[!] WhatsApp dispatch to {clean_phone} error: {ex}", flush=True)
+    return sent_count
 
 def is_ha_entry_ignored(e):
     if not isinstance(e, dict): return True
@@ -15731,11 +15881,13 @@ def start_telemetry_alert_watchdog():
 
                 sh_subsystems = tech.get('self_healing', {}).get('subsystems', {})
 
+                exhausted_subs = []
                 for sub_key, sub_info in sh_subsystems.items():
                     if not isinstance(sub_info, dict):
                         continue
                     if sub_key in unmon:
                         NOTIFIED_FAILED_RECOVERY.discard((cid, sub_key))
+                        clear_alert_ledger(cid, f"fault_{sub_key}")
                         continue
 
                     sub_status = sub_info.get('status')
@@ -15743,31 +15895,11 @@ def start_telemetry_alert_watchdog():
                     is_exhausted = sub_status in ['exhausted', 'escalated'] or sub_attempts >= 5
 
                     if is_exhausted:
-                        if (cid, sub_key) not in NOTIFIED_FAILED_RECOVERY:
-                            pretty_tech, specific_issues = format_subsystem_alert_details(sub_key, tech, unmon)
-                            last_act = sub_info.get('last_action') or 'Remediation attempts exhausted'
-                            lines = [
-                                "🛑 *GAVASAH LUXURY AUTOMATION*",
-                                "⚠️ *FAULT ESCALATION: Auto-Recovery Failed*",
-                                "",
-                                f"• *Site:* {cname} (`{cid}`)",
-                                f"• *Subsystem:* ⚙️ {pretty_tech}",
-                                "• *Status:* 🛑 5/5 REMEDIATION ATTEMPTS FAILED",
-                                "",
-                                f"📋 *Specific Issues Identified ({len(specific_issues)}):*",
-                            ] + specific_issues + [
-                                "",
-                                f"• *Last Action:* {last_act}",
-                                f"• *Time:* {ist_time_str}",
-                                "",
-                                "🚨 *Action Required:* Autonomous self-healing attempted 5 automated recoveries but the integration(s) did not recover. Auto-recovery is paused on the gateway to preserve system stability. Verify device power/network, or mute monitoring from the Dealer Portal if deliberately powered down.",
-                                "🌐 *Operations Portal:* https://dealer.gavasah.com/"
-                            ]
-                            send_whatsapp_alert_to_contacts(cid, chr(10).join(lines))
-                            NOTIFIED_FAILED_RECOVERY.add((cid, sub_key))
+                        exhausted_subs.append((sub_key, sub_info))
                     else:
                         if (cid, sub_key) in NOTIFIED_FAILED_RECOVERY and (sub_status in ['idle', 'online'] or sub_attempts == 0):
                             NOTIFIED_FAILED_RECOVERY.discard((cid, sub_key))
+                            clear_alert_ledger(cid, f"fault_{sub_key}")
                             pretty_tech, _ = format_subsystem_alert_details(sub_key, tech, unmon)
                             lines = [
                                 "✅ *GAVASAH LUXURY AUTOMATION*",
@@ -15781,7 +15913,37 @@ def start_telemetry_alert_watchdog():
                                 "✨ *Notice:* Subsystem fault has cleared and all integrations are functioning normally.",
                                 "🌐 *Operations Portal:* https://dealer.gavasah.com/"
                             ]
-                            send_whatsapp_alert_to_contacts(cid, chr(10).join(lines))
+                            send_whatsapp_alert_to_contacts(cid, chr(10).join(lines), alert_key=f"resolved_{cid}_{sub_key}")
+
+                if exhausted_subs:
+                    unnotified = [s for s in exhausted_subs if (cid, s[0]) not in NOTIFIED_FAILED_RECOVERY]
+                    if unnotified:
+                        all_sub_names = []
+                        all_details = []
+                        for sub_key, sub_info in exhausted_subs:
+                            pretty_tech, specific_issues = format_subsystem_alert_details(sub_key, tech, unmon)
+                            all_sub_names.append(pretty_tech)
+                            all_details.extend(specific_issues)
+                            NOTIFIED_FAILED_RECOVERY.add((cid, sub_key))
+
+                        consolidated_subs = " & ".join(all_sub_names)
+                        lines = [
+                            "🛑 *GAVASAH LUXURY AUTOMATION*",
+                            "⚠️ *FAULT ESCALATION: Auto-Recovery Failed*",
+                            "",
+                            f"• *Site:* {cname} (`{cid}`)",
+                            f"• *Subsystem(s):* ⚙️ {consolidated_subs}",
+                            "• *Status:* 🛑 5/5 REMEDIATION ATTEMPTS FAILED",
+                            "",
+                            f"📋 *Specific Issues Identified ({len(all_details)}):*",
+                        ] + all_details + [
+                            "",
+                            f"• *Time:* {ist_time_str}",
+                            "",
+                            "🚨 *Action Required:* Autonomous edge self-healing attempted 5 automated recoveries but the integration(s) did not recover. Auto-recovery is paused on the gateway to preserve system stability. Verify device power/network, or mute monitoring from the Dealer Portal if deliberately powered down.",
+                            "🌐 *Operations Portal:* https://dealer.gavasah.com/"
+                        ]
+                        send_whatsapp_alert_to_contacts(cid, chr(10).join(lines), alert_key=f"fault_consolidated_{cid}")
 
             WATCHDOG_INITIALIZED = True
         except Exception as e:
