@@ -9680,6 +9680,9 @@ function formatHeartbeatTime(diff) {
 
         async function handleOnboardSubmit(e) {
             e.preventDefault();
+            const submitBtn = document.getElementById('onb-submit-btn');
+            if (submitBtn && submitBtn.disabled) return;
+
             const nameVal = document.getElementById('onb-name').value.trim();
             const slugInput = document.getElementById('onb-slug');
             let autoSlug = (slugInput ? slugInput.value.trim() : '') || slugifyText(nameVal);
@@ -9711,6 +9714,13 @@ function formatHeartbeatTime(diff) {
                 payload.integrator_id = document.getElementById('onb-integrator-select').value;
             }
 
+            let origBtnHtml = '';
+            if (submitBtn) {
+                origBtnHtml = submitBtn.innerHTML;
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '⏳ Provisioning Site...';
+            }
+
             try {
                 const res = await apiFetch('/api/onboard', {
                     method: 'POST',
@@ -9719,7 +9729,7 @@ function formatHeartbeatTime(diff) {
                 });
                 const data = await res.json();
                 if (res.ok && data.ok) {
-                    showToast(`Gavasah Gateway '${payload.name}' onboarded successfully! Opening client configuration...`, 'success');
+                    showToast(`Gavasah Gateway '${payload.name}' submitted successfully! Awaiting Manufacturer approval.`, 'success');
                     closeOnboardModal();
                     await fetchFleet();
                     if (data.client && data.client.client_id) {
@@ -9729,7 +9739,12 @@ function formatHeartbeatTime(diff) {
                     showToast(data.error || 'Onboarding failed', 'error');
                 }
             } catch (err) {
-                showToast('Network error during onboarding', 'error');
+                showToast('Network error during onboarding: ' + (err.message || 'connection failed'), 'error');
+            } finally {
+                if (submitBtn) {
+                    submitBtn.disabled = false;
+                    if (origBtnHtml) submitBtn.innerHTML = origBtnHtml;
+                }
             }
         }
 
@@ -13195,6 +13210,7 @@ PersistentKeepalive = 25
                 ssh_port += 1
 
             # All newly created clients require explicit approval by Manufacturer in Client Approvals tab
+            is_mfg = (user.get('role') == 'manufacturer')
             approval_status = 'pending'
             effective_remote = False
 
@@ -13242,9 +13258,9 @@ PersistentKeepalive = 25
                 sync_client_ssh_user(clean_id, ssh_key)
 
             if is_mfg:
-                append_client_log(clean_id, 'INFO', 'ONBOARD_COMPLETE', f"Site '{client_name}' onboarded and approved directly by Manufacturer.")
+                append_client_log(clean_id, 'INFO', 'AWAITING_APPROVAL', f"Site '{client_name}' created by Manufacturer HQ. Remote ingress locked pending Client Approval review.")
             else:
-                append_client_log(clean_id, 'INFO', 'AWAITING_APPROVAL', f"Site '{client_name}' submitted for Manufacturer Approval by {user['name']} ({user['role'].title()}). Remote ingress locked pending review.")
+                append_client_log(clean_id, 'INFO', 'AWAITING_APPROVAL', f"Site '{client_name}' submitted for Manufacturer Approval by {user.get('name', 'User')} ({user.get('role', 'User').title()}). Remote ingress locked pending review.")
 
             # Publish MQTT dynamic topic creation & lifecycle announcement
             publish_mqtt_message(f'gavasah/lifecycle/clients/{clean_id}', {
