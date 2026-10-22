@@ -988,6 +988,23 @@ def handle_remote_command(hub_host, opts, command):
                 record_last_command_error(action, str(e))
                 log(f"[REMOTE_COMMAND] Master update error: {e}")
 
+    elif action == "switch_boot_slot":
+        target_slot = str(command.get("boot_slot") or command.get("slot") or "A").upper()
+        if SUPERVISOR_TOKEN:
+            try:
+                log(f"[REMOTE_COMMAND] Switching active boot slot to Slot {target_slot} via Supervisor API...")
+                ok, res = supervisor_post("os/boot-slot", {"boot_slot": target_slot}, timeout=60)
+                if ok:
+                    clear_last_command_error()
+                    log(f"[REMOTE_COMMAND] Boot slot switch to Slot {target_slot} accepted. System rebooting.")
+                else:
+                    err_msg = (res.get("message") if isinstance(res, dict) else str(res)) or "Failed to switch boot slot"
+                    record_last_command_error(action, err_msg)
+                    log(f"[REMOTE_COMMAND] Boot slot switch error: {err_msg}")
+            except Exception as e:
+                record_last_command_error(action, str(e))
+                log(f"[REMOTE_COMMAND] Boot slot switch exception: {e}")
+
 
 def check_ha_knx_native_connection():
     """
