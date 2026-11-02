@@ -876,6 +876,7 @@ def get_client_info(slug):
         cur = conn.cursor()
         cur.execute(
             "SELECT c.client_id, c.name, c.dealer_id, c.dealer_name, c.dashboard_port, c.remote_enabled, "
+            "c.network_json, c.wg_ip, "
             "d.status AS dealer_status "
             "FROM clients c "
             "LEFT JOIN dealers d ON c.dealer_id = d.id "
@@ -888,6 +889,7 @@ def get_client_info(slug):
             clean_slug = re.sub(r'^(mr|mrs|ms|dr)-', '', slug.lower())
             cur.execute(
                 "SELECT c.client_id, c.name, c.dealer_id, c.dealer_name, c.dashboard_port, c.remote_enabled, c.domain, "
+                "c.network_json, c.wg_ip, "
                 "d.status AS dealer_status "
                 "FROM clients c "
                 "LEFT JOIN dealers d ON c.dealer_id = d.id"
@@ -942,12 +944,24 @@ def get_client_info(slug):
             return res
 
         port = int(row['dashboard_port']) if row['dashboard_port'] else None
+        local_ip = None
+        try:
+            net_d = json.loads(row['network_json'] or '{}')
+            local_ip = (net_d.get('local_ipv4') or net_d.get('ip') or '').strip()
+            if local_ip in ['127.0.0.1', 'localhost', '0.0.0.0', '']:
+                local_ip = None
+        except Exception:
+            pass
+        wg_ip = (row['wg_ip'] or '').strip() if 'wg_ip' in row.keys() and row['wg_ip'] else None
+
         res = {
             'status': 'ACTIVE',
             'client_id': row['client_id'],
             'name': row['name'] or row['client_id'],
             'dealer_name': row['dealer_name'] or 'Authorized Dealer',
-            'port': port
+            'port': port,
+            'local_ip': local_ip,
+            'wg_ip': wg_ip
         }
         _CLIENT_CACHE[slug] = (now, res)
         if row['client_id'] and row['client_id'] != slug:
@@ -1009,98 +1023,118 @@ SSL_CTX = ssl.create_default_context()
 SSL_CTX.check_hostname = False
 SSL_CTX.verify_mode = ssl.CERT_NONE
 
-# In-memory protocol cache: target_port -> bool (True = https, False = plain http)
+# In-memory protocol cache: "host:port" -> bool (True = https, False = plain http)
 PORT_SSL_CACHE = {
-    10011: True  # vajju-vja-house uses SSL Let's Encrypt locally
+    "127.0.0.1:10011": True,
+    "192.168.6.17:8123": True
 }
 
-async def connect_upstream(target_port, clean_initial_data):
-    """
-    Connects to target reverse tunnel port, dynamically handling both plain HTTP
-    and HTTPS (TLS) Home Assistant instances without manual configuration.
-    """
-    cached_ssl = PORT_SSL_CACHE.get(target_port)
+async def _connect_single_target(host, port, clean_initial_data):
+    """Attempts connection to a specific (host, port) target with SSL auto-negotiation."""
+    cache_key = f"{host}:{port}"
+    cached_ssl = PORT_SSL_CACHE.get(cache_key)
 
     # 1. Known SSL
     if cached_ssl is True:
         try:
             up_reader, up_writer = await asyncio.wait_for(
-                asyncio.open_connection('127.0.0.1', target_port, ssl=SSL_CTX),
-                timeout=4.0
+                asyncio.open_connection(host, port, ssl=SSL_CTX),
+                timeout=3.5
             )
             up_writer.write(clean_initial_data)
             await up_writer.drain()
             return up_reader, up_writer, None
         except Exception:
-            return None, None, None
+            # If known SSL failed, don't immediately abort; allow falling through
+            pass
 
     # 2. Known Plain HTTP
     if cached_ssl is False:
         try:
             up_reader, up_writer = await asyncio.wait_for(
-                asyncio.open_connection('127.0.0.1', target_port, ssl=None),
-                timeout=4.0
+                asyncio.open_connection(host, port, ssl=None),
+                timeout=3.5
             )
             up_writer.write(clean_initial_data)
             await up_writer.drain()
             return up_reader, up_writer, None
         except Exception:
-            return None, None, None
+            pass
 
-    # 3. Unknown: Try plain HTTP first with fast probe
+    # 3. Probe connection: Try plain HTTP first with fast detection
     try:
         up_reader, up_writer = await asyncio.wait_for(
-            asyncio.open_connection('127.0.0.1', target_port, ssl=None),
-            timeout=3.0
+            asyncio.open_connection(host, port, ssl=None),
+            timeout=2.0
         )
         up_writer.write(clean_initial_data)
         await up_writer.drain()
 
-        # Check if remote server instantly drops/closes plain HTTP socket (behavior of SSL server receiving non-TLS bytes)
         is_ssl = False
         try:
             first_chunk = await asyncio.wait_for(up_reader.read(65536), timeout=0.15)
             if first_chunk == b"":
-                # Server closed immediately -> port is HTTPS!
                 is_ssl = True
             else:
-                # Plain HTTP responded with data!
-                PORT_SSL_CACHE[target_port] = False
+                PORT_SSL_CACHE[cache_key] = False
                 return up_reader, up_writer, first_chunk
         except asyncio.TimeoutError:
-            # Server accepted the connection and is processing the request normally (Plain HTTP)!
-            PORT_SSL_CACHE[target_port] = False
+            PORT_SSL_CACHE[cache_key] = False
             return up_reader, up_writer, None
 
         if is_ssl:
             up_writer.close()
-            try:
-                await up_writer.wait_closed()
-            except Exception:
-                pass
+            try: await up_writer.wait_closed()
+            except Exception: pass
 
             ssl_reader, ssl_writer = await asyncio.wait_for(
-                asyncio.open_connection('127.0.0.1', target_port, ssl=SSL_CTX),
-                timeout=4.0
+                asyncio.open_connection(host, port, ssl=SSL_CTX),
+                timeout=3.5
             )
             ssl_writer.write(clean_initial_data)
             await ssl_writer.drain()
-            PORT_SSL_CACHE[target_port] = True
+            PORT_SSL_CACHE[cache_key] = True
             return ssl_reader, ssl_writer, None
     except Exception:
-        # Fallback to SSL if initial plain connection failed completely
+        # Fallback to SSL probe if plain TCP connection rejected or failed
         try:
             ssl_reader, ssl_writer = await asyncio.wait_for(
-                asyncio.open_connection('127.0.0.1', target_port, ssl=SSL_CTX),
-                timeout=4.0
+                asyncio.open_connection(host, port, ssl=SSL_CTX),
+                timeout=3.0
             )
             ssl_writer.write(clean_initial_data)
             await ssl_writer.drain()
-            PORT_SSL_CACHE[target_port] = True
+            PORT_SSL_CACHE[cache_key] = True
             return ssl_reader, ssl_writer, None
         except Exception:
             pass
         return None, None, None
+
+async def connect_upstream(client_info, clean_initial_data):
+    """
+    Connects to target gateway using resilient multi-path resolution:
+    1. Loopback reverse tunnel (127.0.0.1:target_port)
+    2. Direct local LAN IP (local_ip:8123) if reachable on host network
+    3. WireGuard overlay IP (wg_ip:8123) if configured
+    """
+    target_port = client_info.get('port')
+    local_ip = client_info.get('local_ip')
+    wg_ip = client_info.get('wg_ip')
+
+    candidates = []
+    if target_port:
+        candidates.append(('127.0.0.1', target_port))
+    if local_ip:
+        candidates.append((local_ip, 8123))
+    if wg_ip:
+        candidates.append((wg_ip, 8123))
+
+    for host, port in candidates:
+        r, w, chunk = await _connect_single_target(host, port, clean_initial_data)
+        if r and w:
+            return r, w, chunk
+
+    return None, None, None
 
 async def handle_connection(reader, writer):
     try:
@@ -1149,9 +1183,12 @@ async def handle_connection(reader, writer):
             writer.close()
             return
 
-        # 3. Active - Forward to target reverse tunnel port
+        # 3. Active - Forward to target reverse tunnel or LAN direct bridge
         target_port = client_info.get('port')
-        if not target_port:
+        local_ip = client_info.get('local_ip')
+        wg_ip = client_info.get('wg_ip')
+
+        if not target_port and not local_ip and not wg_ip:
             resp_html = OFFLINE_HTML_TEMPLATE.format(
                 client_display=client_display,
                 dealer_name=dealer_name
@@ -1165,7 +1202,7 @@ async def handle_connection(reader, writer):
         # Filter out X-Forwarded-For so Home Assistant Core never throws 400 Bad Request
         clean_initial_data = strip_untrusted_forwarded_headers(initial_data)
 
-        up_reader, up_writer, primed_chunk = await connect_upstream(target_port, clean_initial_data)
+        up_reader, up_writer, primed_chunk = await connect_upstream(client_info, clean_initial_data)
         if not up_reader or not up_writer:
             resp_html = OFFLINE_HTML_TEMPLATE.format(
                 client_display=client_display,
