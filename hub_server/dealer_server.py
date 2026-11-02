@@ -694,6 +694,22 @@ def init_sqlite_database():
         if 'branding_json' not in o_cols:
             conn.execute("ALTER TABLE owner ADD COLUMN branding_json TEXT")
 
+        # Auto-correct and sync physical MAC addresses from network_json telemetry for existing clients
+        try:
+            cur.execute("SELECT client_id, network_json FROM clients WHERE network_json IS NOT NULL")
+            for cl_row in cur.fetchall():
+                try:
+                    c_net = json.loads(cl_row['network_json'] or '{}')
+                    real_m = str(c_net.get('mac_address') or c_net.get('mac') or '').strip().upper()
+                    if real_m and real_m not in ['UNKNOWN', 'NONE', 'NULL', '']:
+                        conn.execute("UPDATE clients SET mac_address = ? WHERE client_id = ?", (real_m, cl_row['client_id']))
+                        conn.execute("UPDATE gateway_devices SET mac_address = ? WHERE linked_client_id = ?", (real_m, cl_row['client_id']))
+                except Exception:
+                    pass
+            conn.commit()
+        except Exception as e:
+            print(f"[!] Notice: Could not sync MAC addresses on startup: {e}")
+
         # Auto-backfill serial numbers for existing clients that don't have one
         cur.execute("SELECT client_id, name, network_json, system_json, dashboard_port, ssh_port, auth_secret, dealer_id FROM clients WHERE serial_number IS NULL OR serial_number = ''")
         unserialed = cur.fetchall()
@@ -3405,7 +3421,7 @@ HTML_PAGE = """<!DOCTYPE html>
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            max-width: 195px;
+            max-width: 260px;
         }
 
         .site-slug-text {
@@ -3416,7 +3432,7 @@ HTML_PAGE = """<!DOCTYPE html>
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            max-width: 195px;
+            max-width: 260px;
         }
 
         .site-domain-link {
@@ -4463,7 +4479,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <table>
                             <thead>
                                 <tr>
-                                    <th>Client Site / Slug</th>
+                                    <th style="min-width: 260px; max-width: 320px;">Client Site / Slug & Hardware</th>
                                     <th>Heartbeat Status</th>
                                     <th>Integration Status</th>
                                     <th style="min-width: 180px;">Technologies & Subsystems</th>
@@ -5078,6 +5094,12 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
 
                             <div class="form-group" style="margin: 0;">
+                                <label class="form-label">HARDWARE MAC ADDRESS (OPTIONAL)</label>
+                                <input type="text" id="init-knx-mac-address" class="form-input" placeholder="e.g. FA:D1:01:8D:B3:5F" maxlength="17" style="font-family: 'JetBrains Mono', monospace; text-transform: uppercase;" oninput="this.value = this.value.toUpperCase()">
+                                <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Hardware NIC MAC ID (auto-probed or from sticker).</div>
+                            </div>
+
+                            <div class="form-group" style="margin: 0;">
                                 <label class="form-label">HA ACCESS TOKEN / PASSWORD (OPTIONAL)</label>
                                 <input type="password" id="init-knx-device-token" class="form-input" placeholder="admin (or leave blank if fresh)">
                                 <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Used for authenticated REST & WebSocket handshake.</div>
@@ -5204,6 +5226,12 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <label class="form-label">HOME ASSISTANT PORT</label>
                                 <input type="number" id="init-std-device-port" class="form-input" value="8123" placeholder="8123" style="font-family: 'JetBrains Mono', monospace;">
                                 <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Default HTTP port for Home Assistant Core.</div>
+                            </div>
+
+                            <div class="form-group" style="margin: 0;">
+                                <label class="form-label">HARDWARE MAC ADDRESS (OPTIONAL)</label>
+                                <input type="text" id="init-std-mac-address" class="form-input" placeholder="e.g. FA:D1:01:8D:B3:5F" maxlength="17" style="font-family: 'JetBrains Mono', monospace; text-transform: uppercase;" oninput="this.value = this.value.toUpperCase()">
+                                <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Hardware NIC MAC ID (auto-probed or from sticker).</div>
                             </div>
 
                             <div class="form-group" style="margin: 0;">
@@ -5861,6 +5889,24 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="form-group">
                         <label class="form-label">CLIENT SITE NAME</label>
                         <input type="text" id="edit-name" class="form-input" required>
+                    </div>
+
+                    <!-- Hardware Identity (Serial Number & Hardware NIC MAC Address) -->
+                    <div style="background: rgba(0, 240, 255, 0.05); border: 1px solid rgba(0, 240, 255, 0.25); border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
+                        <div style="font-size: 12px; font-weight: 700; color: #00f0ff; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;">
+                            <span style="display: flex; align-items: center; gap: 6px;">🏷️ GATEWAY HARDWARE IDENTITY</span>
+                            <span style="font-size: 10px; color: #94a3b8; font-family: monospace;">STATION BINDING</span>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label class="form-label" style="font-size: 10px;">SERIAL NUMBER (XX:XX:XX:XX:XX:XX)</label>
+                                <input type="text" id="edit-serial-number" class="form-input" maxlength="17" placeholder="e.g. QE:NL:G4:AX:SA:64" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; text-transform: uppercase;" oninput="this.value = this.value.toUpperCase()">
+                            </div>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label class="form-label" style="font-size: 10px;">HARDWARE MAC ADDRESS</label>
+                                <input type="text" id="edit-mac-address" class="form-input" maxlength="17" placeholder="e.g. FA:D1:01:8D:B3:5F" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; color: #c084fc; text-transform: uppercase;" oninput="this.value = this.value.toUpperCase()">
+                            </div>
+                        </div>
                     </div>
 
                     <input type="hidden" id="edit-secret">
@@ -8016,7 +8062,9 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                 setStep(prefix, 'probe', 'Probing device...', null);
                 appendLog(`Probing gateway endpoint http://${ip}:${port}...`);
 
-                let macAddress = '4E:5B:1C:0E:EF:8D';
+                const macInput = document.getElementById(isKnx ? 'init-knx-mac-address' : 'init-std-mac-address');
+                let userMac = macInput ? macInput.value.trim().toUpperCase() : '';
+                let macAddress = userMac || '4E:5B:1C:0E:EF:8D';
                 try {
                     const probeRes = await fetch(`http://${ip}:${port}/api/`, {
                         headers: token ? { 'Authorization': `Bearer ${token}` } : {},
@@ -8025,6 +8073,15 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                     appendLog(`Handshake acknowledged by http://${ip}:${port}`);
                 } catch (probeErr) {
                     appendLog(`Direct HTTP probe warning: ${probeErr.message} (Proceeding via browser-direct relay)`);
+                }
+                if (!userMac) {
+                    // Try to auto-derive a deterministic bench MAC if none specified
+                    const ipParts = ip.split('.');
+                    if (ipParts.length === 4) {
+                        const h1 = (parseInt(ipParts[2]) || 1).toString(16).padStart(2, '0').toUpperCase();
+                        const h2 = (parseInt(ipParts[3]) || 111).toString(16).padStart(2, '0').toUpperCase();
+                        macAddress = `02:50:41:${h1}:${h2}:${Math.floor(Math.random()*255).toString(16).padStart(2, '0').toUpperCase()}`;
+                    }
                 }
 
                 setStep(prefix, 'probe', `Discovered MAC: ${macAddress}`, true);
@@ -8989,22 +9046,28 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
 
                 return `
                     <tr>
-                        <td>
+                        <td style="min-width: 260px; max-width: 320px;">
                             <div class="site-name-text" title="${escapeHtml(c.name)} (${escapeHtml(c.client_id)})">${escapeHtml(c.name)}</div>
                             <div class="site-slug-text">
                                 <a href="https://${escapeHtml(c.domain)}" target="_blank" class="site-domain-link" title="Open Remote GUI: ${escapeHtml(c.domain)}">${escapeHtml(c.domain)} ↗</a>
                             </div>
-                            <div style="margin-top: 4px; display: flex; flex-direction: column; gap: 3px;">
-                                <div style="font-size: 11px; font-family: 'JetBrains Mono', monospace; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 5px;">
-                                    <span style="background: rgba(0, 240, 255, 0.12); color: #00f0ff; border: 1px solid rgba(0, 240, 255, 0.3); border-radius: 4px; padding: 1px 6px; font-size: 10px;">🏷️ SN</span>
-                                    <span>${escapeHtml(c.serial_number || 'Awaiting SN')}</span>
+                            <div style="margin-top: 5px; display: flex; flex-direction: column; gap: 4px;">
+                                <div style="font-size: 11px; font-family: 'JetBrains Mono', monospace; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 6px;">
+                                    <span style="background: rgba(0, 240, 255, 0.12); color: #00f0ff; border: 1px solid rgba(0, 240, 255, 0.3); border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 800; letter-spacing: 0.5px;">🏷️ SN</span>
+                                    <span style="letter-spacing: 0.5px;">${escapeHtml(c.serial_number || 'Awaiting SN')}</span>
                                 </div>
-                                <div style="font-size: 11px; color: #94a3b8; font-family: 'JetBrains Mono', monospace;">
-                                    🌐 IP: <span style="color: #f1f5f9;">${escapeHtml(c.knx_ip || (c.network && c.network.ip) || (c.network && c.network.local_ipv4) || (c.system && c.system.ip) || '192.168.1.111')}</span>
-                                    &bull; MAC: <span style="color: #c084fc;">${escapeHtml(c.mac_address || (c.network && c.network.mac_address) || (c.network && c.network.mac) || '4E:5B:1C:0E:EF:8D')}</span>
+                                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 1px;">
+                                    <span style="display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-family: 'JetBrains Mono', monospace; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.1); padding: 2px 7px; border-radius: 4px; color: #94a3b8; white-space: nowrap;" title="Gateway Local LAN IP">
+                                        <span>🌐</span>
+                                        <span style="color: #f1f5f9; font-weight: 600;">${escapeHtml((c.network && (c.network.local_ipv4 || c.network.ip)) || (c.system && c.system.ip) || c.knx_ip || '192.168.1.111')}</span>
+                                    </span>
+                                    <span style="display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-family: 'JetBrains Mono', monospace; background: rgba(192, 132, 252, 0.08); border: 1px solid rgba(192, 132, 252, 0.28); padding: 2px 7px; border-radius: 4px; color: #c084fc; white-space: nowrap;" title="Hardware NIC MAC Address">
+                                        <span style="color: #a855f7; font-weight: 700;">MAC:</span>
+                                        <span style="font-weight: 600; letter-spacing: 0.5px;">${escapeHtml(c.mac_address || (c.network && (c.network.mac_address || c.network.mac)) || '4E:5B:1C:0E:EF:8D')}</span>
+                                    </span>
                                 </div>
                             </div>
-                            <div style="font-size: 10px; color: ${onb.hasOnboarded ? '#64748b' : '#d97706'}; margin-top: 3px; white-space: nowrap;" title="${escapeHtml(onb.tooltip)}">
+                            <div style="font-size: 10px; color: ${onb.hasOnboarded ? '#64748b' : '#d97706'}; margin-top: 4px; white-space: nowrap;" title="${escapeHtml(onb.tooltip)}">
                                 ${onb.hasOnboarded ? `📅 Onboarded: ${escapeHtml(onb.fullText)}` : `⏳ Provisioned &bull; Awaiting initial contact`}
                             </div>
                         </td>
@@ -10702,6 +10765,8 @@ auto_update_external_url: true`;
             setVal('edit-client-id', client.client_id);
             setVal('edit-name', client.name || '');
             setVal('edit-secret', client.auth_secret || '');
+            setVal('edit-serial-number', client.serial_number || '');
+            setVal('edit-mac-address', client.mac_address || (client.network && (client.network.mac_address || client.network.mac)) || '');
 
             const setDurationInputs = (valId, unitId, totalSec, defaultSec) => {
                 const s = parseInt(totalSec) || defaultSec;
@@ -10842,9 +10907,14 @@ auto_update_external_url: true`;
                 return Math.round(u === 'h' ? v * 3600 : v * 60);
             };
 
+            const editSn = document.getElementById('edit-serial-number') ? document.getElementById('edit-serial-number').value.trim().toUpperCase() : '';
+            const editMac = document.getElementById('edit-mac-address') ? document.getElementById('edit-mac-address').value.trim().toUpperCase() : '';
+
             const payload = {
                 client_id: clientId,
                 name: (document.getElementById('edit-name') ? document.getElementById('edit-name').value.trim() : ''),
+                serial_number: editSn,
+                mac_address: editMac,
                 knx_ip: (client && client.knx_ip && client.knx_ip !== '192.168.1.100' ? client.knx_ip : ''),
                 knx_port: (client && client.knx_port && client.knx_ip && client.knx_ip !== '192.168.1.100' ? client.knx_port : null),
                 auth_secret: (document.getElementById('edit-secret') ? document.getElementById('edit-secret').value.trim() : (client ? client.auth_secret : '')),
@@ -14428,6 +14498,29 @@ PersistentKeepalive = 25
 
             if body.get('name'):
                 client['name'] = body['name'].strip()
+            if 'serial_number' in body:
+                raw_sn = str(body.get('serial_number') or '').strip().upper()
+                if raw_sn:
+                    client['serial_number'] = raw_sn
+                    with DB_LOCK:
+                        conn = get_db_connection()
+                        try:
+                            with conn:
+                                conn.execute("UPDATE clients SET serial_number = ? WHERE client_id = ?", (raw_sn, client_id))
+                        finally:
+                            conn.close()
+            if 'mac_address' in body:
+                raw_mac = str(body.get('mac_address') or '').strip().upper()
+                if raw_mac:
+                    client['mac_address'] = raw_mac
+                    with DB_LOCK:
+                        conn = get_db_connection()
+                        try:
+                            with conn:
+                                conn.execute("UPDATE clients SET mac_address = ? WHERE client_id = ?", (raw_mac, client_id))
+                                conn.execute("UPDATE gateway_devices SET mac_address = ? WHERE linked_client_id = ?", (raw_mac, client_id))
+                        finally:
+                            conn.close()
             if 'knx_ip' in body:
                 raw_kip = str(body.get('knx_ip') or '').strip()
                 client['knx_ip'] = raw_kip if raw_kip and raw_kip not in ['—', 'none', 'null', '192.168.1.100'] else None
@@ -14963,6 +15056,12 @@ PersistentKeepalive = 25
                 conn = get_db_connection()
                 try:
                     with conn:
+                        live_hb_mac = None
+                        if isinstance(net_dict, dict):
+                            raw_hmac = str(net_dict.get('mac_address') or net_dict.get('mac') or '').strip().upper()
+                            if raw_hmac and raw_hmac not in ['UNKNOWN', 'NONE', 'NULL', '']:
+                                live_hb_mac = raw_hmac
+
                         conn.execute("""
                             UPDATE clients SET
                                 last_heartbeat = ?,
@@ -14976,7 +15075,8 @@ PersistentKeepalive = 25
                                 technologies_json = ?,
                                 backups_json = ?,
                                 pending_backup = CASE WHEN ? IS NOT NULL THEN NULL ELSE pending_backup END,
-                                pending_command = CASE WHEN ? IS NOT NULL THEN NULL ELSE pending_command END
+                                pending_command = CASE WHEN ? IS NOT NULL THEN NULL ELSE pending_command END,
+                                mac_address = CASE WHEN ? IS NOT NULL THEN ? ELSE mac_address END
                             WHERE client_id = ?
                         """, (
                             now,
@@ -14990,8 +15090,12 @@ PersistentKeepalive = 25
                             json.dumps(backups_list),
                             pending_bk,
                             pending_cmd,
+                            live_hb_mac,
+                            live_hb_mac,
                             client_id
                         ))
+                        if live_hb_mac:
+                            conn.execute("UPDATE gateway_devices SET mac_address = ? WHERE linked_client_id = ?", (live_hb_mac, client_id))
                 finally:
                     conn.close()
 
