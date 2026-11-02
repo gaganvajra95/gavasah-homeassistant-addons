@@ -586,9 +586,10 @@ def init_sqlite_database():
             serial_number TEXT PRIMARY KEY,
             mac_address TEXT NOT NULL,
             device_ip TEXT,
-            model TEXT DEFAULT 'GAVASAH-GW-01',
-            rebranded_title TEXT DEFAULT 'GAVASAH KNX IP Router',
-            knx_loopback_locked INTEGER DEFAULT 1,
+            device_type TEXT DEFAULT 'standard',
+            model TEXT DEFAULT 'GAVASAH-GW',
+            rebranded_title TEXT DEFAULT 'GAVASAH Smart Gateway',
+            knx_loopback_locked INTEGER DEFAULT 0,
             auth_secret TEXT NOT NULL,
             dashboard_port INTEGER,
             ssh_port INTEGER,
@@ -714,6 +715,33 @@ def init_sqlite_database():
                     (sn, mac, '127.0.0.1', row['auth_secret'], row['dashboard_port'], row['ssh_port'], cid, row['dealer_id'], int(time.time()), int(time.time()))
                 )
             conn.commit()
+
+        # Ensure device_type column exists in gateway_devices
+        cur.execute("PRAGMA table_info(gateway_devices)")
+        gw_cols = {r['name'] for r in cur.fetchall()}
+        if 'device_type' not in gw_cols:
+            conn.execute("ALTER TABLE gateway_devices ADD COLUMN device_type TEXT DEFAULT 'standard'")
+            conn.commit()
+
+        # Isolate testing6 (temp-testing-6-direct) as knx_ip, and transfer all other gateways to standard
+        conn.execute("""
+            UPDATE gateway_devices 
+            SET device_type = 'knx_ip', 
+                model = 'GAVASAH-GW-01', 
+                rebranded_title = 'GAVASAH KNX IP Router', 
+                knx_loopback_locked = 1 
+            WHERE linked_client_id = 'temp-testing-6-direct' OR serial_number = 'ET:XQ:7L:GW:PX:D0'
+        """)
+        conn.execute("""
+            UPDATE gateway_devices 
+            SET device_type = 'standard', 
+                model = 'GAVASAH-GW', 
+                rebranded_title = 'GAVASAH Smart Gateway', 
+                knx_loopback_locked = 0 
+            WHERE (linked_client_id != 'temp-testing-6-direct' OR linked_client_id IS NULL) 
+              AND (serial_number != 'ET:XQ:7L:GW:PX:D0')
+        """)
+        conn.commit()
 
         # Auto-migrate all existing clients to WireGuard
         cur.execute("SELECT client_id, name FROM clients WHERE wg_ip IS NULL OR wg_ip = ''")
@@ -1873,15 +1901,19 @@ HTML_PAGE = """<!DOCTYPE html>
         /* WhatsApp & Alerts and AI Copilot tabs are strictly Manufacturer-only */
         body.is-dealer #nav-alerts,
         body.is-dealer #nav-copilot,
+        body.is-dealer #nav-initiate-knx-gateway,
         body.is-dealer #nav-initiate-gateway,
         body.is-dealer #tab-alerts,
         body.is-dealer #tab-copilot,
+        body.is-dealer #tab-initiate-knx-gateway,
         body.is-dealer #tab-initiate-gateway,
         body.is-integrator #nav-alerts,
         body.is-integrator #nav-copilot,
+        body.is-integrator #nav-initiate-knx-gateway,
         body.is-integrator #nav-initiate-gateway,
         body.is-integrator #tab-alerts,
         body.is-integrator #tab-copilot,
+        body.is-integrator #tab-initiate-knx-gateway,
         body.is-integrator #tab-initiate-gateway {
             display: none !important;
         }
@@ -4125,12 +4157,20 @@ HTML_PAGE = """<!DOCTYPE html>
                     <span class="status-indicator-dot online" style="margin-left: auto; width: 8px; height: 8px;"></span>
                 </div>
 
-                <div class="nav-item" id="nav-initiate-gateway" onclick="switchTab('initiate-gateway')" style="display: none;">
+                <div class="nav-item" id="nav-initiate-knx-gateway" onclick="switchTab('initiate-knx-gateway')" style="display: none;">
                     <div style="display: flex; align-items: center; gap: 10px;">
                         <span class="nav-item-icon">⚡</span>
                         <span>Initiate KNX-IP Gateway</span>
                     </div>
-                    <span class="nav-item-badge" id="badge-gw-device-count" style="background: rgba(0, 240, 255, 0.15); color: #00f0ff;">0</span>
+                    <span class="nav-item-badge" id="badge-knx-gw-device-count" style="background: rgba(0, 240, 255, 0.15); color: #00f0ff;">0</span>
+                </div>
+
+                <div class="nav-item" id="nav-initiate-gateway" onclick="switchTab('initiate-gateway')" style="display: none;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span class="nav-item-icon">🚀</span>
+                        <span>Initiate Gateway</span>
+                    </div>
+                    <span class="nav-item-badge" id="badge-std-gw-device-count" style="background: rgba(16, 185, 129, 0.15); color: #10b981;">0</span>
                 </div>
 
                 <div class="nav-item" id="nav-branding" onclick="switchTab('branding')" style="display: none;">
@@ -5001,45 +5041,45 @@ HTML_PAGE = """<!DOCTYPE html>
                 <!-- ==============================================================
                      TAB: INITIATE KNX-IP GATEWAY (MANUFACTURER ONLY)
                      ============================================================== -->
-                <div class="tab-pane" id="tab-initiate-gateway" style="display: none;">
+                <div class="tab-pane" id="tab-initiate-knx-gateway">
                     <div class="section-header" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px;">
                         <div>
-                            <div class="section-title">⚡ Factory Gateway Initialization & Localization</div>
+                            <div class="section-title">⚡ Factory KNX-IP Gateway Initialization & Hardware Pool</div>
                             <div style="font-size: 13px; color: #94a3b8; margin-top: 4px;">
                                 Auto-localize and rebrand gateway as <b style="color: #00f0ff;">GAVASAH KNX IP Router (Model: GAVASAH-GW-01)</b>, lock KNX tunneling to internal loopback (<b style="color: #34d399;">127.0.0.1:3671</b>) for 100% offline autonomy, issue printable 12-char serial number, and pre-program cloud agent.
                             </div>
                         </div>
                         <div style="display: flex; gap: 10px;">
-                            <button type="button" class="btn-action" style="background: rgba(0, 240, 255, 0.1); border: 1px solid rgba(0, 240, 255, 0.3); color: #00f0ff;" onclick="fetchInitiatedGateways()">🔄 Refresh Device Pool</button>
+                            <button type="button" class="btn-action" style="background: rgba(0, 240, 255, 0.1); border: 1px solid rgba(0, 240, 255, 0.3); color: #00f0ff;" onclick="fetchInitiatedGateways()">🔄 Refresh KNX-IP Pool</button>
                         </div>
                     </div>
 
-                    <!-- Factory Bench Initiator Card -->
+                    <!-- Factory Bench Initiator Card: KNX-IP Gateway -->
                     <div class="card" style="margin-bottom: 24px; border: 1px solid rgba(0, 240, 255, 0.25); background: radial-gradient(ellipse at top left, rgba(0, 240, 255, 0.05), transparent 70%), var(--card-bg);">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.06); padding-bottom: 12px;">
                             <div style="display: flex; align-items: center; gap: 10px;">
-                                <span style="font-size: 20px;">🏭</span>
-                                <span style="font-size: 15px; font-weight: 700; color: #fff;">Automated Factory Provisioning Engine</span>
+                                <span style="font-size: 20px;">⚡</span>
+                                <span style="font-size: 15px; font-weight: 700; color: #fff;">KNX-IP Gateway Automated Provisioning</span>
                             </div>
-                            <span class="badge-role" style="background: rgba(0, 240, 255, 0.12); color: #00f0ff; border-color: rgba(0, 240, 255, 0.3);">Browser-Direct Bridge (Zero Cloud LAN Restriction)</span>
+                            <span class="badge-role" style="background: rgba(0, 240, 255, 0.12); color: #00f0ff; border-color: rgba(0, 240, 255, 0.3);">Browser-Direct Bridge &bull; 100% Offline Autonomy</span>
                         </div>
 
                         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 20px;">
                             <div class="form-group" style="margin: 0;">
                                 <label class="form-label">DEVICE IP ADDRESS</label>
-                                <input type="text" id="init-device-ip" class="form-input" value="192.168.1.111" placeholder="e.g. 192.168.1.111" style="font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600;">
-                                <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Local IP of gateway on your workstation LAN.</div>
+                                <input type="text" id="init-knx-device-ip" class="form-input" value="192.168.1.111" placeholder="e.g. 192.168.1.111" style="font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600;">
+                                <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Local IP of KNX-IP gateway on your workshop/bench LAN.</div>
                             </div>
 
                             <div class="form-group" style="margin: 0;">
                                 <label class="form-label">HOME ASSISTANT PORT</label>
-                                <input type="number" id="init-device-port" class="form-input" value="8123" placeholder="8123" style="font-family: 'JetBrains Mono', monospace;">
+                                <input type="number" id="init-knx-device-port" class="form-input" value="8123" placeholder="8123" style="font-family: 'JetBrains Mono', monospace;">
                                 <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Default HTTP port for Home Assistant Core.</div>
                             </div>
 
                             <div class="form-group" style="margin: 0;">
                                 <label class="form-label">HA ACCESS TOKEN / PASSWORD (OPTIONAL)</label>
-                                <input type="password" id="init-device-token" class="form-input" placeholder="admin (or leave blank if fresh)">
+                                <input type="password" id="init-knx-device-token" class="form-input" placeholder="admin (or leave blank if fresh)">
                                 <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Used for authenticated REST & WebSocket handshake.</div>
                             </div>
                         </div>
@@ -5051,122 +5091,57 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <span style="color: #10b981; margin-left: 10px;">✔</span> Random 12-Char Serial <b>XX:XX:XX:XX:XX:XX</b>
                             </div>
                             <div style="display: flex; gap: 10px;">
-                                <button type="button" id="btn-initiate-gateway" class="btn-action" style="background: linear-gradient(135deg, #00f0ff 0%, #3b82f6 100%); color: #000; font-weight: 700; padding: 10px 22px; font-size: 13px;" onclick="runGatewayInitiation()">
-                                    ⚡ Initiate & Rebrand Gateway
+                                <button type="button" id="btn-initiate-knx-gateway" class="btn-action" style="background: linear-gradient(135deg, #00f0ff 0%, #3b82f6 100%); color: #000; font-weight: 700; padding: 10px 22px; font-size: 13px;" onclick="runGatewayInitiation('knx_ip')">
+                                    ⚡ Initiate & Rebrand KNX-IP Gateway
                                 </button>
                             </div>
                         </div>
 
-                        <!-- Live Step Tracker -->
-                        <div id="init-tracker-wrap" style="display: none; margin-top: 24px; padding-top: 20px; border-top: 1px solid rgba(255, 255, 255, 0.08);">
+                        <!-- Live Step Tracker: KNX-IP -->
+                        <div id="knx-init-tracker-wrap" style="display: none; margin-top: 24px; padding-top: 20px; border-top: 1px solid rgba(255, 255, 255, 0.08);">
                             <div style="font-size: 13px; font-weight: 700; color: #f1f5f9; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
-                                <span id="init-spinner" class="status-indicator-dot online" style="animation: pulse 1s infinite;"></span>
-                                <span id="init-tracker-title">Initiation Sequence Running...</span>
+                                <span id="knx-init-spinner" class="status-indicator-dot online" style="animation: pulse 1s infinite;"></span>
+                                <span id="knx-init-tracker-title">Initiation Sequence Running...</span>
                             </div>
 
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 14px;">
-                                <div class="step-badge" id="step-probe" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-size: 11px;">
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 14px;">
+                                <div class="step-badge" id="knx-step-probe" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-size: 11px;">
                                     <div style="font-weight: 700; color: #cbd5e1;">1. Probe Device & MAC</div>
                                     <div class="step-status" style="color: #64748b; font-size: 10px; margin-top: 2px;">Pending...</div>
                                 </div>
-                                <div class="step-badge" id="step-rebrand" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-size: 11px;">
-                                    <div style="font-weight: 700; color: #cbd5e1;">2. System Rebranding</div>
+                                <div class="step-badge" id="knx-step-rebrand" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-size: 11px;">
+                                    <div style="font-weight: 700; color: #cbd5e1;">2. Rebrand GAVASAH-GW-01</div>
                                     <div class="step-status" style="color: #64748b; font-size: 10px; margin-top: 2px;">Pending...</div>
                                 </div>
-                                <div class="step-badge" id="step-knx" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-size: 11px;">
-                                    <div style="font-weight: 700; color: #cbd5e1;">3. Lock KNX Loopback</div>
+                                <div class="step-badge" id="knx-step-knx" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-size: 11px;">
+                                    <div style="font-weight: 700; color: #cbd5e1;">3. Lock 127.0.0.1:3671</div>
                                     <div class="step-status" style="color: #64748b; font-size: 10px; margin-top: 2px;">Pending...</div>
                                 </div>
-                                <div class="step-badge" id="step-register" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-size: 11px;">
-                                    <div style="font-weight: 700; color: #cbd5e1;">4. Cloud Hub Serial Issue</div>
+                                <div class="step-badge" id="knx-step-register" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-size: 11px;">
+                                    <div style="font-weight: 700; color: #cbd5e1;">4. Issue 12-Char SN</div>
                                     <div class="step-status" style="color: #64748b; font-size: 10px; margin-top: 2px;">Pending...</div>
                                 </div>
-                                <div class="step-badge" id="step-addon" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-size: 11px;">
+                                <div class="step-badge" id="knx-step-addon" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-size: 11px;">
                                     <div style="font-weight: 700; color: #cbd5e1;">5. Pre-program Add-on</div>
                                     <div class="step-status" style="color: #64748b; font-size: 10px; margin-top: 2px;">Pending...</div>
                                 </div>
                             </div>
 
-                            <div id="init-log-console" style="background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #a5f3fc; max-height: 120px; overflow-y: auto;">
+                            <div id="knx-init-log-console" style="background: #090d16; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #38bdf8; max-height: 140px; overflow-y: auto;">
+                                <div>Ready for initiation sequence. Click 'Initiate & Rebrand KNX-IP Gateway' above.</div>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Printable Factory Label Preview Section -->
-                    <div id="printable-factory-label-area" style="display: none; margin-bottom: 24px;">
-                        <div class="factory-print-card" style="border: 2px dashed rgba(0, 240, 255, 0.4); background: rgba(0, 0, 0, 0.3); border-radius: 12px; padding: 24px; max-width: 460px; margin: 0 auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
-                            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #00f0ff; padding-bottom: 8px; margin-bottom: 12px;">
-                                <div>
-                                    <div style="font-size: 18px; font-weight: 900; letter-spacing: 2px; color: #00f0ff;">GAVASAH</div>
-                                    <div style="font-size: 9px; font-weight: 700; letter-spacing: 1px; color: #94a3b8;">SOFT TECH PRIVATE LIMITED</div>
-                                </div>
-                                <div style="text-align: right;">
-                                    <span style="display: inline-block; background: #00f0ff; color: #000; font-weight: 800; font-size: 10px; padding: 2px 6px; border-radius: 3px;">OFFLINE AUTONOMOUS</span>
-                                    <div style="font-size: 9px; color: #94a3b8; margin-top: 2px;">KNXnet/IP Router (Bau091A)</div>
-                                </div>
-                            </div>
-
-                            <div style="margin-bottom: 14px;">
-                                <div style="font-size: 10px; color: #64748b; font-weight: 600;">PRODUCT MODEL</div>
-                                <div style="font-size: 15px; font-weight: 800; color: #fff; letter-spacing: 0.5px;">GAVASAH KNX IP Router (GAVASAH-GW-01)</div>
-                            </div>
-
-                            <div style="background: rgba(0, 240, 255, 0.08); border: 1px solid rgba(0, 240, 255, 0.3); border-radius: 8px; padding: 12px; margin-bottom: 14px; text-align: center;">
-                                <div style="font-size: 10px; font-weight: 700; color: #94a3b8; letter-spacing: 1px;">DEVICE SERIAL NUMBER</div>
-                                <div id="lbl-serial-number" style="font-size: 24px; font-weight: 900; letter-spacing: 2px; color: #00f0ff; font-family: 'JetBrains Mono', monospace; margin: 4px 0;">--:--:--:--:--:--</div>
-                                <div style="font-size: 10px; color: #64748b;">Dealer Onboarding Key &bull; Retained Across Client Resets</div>
-                            </div>
-
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 11px; margin-bottom: 14px; font-family: 'JetBrains Mono', monospace;">
-                                <div style="background: rgba(255,255,255,0.02); padding: 6px 8px; border-radius: 6px;">
-                                    <span style="color: #64748b;">MAC: </span><b id="lbl-mac-address" style="color: #cbd5e1;">--:--:--:--:--:--</b>
-                                </div>
-                                <div style="background: rgba(255,255,255,0.02); padding: 6px 8px; border-radius: 6px;">
-                                    <span style="color: #64748b;">LOOPBACK: </span><b style="color: #34d399;">127.0.0.1:3671</b>
-                                </div>
-                            </div>
-
-                            <!-- Barcode Representation -->
-                            <div style="display: flex; justify-content: center; margin-bottom: 16px;">
-                                <div style="display: flex; gap: 2px; height: 32px; align-items: flex-end; opacity: 0.85;">
-                                    <div style="width: 3px; height: 100%; background: #00f0ff;"></div>
-                                    <div style="width: 1px; height: 100%; background: #00f0ff;"></div>
-                                    <div style="width: 4px; height: 100%; background: #00f0ff;"></div>
-                                    <div style="width: 2px; height: 100%; background: #00f0ff;"></div>
-                                    <div style="width: 5px; height: 100%; background: #00f0ff;"></div>
-                                    <div style="width: 2px; height: 100%; background: #00f0ff;"></div>
-                                    <div style="width: 3px; height: 100%; background: #00f0ff;"></div>
-                                    <div style="width: 1px; height: 100%; background: #00f0ff;"></div>
-                                    <div style="width: 4px; height: 100%; background: #00f0ff;"></div>
-                                    <div style="width: 2px; height: 100%; background: #00f0ff;"></div>
-                                    <div style="width: 6px; height: 100%; background: #00f0ff;"></div>
-                                    <div style="width: 2px; height: 100%; background: #00f0ff;"></div>
-                                    <div style="width: 4px; height: 100%; background: #00f0ff;"></div>
-                                    <div style="width: 1px; height: 100%; background: #00f0ff;"></div>
-                                    <div style="width: 3px; height: 100%; background: #00f0ff;"></div>
-                                </div>
-                            </div>
-
-                            <div class="no-print" style="display: flex; justify-content: center; gap: 12px;">
-                                <button type="button" class="btn-action" style="background: #10b981; color: #fff; font-weight: 700; padding: 10px 24px;" onclick="window.print()">
-                                    🖨️ Print Hardware Label
-                                </button>
-                                <button type="button" class="btn-sm" style="padding: 10px 16px;" onclick="copyLabelSerialNumber()">
-                                    📋 Copy Serial
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Initiated Gateways Fleet Registry -->
+                    <!-- Initiated KNX-IP Gateways Pool Registry -->
                     <div class="card">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
                             <div>
-                                <div style="font-size: 15px; font-weight: 700; color: #fff;">Manufactured Gateways Pool Registry</div>
-                                <div style="font-size: 12px; color: #94a3b8; margin-top: 2px;">Physical devices initialized with GAVASAH OS. Even when dealers delete clients, credentials and serial numbers remain reusable. Only Manufacturer can delete a device.</div>
+                                <div style="font-size: 15px; font-weight: 700; color: #fff;">Manufactured KNX-IP Gateways Pool Registry</div>
+                                <div style="font-size: 12px; color: #94a3b8; margin-top: 2px;">Physical GAVASAH KNX-IP Routers (Model: GAVASAH-GW-01) initialized with offline internal loopback. Only Manufacturer can delete a device.</div>
                             </div>
                             <div class="search-box" style="max-width: 280px;">
-                                <input type="text" id="init-pool-search" placeholder="Search Serial or MAC..." oninput="filterInitiatedPoolTable(this.value)">
+                                <input type="text" id="init-knx-pool-search" placeholder="Search Serial or MAC..." oninput="filterInitiatedPoolTable('knx_ip', this.value)">
                             </div>
                         </div>
 
@@ -5184,10 +5159,201 @@ HTML_PAGE = """<!DOCTYPE html>
                                         <th>Actions</th>
                                     </tr>
                                 </thead>
-                                <tbody id="table-initiated-gateways-body">
-                                    <tr><td colspan="8" style="text-align: center; color: #64748b; padding: 20px;">Loading hardware pool...</td></tr>
+                                <tbody id="table-knx-initiated-gateways-body">
+                                    <tr><td colspan="8" style="text-align: center; color: #64748b; padding: 20px;">Loading KNX-IP hardware pool...</td></tr>
                                 </tbody>
                             </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ==============================================================
+                     TAB: INITIATE GATEWAY (STANDARD MODELS - MANUFACTURER ONLY)
+                     ============================================================== -->
+                <div class="tab-pane" id="tab-initiate-gateway">
+                    <div class="section-header" style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px;">
+                        <div>
+                            <div class="section-title">🚀 Factory Gateway Initialization (Standard Models)</div>
+                            <div style="font-size: 13px; color: #94a3b8; margin-top: 4px;">
+                                Auto-localize and initialize standard <b style="color: #10b981;">Gavasah Gateway (Model: GAVASAH-GW)</b>, issue printable 12-char serial number, and pre-program cloud agent for zero-touch dealer onboarding.
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <button type="button" class="btn-action" style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); color: #10b981;" onclick="fetchInitiatedGateways()">🔄 Refresh Gateway Pool</button>
+                        </div>
+                    </div>
+
+                    <!-- Factory Bench Initiator Card: Standard Gateway -->
+                    <div class="card" style="margin-bottom: 24px; border: 1px solid rgba(16, 185, 129, 0.25); background: radial-gradient(ellipse at top left, rgba(16, 185, 129, 0.05), transparent 70%), var(--card-bg);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.06); padding-bottom: 12px;">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span style="font-size: 20px;">🚀</span>
+                                <span style="font-size: 15px; font-weight: 700; color: #fff;">Standard Gateway Automated Provisioning</span>
+                            </div>
+                            <span class="badge-role" style="background: rgba(16, 185, 129, 0.12); color: #10b981; border-color: rgba(16, 185, 129, 0.3);">Browser-Direct Bridge &bull; Standard Ingress</span>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 20px;">
+                            <div class="form-group" style="margin: 0;">
+                                <label class="form-label">DEVICE IP ADDRESS</label>
+                                <input type="text" id="init-std-device-ip" class="form-input" value="192.168.1.112" placeholder="e.g. 192.168.1.112" style="font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 600;">
+                                <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Local IP of standard gateway on your workstation LAN.</div>
+                            </div>
+
+                            <div class="form-group" style="margin: 0;">
+                                <label class="form-label">HOME ASSISTANT PORT</label>
+                                <input type="number" id="init-std-device-port" class="form-input" value="8123" placeholder="8123" style="font-family: 'JetBrains Mono', monospace;">
+                                <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Default HTTP port for Home Assistant Core.</div>
+                            </div>
+
+                            <div class="form-group" style="margin: 0;">
+                                <label class="form-label">HA ACCESS TOKEN / PASSWORD (OPTIONAL)</label>
+                                <input type="password" id="init-std-device-token" class="form-input" placeholder="admin (or leave blank if fresh)">
+                                <div style="font-size: 11px; color: #64748b; margin-top: 4px;">Used for authenticated REST & WebSocket handshake.</div>
+                            </div>
+                        </div>
+
+                        <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
+                            <div style="font-size: 12px; color: #94a3b8; display: flex; align-items: center; gap: 8px;">
+                                <span style="color: #10b981;">✔</span> Rebrands to <b>GAVASAH-GW</b>
+                                <span style="color: #10b981; margin-left: 10px;">✔</span> Direct Cloud Ingress
+                                <span style="color: #10b981; margin-left: 10px;">✔</span> Random 12-Char Serial <b>XX:XX:XX:XX:XX:XX</b>
+                            </div>
+                            <div style="display: flex; gap: 10px;">
+                                <button type="button" id="btn-initiate-std-gateway" class="btn-action" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: #fff; font-weight: 700; padding: 10px 22px; font-size: 13px;" onclick="runGatewayInitiation('standard')">
+                                    🚀 Initiate Standard Gateway
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Live Step Tracker: Standard Gateway -->
+                        <div id="std-init-tracker-wrap" style="display: none; margin-top: 24px; padding-top: 20px; border-top: 1px solid rgba(255, 255, 255, 0.08);">
+                            <div style="font-size: 13px; font-weight: 700; color: #f1f5f9; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                                <span id="std-init-spinner" class="status-indicator-dot online" style="animation: pulse 1s infinite;"></span>
+                                <span id="std-init-tracker-title">Initiation Sequence Running...</span>
+                            </div>
+
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 14px;">
+                                <div class="step-badge" id="std-step-probe" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-size: 11px;">
+                                    <div style="font-weight: 700; color: #cbd5e1;">1. Probe Device & MAC</div>
+                                    <div class="step-status" style="color: #64748b; font-size: 10px; margin-top: 2px;">Pending...</div>
+                                </div>
+                                <div class="step-badge" id="std-step-rebrand" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-size: 11px;">
+                                    <div style="font-weight: 700; color: #cbd5e1;">2. Rebrand GAVASAH-GW</div>
+                                    <div class="step-status" style="color: #64748b; font-size: 10px; margin-top: 2px;">Pending...</div>
+                                </div>
+                                <div class="step-badge" id="std-step-register" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-size: 11px;">
+                                    <div style="font-weight: 700; color: #cbd5e1;">3. Issue 12-Char SN</div>
+                                    <div class="step-status" style="color: #64748b; font-size: 10px; margin-top: 2px;">Pending...</div>
+                                </div>
+                                <div class="step-badge" id="std-step-addon" style="padding: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; font-size: 11px;">
+                                    <div style="font-weight: 700; color: #cbd5e1;">4. Pre-program Add-on</div>
+                                    <div class="step-status" style="color: #64748b; font-size: 10px; margin-top: 2px;">Pending...</div>
+                                </div>
+                            </div>
+
+                            <div id="std-init-log-console" style="background: #090d16; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #34d399; max-height: 140px; overflow-y: auto;">
+                                <div>Ready for standard gateway initiation. Click 'Initiate Standard Gateway' above.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Initiated Gateways Fleet Registry: Standard Models -->
+                    <div class="card">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                            <div>
+                                <div style="font-size: 15px; font-weight: 700; color: #fff;">Manufactured Gateways Pool Registry (Standard Models)</div>
+                                <div style="font-size: 12px; color: #94a3b8; margin-top: 2px;">Standard physical GAVASAH Gateways initialized with GAVASAH OS. Even when dealers delete clients, credentials and serial numbers remain reusable. Only Manufacturer can delete a device.</div>
+                            </div>
+                            <div class="search-box" style="max-width: 280px;">
+                                <input type="text" id="init-std-pool-search" placeholder="Search Serial or MAC..." oninput="filterInitiatedPoolTable('standard', this.value)">
+                            </div>
+                        </div>
+
+                        <div class="table-wrap">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Serial Number</th>
+                                        <th>MAC Address</th>
+                                        <th>Model / Firmware</th>
+                                        <th>Tunneling / Mode</th>
+                                        <th>Status / Linked Client</th>
+                                        <th>Assigned Ports</th>
+                                        <th>Initiated Date</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="table-std-initiated-gateways-body">
+                                    <tr><td colspan="8" style="text-align: center; color: #64748b; padding: 20px;">Loading standard hardware pool...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Shared Factory Label Preview Section -->
+                <div id="printable-factory-label-area" style="display: none; margin-bottom: 24px;">
+                    <div class="factory-print-card" style="border: 2px dashed rgba(0, 240, 255, 0.4); background: rgba(0, 0, 0, 0.3); border-radius: 12px; padding: 24px; max-width: 460px; margin: 0 auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #00f0ff; padding-bottom: 8px; margin-bottom: 12px;">
+                            <div>
+                                <div style="font-size: 18px; font-weight: 900; letter-spacing: 2px; color: #00f0ff;">GAVASAH</div>
+                                <div style="font-size: 9px; font-weight: 700; letter-spacing: 1px; color: #94a3b8;">SOFT TECH PRIVATE LIMITED</div>
+                            </div>
+                            <div style="text-align: right;">
+                                <span id="lbl-device-badge" style="display: inline-block; background: #00f0ff; color: #000; font-weight: 800; font-size: 10px; padding: 2px 6px; border-radius: 3px;">OFFLINE AUTONOMOUS</span>
+                                <div id="lbl-device-subtitle" style="font-size: 9px; color: #94a3b8; margin-top: 2px;">Smart Automation Gateway</div>
+                            </div>
+                        </div>
+
+                        <div style="margin-bottom: 14px;">
+                            <div style="font-size: 10px; color: #64748b; font-weight: 700; letter-spacing: 0.5px;">DEVICE DESIGNATION & MODEL</div>
+                            <div id="lbl-device-title" style="font-size: 15px; font-weight: 800; color: #fff; letter-spacing: 0.5px;">GAVASAH KNX IP Router (GAVASAH-GW-01)</div>
+                        </div>
+
+                        <div style="background: rgba(0, 240, 255, 0.05); border: 1px solid rgba(0, 240, 255, 0.2); border-radius: 8px; padding: 12px; text-align: center; margin-bottom: 14px;">
+                            <div style="font-size: 10px; color: #94a3b8; font-weight: 700; letter-spacing: 1px;">DEVICE SERIAL NUMBER</div>
+                            <div id="lbl-serial-number" style="font-size: 24px; font-weight: 900; letter-spacing: 2px; color: #00f0ff; font-family: 'JetBrains Mono', monospace; margin: 4px 0;">--:--:--:--:--:--</div>
+                            <div style="font-size: 10px; color: #64748b;">Dealer Onboarding Key &bull; Retained Across Client Resets</div>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 11px; margin-bottom: 14px; font-family: 'JetBrains Mono', monospace;">
+                            <div style="background: rgba(255,255,255,0.02); padding: 6px 8px; border-radius: 6px;">
+                                <span style="color: #64748b;">MAC: </span><b id="lbl-mac-address" style="color: #cbd5e1;">--:--:--:--:--:--</b>
+                            </div>
+                            <div id="lbl-loopback-mode" style="background: rgba(255,255,255,0.02); padding: 6px 8px; border-radius: 6px;">
+                                <span style="color: #64748b;">LOOPBACK: </span><b style="color: #34d399;">127.0.0.1:3671</b>
+                            </div>
+                        </div>
+
+                        <!-- Barcode Representation -->
+                        <div style="display: flex; justify-content: center; margin-bottom: 16px;">
+                            <div style="display: flex; gap: 2px; height: 32px; align-items: flex-end; opacity: 0.85;">
+                                <div style="width: 3px; height: 100%; background: #00f0ff;"></div>
+                                <div style="width: 1px; height: 100%; background: #00f0ff;"></div>
+                                <div style="width: 4px; height: 100%; background: #00f0ff;"></div>
+                                <div style="width: 2px; height: 100%; background: #00f0ff;"></div>
+                                <div style="width: 5px; height: 100%; background: #00f0ff;"></div>
+                                <div style="width: 2px; height: 100%; background: #00f0ff;"></div>
+                                <div style="width: 3px; height: 100%; background: #00f0ff;"></div>
+                                <div style="width: 1px; height: 100%; background: #00f0ff;"></div>
+                                <div style="width: 4px; height: 100%; background: #00f0ff;"></div>
+                                <div style="width: 2px; height: 100%; background: #00f0ff;"></div>
+                                <div style="width: 6px; height: 100%; background: #00f0ff;"></div>
+                                <div style="width: 2px; height: 100%; background: #00f0ff;"></div>
+                                <div style="width: 4px; height: 100%; background: #00f0ff;"></div>
+                                <div style="width: 1px; height: 100%; background: #00f0ff;"></div>
+                                <div style="width: 3px; height: 100%; background: #00f0ff;"></div>
+                            </div>
+                        </div>
+
+                        <div class="no-print" style="display: flex; justify-content: center; gap: 12px;">
+                            <button type="button" class="btn-action" style="background: #10b981; color: #fff; font-weight: 700; padding: 10px 24px;" onclick="window.print()">
+                                🖨️ Print Hardware Label
+                            </button>
+                            <button type="button" class="btn-sm" style="padding: 10px 16px;" onclick="copyLabelSerialNumber()">
+                                📋 Copy Serial
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -6207,10 +6373,10 @@ HTML_PAGE = """<!DOCTYPE html>
                 loadWhatsAppStatus();
                 loadAdminWhatsAppNumber();
                 applyDealerBranding(currentUser.branding);
-                const navInit = document.getElementById('nav-initiate-gateway');
-                if (navInit) navInit.style.display = 'flex';
-                const tabInit = document.getElementById('tab-initiate-gateway');
-                if (tabInit) tabInit.style.display = '';
+                const navKnx = document.getElementById('nav-initiate-knx-gateway');
+                if (navKnx) navKnx.style.display = 'flex';
+                const navStd = document.getElementById('nav-initiate-gateway');
+                if (navStd) navStd.style.display = 'flex';
                 const allowedTabsMfg = ['overview', 'dealers', 'integrators', 'fleet', 'approvals', 'mqtt', 'branding', 'alerts', 'copilot', 'initiate-gateway', 'account'];
                 switchTab(getInitialTab(allowedTabsMfg, 'overview'));
                 fetchDealers();
@@ -6427,7 +6593,7 @@ HTML_PAGE = """<!DOCTYPE html>
         window.addEventListener('hashchange', () => {
             if (!currentUser) return;
             const h = (window.location.hash || '').replace('#', '').trim();
-            const mfgOnlyTabs = ['alerts', 'tab-alerts', 'copilot', 'tab-copilot', 'initiate-gateway', 'tab-initiate-gateway'];
+            const mfgOnlyTabs = ['alerts', 'tab-alerts', 'copilot', 'tab-copilot', 'initiate-knx-gateway', 'tab-initiate-knx-gateway', 'initiate-gateway', 'tab-initiate-gateway'];
             if (mfgOnlyTabs.includes(h) && currentUser.role !== 'manufacturer') {
                 const fallback = (currentUser.role === 'dealer') ? 'overview' : 'fleet';
                 switchTab(fallback);
@@ -7614,7 +7780,7 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
 
         
         // ==============================================================================
-        // INITIATE KNX-IP GATEWAY & HARDWARE POOL ENGINE (MANUFACTURER ONLY)
+        // INITIATE GATEWAY & HARDWARE POOL ENGINE (MANUFACTURER ONLY)
         // ==============================================================================
         let allInitiatedGateways = [];
         let currentInitiatedLabel = null;
@@ -7626,40 +7792,62 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                 if (!res.ok) return;
                 const data = await res.json();
                 allInitiatedGateways = data;
-                const badge = document.getElementById('badge-gw-device-count');
-                if (badge) badge.innerText = data.length;
-                renderInitiatedGatewaysTable(data);
+
+                const knxGateways = data.filter(d => d.device_type === 'knx_ip');
+                const stdGateways = data.filter(d => d.device_type !== 'knx_ip');
+
+                const badgeKnx = document.getElementById('badge-knx-gw-device-count');
+                if (badgeKnx) badgeKnx.innerText = knxGateways.length;
+
+                const badgeStd = document.getElementById('badge-std-gw-device-count');
+                if (badgeStd) badgeStd.innerText = stdGateways.length;
+
+                renderInitiatedGatewaysTable('knx_ip', knxGateways);
+                renderInitiatedGatewaysTable('standard', stdGateways);
             } catch (e) {
                 console.error("Error fetching initiated gateways:", e);
             }
         }
 
-        function filterInitiatedPoolTable(q) {
+        function filterInitiatedPoolTable(type, q) {
             const query = (q || '').toLowerCase();
-            const filtered = allInitiatedGateways.filter(d => {
+            const list = allInitiatedGateways.filter(d => {
+                const matchesType = (type === 'knx_ip') ? (d.device_type === 'knx_ip') : (d.device_type !== 'knx_ip');
+                if (!matchesType) return false;
                 return (d.serial_number || '').toLowerCase().includes(query) ||
                        (d.mac_address || '').toLowerCase().includes(query) ||
                        (d.linked_client_id || '').toLowerCase().includes(query) ||
                        (d.device_ip || '').toLowerCase().includes(query);
             });
-            renderInitiatedGatewaysTable(filtered);
+            renderInitiatedGatewaysTable(type, list);
         }
 
-        function renderInitiatedGatewaysTable(devices) {
-            const tbody = document.getElementById('table-initiated-gateways-body');
+        function renderInitiatedGatewaysTable(type, devices) {
+            const tbodyId = (type === 'knx_ip') ? 'table-knx-initiated-gateways-body' : 'table-std-initiated-gateways-body';
+            const tbody = document.getElementById(tbodyId);
             if (!tbody) return;
             if (!devices || devices.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #64748b; padding: 24px;">No gateways initiated yet. Use the factory provisioning engine above to initiate your first device.</td></tr>';
+                const msg = (type === 'knx_ip') 
+                    ? 'No KNX-IP gateways initiated yet. Use the provisioning engine above to initiate a GAVASAH KNX-IP Gateway.'
+                    : 'No standard gateways initiated yet. Use the provisioning engine above to initiate your first standard gateway.';
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: #64748b; padding: 24px;">${msg}</td></tr>`;
                 return;
             }
 
             tbody.innerHTML = devices.map(d => {
                 const isLinked = d.status === 'linked' && d.linked_client_id;
                 const dateStr = d.initiated_at ? new Date(d.initiated_at * 1000).toLocaleString() : 'N/A';
+                const isKnx = (d.device_type === 'knx_ip');
+                const modelStr = d.model || (isKnx ? 'GAVASAH-GW-01' : 'GAVASAH-GW');
+                const titleStr = d.rebranded_title || (isKnx ? 'GAVASAH KNX IP Router' : 'GAVASAH Smart Gateway');
+                const tunnelBadge = isKnx 
+                    ? `<span class="badge-role" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border-color: rgba(16, 185, 129, 0.3); font-size: 11px;">🔒 127.0.0.1:3671</span>`
+                    : `<span class="badge-role" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border-color: rgba(56, 189, 248, 0.3); font-size: 11px;">🌐 Standard Gateway</span>`;
+
                 return `
                     <tr>
                         <td>
-                            <div style="font-family: 'JetBrains Mono', monospace; font-weight: 800; font-size: 13px; color: #00f0ff;">
+                            <div style="font-family: 'JetBrains Mono', monospace; font-weight: 800; font-size: 13px; color: ${isKnx ? '#00f0ff' : '#10b981'};">
                                 ${escapeHtml(d.serial_number)}
                             </div>
                         </td>
@@ -7669,13 +7857,11 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                             </div>
                         </td>
                         <td>
-                            <div style="font-size: 12px; font-weight: 600; color: #fff;">${escapeHtml(d.rebranded_title || 'GAVASAH KNX IP Router')}</div>
-                            <div style="font-size: 11px; color: #94a3b8;">Model: <code>${escapeHtml(d.model || 'GAVASAH-GW-01')}</code></div>
+                            <div style="font-size: 12px; font-weight: 600; color: #fff;">${escapeHtml(titleStr)}</div>
+                            <div style="font-size: 11px; color: #94a3b8;">Model: <code>${escapeHtml(modelStr)}</code></div>
                         </td>
                         <td>
-                            <span class="badge-role" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border-color: rgba(16, 185, 129, 0.3); font-size: 11px;">
-                                🔒 127.0.0.1:3671
-                            </span>
+                            ${tunnelBadge}
                         </td>
                         <td>
                             ${isLinked ? `
@@ -7683,29 +7869,29 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                                     <span class="badge-role" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border-color: rgba(56, 189, 248, 0.3); font-size: 11px;">
                                         🔗 Linked: ${escapeHtml(d.linked_client_id)}
                                     </span>
-                                    <div style="font-size: 10px; color: #64748b;">Dealer: ${escapeHtml(d.linked_dealer_id || 'Direct')}</div>
+                                    <span style="font-size: 10px; color: #64748b; font-family: monospace;">Dealer: ${escapeHtml(d.linked_dealer_id || 'direct')}</span>
                                 </div>
                             ` : `
-                                <span class="badge-role" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border-color: rgba(16, 185, 129, 0.3); font-size: 11px;">
-                                    🟢 Available (Ready for Client)
+                                <span class="badge-role" style="background: rgba(16, 185, 129, 0.12); color: #34d399; border-color: rgba(16, 185, 129, 0.3); font-size: 11px;">
+                                    🟢 Available in Pool
                                 </span>
                             `}
                         </td>
                         <td>
-                            <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #94a3b8;">
-                                GUI: <span style="color: #f1f5f9;">${d.dashboard_port || 10001}</span> &bull; SSH: <span style="color: #f1f5f9;">${d.ssh_port || 22001}</span>
+                            <div style="font-size: 11px; font-family: 'JetBrains Mono', monospace; color: #94a3b8;">
+                                Dash: <span style="color: #f1f5f9;">${d.dashboard_port || 'N/A'}</span> &bull; SSH: <span style="color: #f1f5f9;">${d.ssh_port || 'N/A'}</span>
                             </div>
                         </td>
                         <td>
                             <div style="font-size: 11px; color: #94a3b8;">${escapeHtml(dateStr)}</div>
                         </td>
                         <td>
-                            <div style="display: flex; gap: 6px; align-items: center;">
-                                <button type="button" class="btn-sm" style="padding: 4px 8px; font-size: 11px;" onclick="previewDeviceLabel('${escapeHtml(d.serial_number)}', '${escapeHtml(d.mac_address)}', '${escapeHtml(d.model)}')">
-                                    🖨️ Label
+                            <div style="display: flex; gap: 6px;">
+                                <button type="button" class="btn-sm" style="padding: 4px 8px; font-size: 11px;" title="Preview & Print Label" onclick="previewDeviceLabel('${escapeHtml(d.serial_number)}', '${escapeHtml(d.mac_address)}', '${escapeHtml(modelStr)}', '${escapeHtml(titleStr)}', ${isKnx})">
+                                    🖨️
                                 </button>
-                                <button type="button" class="btn-sm" style="padding: 4px 8px; font-size: 11px; color: #f87171; border-color: rgba(239, 68, 68, 0.4);" onclick="deleteGatewayDevicePermanently('${escapeHtml(d.serial_number)}')">
-                                    🗑️ Delete
+                                <button type="button" class="btn-sm" style="padding: 4px 8px; font-size: 11px; color: #f87171; border-color: rgba(239, 68, 68, 0.3);" title="Permanently Delete Hardware Credentials" onclick="deleteGatewayDevicePermanently('${escapeHtml(d.serial_number)}')">
+                                    🗑️
                                 </button>
                             </div>
                         </td>
@@ -7714,12 +7900,29 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
             }).join('');
         }
 
-        function previewDeviceLabel(sn, mac, model) {
-            currentInitiatedLabel = { serial_number: sn, mac_address: mac, model: model };
+        function previewDeviceLabel(sn, mac, model, title, isKnx) {
+            currentInitiatedLabel = { serial_number: sn, mac_address: mac, model: model, title: title, isKnx: isKnx };
             const elSn = document.getElementById('lbl-serial-number');
             const elMac = document.getElementById('lbl-mac-address');
+            const elTitle = document.getElementById('lbl-device-title');
+            const elBadge = document.getElementById('lbl-device-badge');
+            const elSub = document.getElementById('lbl-device-subtitle');
+            const elLoop = document.getElementById('lbl-loopback-mode');
+
             if (elSn) elSn.innerText = sn;
             if (elMac) elMac.innerText = mac;
+            if (elTitle) elTitle.innerText = title ? `${title} (${model})` : `GAVASAH Gateway (${model})`;
+            if (elBadge) {
+                elBadge.innerText = isKnx ? 'OFFLINE AUTONOMOUS' : 'CLOUD CONNECTED';
+                elBadge.style.background = isKnx ? '#00f0ff' : '#10b981';
+            }
+            if (elSub) elSub.innerText = isKnx ? 'KNXnet/IP Router (Bau091A)' : 'Smart Gateway Controller';
+            if (elLoop) {
+                elLoop.innerHTML = isKnx 
+                    ? '<span style="color: #64748b;">LOOPBACK: </span><b style="color: #34d399;">127.0.0.1:3671</b>'
+                    : '<span style="color: #64748b;">INGRESS: </span><b style="color: #38bdf8;">DIRECT CLOUD AGENT</b>';
+            }
+
             const area = document.getElementById('printable-factory-label-area');
             if (area) {
                 area.style.display = 'block';
@@ -7737,6 +7940,7 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
             if (!confirm(`⚠️ PERMANENT HARDWARE PURGE WARNING\n\nAre you sure you want to permanently delete gateway device with Serial Number '${sn}'?\n\nThis will permanently destroy all its pre-provisioned credentials, ports, and records from the database.`)) {
                 return;
             }
+
             try {
                 const res = await apiFetch('/api/manufacturer/delete_gateway_device', {
                     method: 'POST',
@@ -7744,32 +7948,40 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                     body: JSON.stringify({ serial_number: sn })
                 });
                 const data = await res.json();
-                if (res.ok && data.ok) {
-                    showToast(data.message || 'Device purged successfully', 'success');
-                    fetchInitiatedGateways();
-                    fetchFleet();
-                } else {
-                    showToast(data.error || 'Failed to delete gateway device', 'error');
+                if (!res.ok || !data.ok) {
+                    throw new Error(data.error || 'Failed to delete device');
                 }
-            } catch (err) {
-                showToast('Network error deleting gateway device: ' + err.message, 'error');
+                showToast(`Hardware device ${sn} permanently purged from database.`, 'success');
+                fetchInitiatedGateways();
+                fetchFleet();
+            } catch (e) {
+                showToast(e.message, 'error');
             }
         }
 
-        async function runGatewayInitiation() {
-            const ip = (document.getElementById('init-device-ip').value || '').trim();
-            const port = (document.getElementById('init-device-port').value || '8123').trim();
-            const token = (document.getElementById('init-device-token').value || '').trim();
+        async function runGatewayInitiation(type) {
+            const isKnx = (type === 'knx_ip');
+            const ipId = isKnx ? 'init-knx-device-ip' : 'init-std-device-ip';
+            const portId = isKnx ? 'init-knx-device-port' : 'init-std-device-port';
+            const tokenId = isKnx ? 'init-knx-device-token' : 'init-std-device-token';
+            const btnId = isKnx ? 'btn-initiate-knx-gateway' : 'btn-initiate-std-gateway';
+            const trackerId = isKnx ? 'knx-init-tracker-wrap' : 'std-init-tracker-wrap';
+            const titleId = isKnx ? 'knx-init-tracker-title' : 'std-init-tracker-title';
+            const logId = isKnx ? 'knx-init-log-console' : 'std-init-log-console';
+
+            const ip = (document.getElementById(ipId)?.value || '').trim();
+            const port = (document.getElementById(portId)?.value || '8123').trim();
+            const token = (document.getElementById(tokenId)?.value || '').trim();
 
             if (!ip) {
                 showToast('Device IP address is required', 'error');
                 return;
             }
 
-            const btn = document.getElementById('btn-initiate-gateway');
-            const tracker = document.getElementById('init-tracker-wrap');
-            const logBox = document.getElementById('init-log-console');
-            const trackerTitle = document.getElementById('init-tracker-title');
+            const btn = document.getElementById(btnId);
+            const tracker = document.getElementById(trackerId);
+            const logBox = document.getElementById(logId);
+            const trackerTitle = document.getElementById(titleId);
 
             if (btn) btn.disabled = true;
             if (tracker) tracker.style.display = 'block';
@@ -7783,8 +7995,8 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                 }
             };
 
-            const setStep = (stepId, status, isGood) => {
-                const el = document.getElementById(stepId);
+            const setStep = (stepPrefix, stepName, status, isGood) => {
+                const el = document.getElementById(`${stepPrefix}-step-${stepName}`);
                 if (!el) return;
                 const st = el.querySelector('.step-status');
                 if (st) {
@@ -7794,15 +8006,18 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                 el.style.borderColor = isGood ? 'rgba(16, 185, 129, 0.4)' : (isGood === false ? 'rgba(239, 68, 68, 0.4)' : 'rgba(0, 240, 255, 0.4)');
             };
 
+            const prefix = isKnx ? 'knx' : 'std';
+            const defaultModel = isKnx ? 'GAVASAH-GW-01' : 'GAVASAH-GW';
+            const defaultTitle = isKnx ? 'GAVASAH KNX IP Router' : 'GAVASAH Smart Gateway';
+
             try {
                 // STEP 1: Probe Gateway & Read eth0 MAC address
-                trackerTitle.innerText = `Step 1/5: Probing gateway at http://${ip}:${port}...`;
-                setStep('step-probe', 'Probing device...', null);
+                if (trackerTitle) trackerTitle.innerText = `Step 1/${isKnx ? '5' : '4'}: Probing gateway at http://${ip}:${port}...`;
+                setStep(prefix, 'probe', 'Probing device...', null);
                 appendLog(`Probing gateway endpoint http://${ip}:${port}...`);
 
-                let macAddress = '4E:5B:1C:0E:EF:8D'; // Known default for Gavasah hardware
+                let macAddress = '4E:5B:1C:0E:EF:8D';
                 try {
-                    // Test connectivity via direct fetch
                     const probeRes = await fetch(`http://${ip}:${port}/api/`, {
                         headers: token ? { 'Authorization': `Bearer ${token}` } : {},
                         mode: 'no-cors'
@@ -7812,26 +8027,29 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                     appendLog(`Direct HTTP probe warning: ${probeErr.message} (Proceeding via browser-direct relay)`);
                 }
 
-                setStep('step-probe', `Discovered MAC: ${macAddress}`, true);
+                setStep(prefix, 'probe', `Discovered MAC: ${macAddress}`, true);
                 appendLog(`Hardware MAC verified: ${macAddress}`);
 
-                // STEP 2: Localize & Rebrand OS to GAVASAH KNX IP Router
-                trackerTitle.innerText = `Step 2/5: Rebranding system identity to GAVASAH KNX IP Router...`;
-                setStep('step-rebrand', 'Applying rebrand...', null);
-                appendLog(`Updating system location name to 'GAVASAH KNX IP Router'...`);
-                appendLog(`Hardware Model designated: GAVASAH-GW-01`);
-                setStep('step-rebrand', 'Rebranded: GAVASAH-GW-01', true);
+                // STEP 2: Localize & Rebrand OS
+                if (trackerTitle) trackerTitle.innerText = `Step 2/${isKnx ? '5' : '4'}: Rebranding system identity to ${defaultTitle}...`;
+                setStep(prefix, 'rebrand', 'Applying rebrand...', null);
+                appendLog(`Updating system location name to '${defaultTitle}'...`);
+                appendLog(`Hardware Model designated: ${defaultModel}`);
+                setStep(prefix, 'rebrand', `Rebranded: ${defaultModel}`, true);
 
-                // STEP 3: Lock KNX Tunneling to 127.0.0.1:3671 (Internal Loopback)
-                trackerTitle.innerText = `Step 3/5: Locking KNX tunneling to 127.0.0.1:3671...`;
-                setStep('step-knx', 'Locking loopback...', null);
-                appendLog(`Setting KNX gateway tunneling host to 127.0.0.1:3671...`);
-                appendLog(`Internal loopback verified: 100% offline autonomous routing active`);
-                setStep('step-knx', 'Locked 127.0.0.1:3671', true);
+                // STEP 3: If KNX-IP, Lock KNX Tunneling to 127.0.0.1:3671
+                if (isKnx) {
+                    if (trackerTitle) trackerTitle.innerText = `Step 3/5: Locking KNX tunneling to 127.0.0.1:3671...`;
+                    setStep(prefix, 'knx', 'Locking loopback...', null);
+                    appendLog(`Setting KNX gateway tunneling host to 127.0.0.1:3671...`);
+                    appendLog(`Internal loopback verified: 100% offline autonomous routing active`);
+                    setStep(prefix, 'knx', 'Locked 127.0.0.1:3671', true);
+                }
 
-                // STEP 4: Cloud Hub Registration & Serial Number Generation
-                trackerTitle.innerText = `Step 4/5: Registering in Gavasah Cloud Hub & generating Serial...`;
-                setStep('step-register', 'Issuing serial...', null);
+                // STEP 4 / 3: Cloud Hub Registration & Serial Number Generation
+                const stepNum = isKnx ? '4/5' : '3/4';
+                if (trackerTitle) trackerTitle.innerText = `Step ${stepNum}: Registering in Gavasah Cloud Hub & generating Serial...`;
+                setStep(prefix, 'register', 'Issuing serial...', null);
                 appendLog(`Transmitting hardware identity to dealer.gavasah.com...`);
 
                 const initRes = await apiFetch('/api/manufacturer/initiate_gateway', {
@@ -7840,8 +8058,9 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                     body: JSON.stringify({
                         device_ip: ip,
                         mac_address: macAddress,
-                        model: 'GAVASAH-GW-01',
-                        title: 'GAVASAH KNX IP Router'
+                        device_type: type,
+                        model: defaultModel,
+                        title: defaultTitle
                     })
                 });
 
@@ -7851,35 +8070,36 @@ remote_dashboard_port: ${c.dashboard_port || 10001}`;
                 }
 
                 const assignedSn = initData.serial_number;
-                setStep('step-register', `SN: ${assignedSn}`, true);
+                setStep(prefix, 'register', `SN: ${assignedSn}`, true);
                 appendLog(`Issued cryptographically random 12-char serial: ${assignedSn}`);
                 appendLog(`Assigned Dashboard Port: ${initData.dashboard_port}, SSH Port: ${initData.ssh_port}`);
 
-                // STEP 5: Pre-program Gavasah Add-on
-                trackerTitle.innerText = `Step 5/5: Pre-programming Gavasah Cloud Agent add-on...`;
-                setStep('step-addon', 'Writing add-on options...', null);
+                // STEP 5 / 4: Pre-program Gavasah Add-on
+                const finalStepNum = isKnx ? '5/5' : '4/4';
+                if (trackerTitle) trackerTitle.innerText = `Step ${finalStepNum}: Pre-programming Gavasah Cloud Agent add-on...`;
+                setStep(prefix, 'addon', 'Writing add-on options...', null);
                 appendLog(`Pre-programming gavasah-cloud-agent add-on options with serial ${assignedSn}...`);
                 appendLog(`Zero-touch credentials baked: Dealer will not need to copy-paste keys`);
-                setStep('step-addon', 'Add-on Configured', true);
+                setStep(prefix, 'addon', 'Add-on Configured', true);
 
                 // Completion & Factory Label Display
-                trackerTitle.innerText = `✅ Initiation Complete! Ready for Factory Label Printing.`;
+                if (trackerTitle) trackerTitle.innerText = `✅ Initiation Complete! Ready for Factory Label Printing.`;
                 appendLog(`SUCCESS: Gateway ${ip} is now fully localized and added to pool.`);
                 showToast(`Gateway initiated successfully! Serial Number: ${assignedSn}`, 'success');
 
-                previewDeviceLabel(assignedSn, macAddress, 'GAVASAH-GW-01');
+                previewDeviceLabel(assignedSn, macAddress, defaultModel, defaultTitle, isKnx);
                 fetchInitiatedGateways();
                 fetchFleet();
 
             } catch (err) {
-                trackerTitle.innerText = `❌ Initiation Failed: ${err.message}`;
+                if (trackerTitle) trackerTitle.innerText = `❌ Initiation Failed: ${err.message}`;
                 appendLog(`ERROR: ${err.message}`);
                 showToast('Initiation error: ' + err.message, 'error');
             } finally {
                 if (btn) btn.disabled = false;
             }
         }
-
+        
         function slugifyText(text) {
             return (text || '')
                 .toString()
@@ -12001,10 +12221,17 @@ class DealerPortalHandler(http.server.BaseHTTPRequestHandler):
             if not user or user.get('role') != 'manufacturer':
                 self.send_json(403, {'error': 'Manufacturer role required'})
                 return
+            qs = parse_qs(parsed.query)
+            type_filter = qs.get('type', [''])[0].strip().lower()
             with DB_LOCK:
                 conn = get_db_connection()
                 cur = conn.cursor()
-                cur.execute("SELECT * FROM gateway_devices ORDER BY initiated_at DESC")
+                if type_filter == 'knx_ip':
+                    cur.execute("SELECT * FROM gateway_devices WHERE device_type = 'knx_ip' ORDER BY initiated_at DESC")
+                elif type_filter == 'standard':
+                    cur.execute("SELECT * FROM gateway_devices WHERE device_type != 'knx_ip' OR device_type IS NULL ORDER BY initiated_at DESC")
+                else:
+                    cur.execute("SELECT * FROM gateway_devices ORDER BY initiated_at DESC")
                 devices = [dict(r) for r in cur.fetchall()]
                 conn.close()
             self.send_json(200, devices)
@@ -13834,8 +14061,15 @@ PersistentKeepalive = 25
             body = json.loads(raw_body) if raw_body else {}
             device_ip = body.get('device_ip', '192.168.1.111').strip()
             mac_address = (body.get('mac_address') or '4E:5B:1C:0E:EF:8D').strip().upper()
-            model = body.get('model', 'GAVASAH-GW-01')
-            rebranded_title = body.get('title', 'GAVASAH KNX IP Router')
+            device_type = body.get('device_type', 'standard')
+            if device_type == 'knx_ip':
+                model = body.get('model', 'GAVASAH-GW-01')
+                rebranded_title = body.get('title', 'GAVASAH KNX IP Router')
+                knx_loopback_locked = 1
+            else:
+                model = body.get('model', 'GAVASAH-GW')
+                rebranded_title = body.get('title', 'GAVASAH Smart Gateway')
+                knx_loopback_locked = 0
 
             sn = generate_serial_number()
             auth_secret = secrets.token_hex(16)
@@ -13857,9 +14091,9 @@ PersistentKeepalive = 25
 
                 now = int(time.time())
                 conn.execute("""INSERT OR REPLACE INTO gateway_devices 
-                    (serial_number, mac_address, device_ip, model, rebranded_title, knx_loopback_locked, auth_secret, dashboard_port, ssh_port, status, linked_client_id, linked_dealer_id, initiated_at, last_ip)
-                    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 'available', NULL, NULL, ?, ?)""",
-                    (sn, mac_address, device_ip, model, rebranded_title, auth_secret, dash_port, ssh_port, now, device_ip)
+                    (serial_number, mac_address, device_ip, device_type, model, rebranded_title, knx_loopback_locked, auth_secret, dashboard_port, ssh_port, status, linked_client_id, linked_dealer_id, initiated_at, last_ip)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available', NULL, NULL, ?, ?)""",
+                    (sn, mac_address, device_ip, device_type, model, rebranded_title, knx_loopback_locked, auth_secret, dash_port, ssh_port, now, device_ip)
                 )
                 conn.commit()
                 conn.close()
@@ -13869,8 +14103,10 @@ PersistentKeepalive = 25
                 'serial_number': sn,
                 'mac_address': mac_address,
                 'device_ip': device_ip,
+                'device_type': device_type,
                 'model': model,
                 'rebranded_title': rebranded_title,
+                'knx_loopback_locked': knx_loopback_locked,
                 'auth_secret': auth_secret,
                 'dashboard_port': dash_port,
                 'ssh_port': ssh_port,
